@@ -5,10 +5,15 @@ from io import StringIO
 import pytest
 import yaml
 
-from confingo import _populate_config
 from confingo import Config
+from confingo import _populate_config
+from confingo import dump_json
+from confingo import dump_yaml
 from confingo import load_config
 from confingo import load_config_from_content
+from confingo import to_dict
+from confingo import to_json
+from confingo import to_yaml
 
 
 def test_config_attribute_access():
@@ -273,8 +278,8 @@ def test_empty_config():
     Test behavior of an empty Config object.
     """
     config = Config()
-    assert config.to_dict() == {}
-    yaml_output = config.to_yaml()
+    assert to_dict(config) == {}
+    yaml_output = to_yaml(config)
     assert yaml_output == "{}\n"
 
 
@@ -304,7 +309,7 @@ def test_dump_empty_yaml(tmp_path):
     config = Config()
     yaml_file = tmp_path / 'empty.yaml'
     with open(yaml_file, 'w') as f:
-        config.dump_yaml(f)
+        dump_yaml(config, f)
 
     with open(yaml_file, 'r') as f:
         loaded_yaml = f.read()
@@ -319,7 +324,7 @@ def test_dump_empty_json(tmp_path):
     config = Config()
     json_file = tmp_path / 'empty.json'
     with open(json_file, 'w') as f:
-        config.dump_json(f, indent=2)
+        dump_json(config, f, indent=2)
 
     with open(json_file, 'r') as f:
         loaded_json = json.load(f)
@@ -339,7 +344,7 @@ def test_config_to_yaml():
     config.database.host = 'localhost'
     config.database.port = 3306
 
-    yaml_output = config.to_yaml()
+    yaml_output = to_yaml(config)
 
     expected_dict = {
         'app': {
@@ -366,7 +371,7 @@ def test_config_dump_yaml(tmp_path):
 
     yaml_file = tmp_path / 'output.yaml'
     with open(yaml_file, 'w') as f:
-        config.dump_yaml(f)
+        dump_yaml(config, f)
 
     with open(yaml_file, 'r') as f:
         loaded_yaml = f.read()
@@ -391,7 +396,7 @@ def test_config_to_json():
     config.server.port = 8080
     config.features = ['auth', 'logging', 'metrics']
 
-    json_output = config.to_json(indent=2)
+    json_output = to_json(config, indent=2)
 
     expected_dict = {
         'server': {
@@ -415,7 +420,7 @@ def test_config_dump_json(tmp_path):
 
     json_file = tmp_path / 'output.json'
     with open(json_file, 'w') as f:
-        config.dump_json(f, indent=2)
+        dump_json(config, f, indent=2)
 
     with open(json_file, 'r') as f:
         loaded_json = f.read()
@@ -447,7 +452,7 @@ def test_config_to_json_with_complex_structure():
     config.application.modules[1].name = 'payments'
     config.application.modules[1].enabled = False
 
-    json_output = config.to_json(indent=2)
+    json_output = to_json(config, indent=2)
 
     expected_dict = {
         'application': {
@@ -475,7 +480,7 @@ def test_config_dump_json_with_complex_structure(tmp_path):
 
     json_file = tmp_path / 'complex_output.json'
     with open(json_file, 'w') as f:
-        config.dump_json(f, indent=4)
+        dump_json(config, f, indent=4)
 
     with open(json_file, 'r') as f:
         loaded_json = json.load(f)

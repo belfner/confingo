@@ -5,8 +5,8 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 from typing import IO
-from typing import overload
 from typing import Union
+from typing import overload
 
 import yaml
 
@@ -59,6 +59,139 @@ def to_builtin(obj: Any) -> Union[dict[str, Any], list[Any], Any]:
         return [to_builtin(i) for i in obj]
     else:
         return obj
+
+
+def _add_item(config: Config, key: str, value: Any) -> None:
+    """
+    Add an item to the Config object.
+
+    Parameters
+    ----------
+    key : str
+        The attribute name to add.
+    value : Any
+        The value to assign to the attribute.
+
+    Raises
+    ------
+    ValueError
+        If `key` is not a valid Python identifier.
+    """
+    validate_ident(key)
+    if isinstance(value, dict):
+        new_config = Config()
+        _populate_config(value, config=new_config)
+        value = new_config
+
+    Namespace.__setattr__(config, key, value)
+    dict.__setitem__(config, key, value)
+
+
+def _delete_item(config: Config, key: str) -> None:
+    """
+    Delete an item from the Config object.
+
+    Parameters
+    ----------
+    key : str
+        The attribute name to delete.
+
+    Raises
+    ------
+    KeyError
+        If `key` does not exist in the Config object.
+    """
+    if key not in config:
+        raise KeyError(f"'{key}' is not a valid key")
+    dict.__delitem__(config, key)
+    Namespace.__delattr__(config, key)
+
+
+def to_dict(config: Config) -> dict[str, Any]:
+    """
+    Convert the Config object to a native Python dictionary.
+
+    Returns
+    -------
+    dict[str, Any]
+        The configuration represented as a dictionary.
+    """
+    return to_builtin(config)
+
+
+def to_yaml(config: Config, **kwargs) -> str:
+    """
+    Serialize the Config object to a YAML-formatted string.
+
+    Parameters
+    ----------
+    **kwargs : Any
+        Additional keyword arguments to pass to `yaml.dump`.
+
+    Returns
+    -------
+    str
+        YAML-formatted string representing the configuration.
+    """
+    return yaml.dump(
+        to_dict(config),
+        default_flow_style=False,
+        indent=2,
+        sort_keys=False,
+        **kwargs
+    )
+
+
+def dump_yaml(config: Config, stream: IO[Any], **kwargs) -> None:
+    """
+    Write the Config object as YAML to a file-like stream.
+
+    Parameters
+    ----------
+    stream : IO[Any]
+        The file-like object to write the YAML data to.
+    **kwargs : Any
+        Additional keyword arguments to pass to `yaml.dump`.
+    """
+    yaml.dump(
+        to_dict(config),
+        stream,
+        default_flow_style=False,
+        indent=2,
+        sort_keys=False,
+        **kwargs
+    )
+
+
+def to_json(config: Config, **kwargs) -> str:
+    """
+    Serialize the Config object to a JSON-formatted string.
+
+    Parameters
+    ----------
+    **kwargs : Any
+        Additional keyword arguments to pass to `json.dumps`.
+
+    Returns
+    -------
+    str
+        JSON-formatted string representing the configuration.
+    """
+    return json.dumps(to_dict(config), **kwargs)
+
+
+def dump_json(config: Config, stream: IO[Any], **kwargs) -> None:
+    """
+    Write the Config object as JSON to a file-like stream.
+
+    Parameters
+    ----------
+    stream : IO[Any]
+        The file-like object to write the JSON data to.
+    **kwargs : Any
+        Additional keyword arguments to pass to `json.dump`.
+    """
+    json.dump(to_dict(config), stream, **kwargs)
 
 
 class Config(Namespace, dict):
@@ -122,53 +255,9 @@ class Config(Namespace, dict):
             YAML-formatted string representing the configuration.
         """
         return json.dumps(
-            self.to_dict(),
+            to_dict(self),
             indent=2,
         )
-
-    def _add_item(self, key: str, value: Any) -> None:
-        """
-        Add an item to the Config object.
-
-        Parameters
-        ----------
-        key : str
-            The attribute name to add.
-        value : Any
-            The value to assign to the attribute.
-
-        Raises
-        ------
-        ValueError
-            If `key` is not a valid Python identifier.
-        """
-        validate_ident(key)
-        if isinstance(value, dict):
-            config = Config()
-            _populate_config(value, config=config)
-            value = config
-
-        Namespace.__setattr__(self, key, value)
-        dict.__setitem__(self, key, value)
-
-    def _delete_item(self, key: str) -> None:
-        """
-        Delete an item from the Config object.
-
-        Parameters
-        ----------
-        key : str
-            The attribute name to delete.
-
-        Raises
-        ------
-        KeyError
-            If `key` does not exist in the Config object.
-        """
-        if key not in self:
-            raise KeyError(f"'{key}' is not a valid key")
-        dict.__delitem__(self, key)
-        Namespace.__delattr__(self, key)
 
     def __setattr__(self, key: str, value: Any) -> None:
         """
@@ -182,7 +271,7 @@ class Config(Namespace, dict):
         value : Any
             The value to assign to the attribute.
         """
-        self._add_item(key, value)
+        _add_item(self, key, value)
 
     def __setitem__(self, key: str, value: Any) -> None:
         """
@@ -196,7 +285,7 @@ class Config(Namespace, dict):
         value : Any
             The value to assign to the item.
         """
-        self._add_item(key, value)
+        _add_item(self, key, value)
 
     def __delitem__(self, key: str) -> None:
         """
@@ -207,7 +296,7 @@ class Config(Namespace, dict):
         key : str
             The item key to delete.
         """
-        self._delete_item(key)
+        _delete_item(self, key)
 
     def __delattr__(self, key: str) -> None:
         """
@@ -218,7 +307,7 @@ class Config(Namespace, dict):
         key : str
             The attribute name to delete.
         """
-        self._delete_item(key)
+        _delete_item(self, key)
 
     def __contains__(self, item: Any) -> bool:
         """
@@ -235,88 +324,6 @@ class Config(Namespace, dict):
             True if the item exists, False otherwise.
         """
         return dict.__contains__(self, item)
-
-    def to_dict(self) -> dict[str, Any]:
-        """
-        Convert the Config object to a native Python dictionary.
-
-        Returns
-        -------
-        dict[str, Any]
-            The configuration represented as a dictionary.
-        """
-        return to_builtin(self)
-
-    def to_yaml(self, **kwargs) -> str:
-        """
-        Serialize the Config object to a YAML-formatted string.
-
-        Parameters
-        ----------
-        **kwargs : Any
-            Additional keyword arguments to pass to `yaml.dump`.
-
-        Returns
-        -------
-        str
-            YAML-formatted string representing the configuration.
-        """
-        return yaml.dump(
-            self.to_dict(),
-            default_flow_style=False,
-            indent=2,
-            sort_keys=False,
-            **kwargs
-        )
-
-    def dump_yaml(self, stream: IO[Any], **kwargs) -> None:
-        """
-        Write the Config object as YAML to a file-like stream.
-
-        Parameters
-        ----------
-        stream : IO[Any]
-            The file-like object to write the YAML data to.
-        **kwargs : Any
-            Additional keyword arguments to pass to `yaml.dump`.
-        """
-        yaml.dump(
-            self.to_dict(),
-            stream,
-            default_flow_style=False,
-            indent=2,
-            sort_keys=False,
-            **kwargs
-        )
-
-    def to_json(self, **kwargs) -> str:
-        """
-        Serialize the Config object to a JSON-formatted string.
-
-        Parameters
-        ----------
-        **kwargs : Any
-            Additional keyword arguments to pass to `json.dumps`.
-
-        Returns
-        -------
-        str
-            JSON-formatted string representing the configuration.
-        """
-        return json.dumps(self.to_dict(), **kwargs)
-
-    def dump_json(self, stream: IO[Any], **kwargs) -> None:
-        """
-        Write the Config object as JSON to a file-like stream.
-
-        Parameters
-        ----------
-        stream : IO[Any]
-            The file-like object to write the JSON data to.
-        **kwargs : Any
-            Additional keyword arguments to pass to `json.dump`.
-        """
-        json.dump(self.to_dict(), stream, **kwargs)
 
 
 def _populate_config(
@@ -444,4 +451,3 @@ def load_config_from_content(stream: Union[str, bytes, IO[Any]]) -> Config:
     _populate_config(data, config=config)
 
     return config
-
