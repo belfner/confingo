@@ -15,6 +15,10 @@ from confingo._core import (
     from_dict,
     to_dict,
 )
+from confingo._file import (
+    from_file,
+    to_file,
+)
 from confingo._json import (
     dumps_json,
     load_json,
@@ -65,7 +69,9 @@ __all__ = [
     "config_hash",
     "dumps_json",
     "from_dict",
+    "from_file",
     "load_json",
     "save_json",
     "to_dict",
+    "to_file",
 ]

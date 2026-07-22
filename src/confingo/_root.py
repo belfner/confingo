@@ -1,10 +1,11 @@
 """Base class exposing the marshal / unmarshal helpers as methods.
 
-A config dataclass that subclasses ``ConfigRoot`` gains ``from_dict`` /
-``load_json`` as classmethods and ``to_dict`` / ``dumps_json`` / ``save_json`` /
-``config_hash`` as instance methods, each delegating to the matching free
-function. Only the root config needs to subclass it; nested sections stay plain
-dataclasses and are walked by introspection as before.
+A config dataclass that subclasses ``ConfigRoot`` gains the free-function
+helpers as methods: the ``from_*`` / ``load_*`` builders as classmethods and the
+``to_*`` / ``dumps_*`` / ``save_*`` / ``config_hash`` operations as instance
+methods, each delegating to the matching free function. Only the root config
+needs to subclass it; nested sections stay plain dataclasses and are walked by
+introspection as before.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from typing import (
 from confingo._core import config_hash as _config_hash
 from confingo._core import from_dict as _from_dict
 from confingo._core import to_dict as _to_dict
+from confingo._file import from_file as _from_file
+from confingo._file import to_file as _to_file
 from confingo._json import dumps_json as _dumps_json
 from confingo._json import load_json as _load_json
 from confingo._json import save_json as _save_json
@@ -92,6 +95,25 @@ class ConfigRoot:
 
         return _load_yaml(cls, path)
 
+    @classmethod
+    def from_file(cls, path: str | Path) -> Self:
+        """Load a config file into an instance, choosing the loader by extension.
+
+        A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML,
+        which requires the ``yaml`` extra.
+
+        Args:
+            path: Path to the config file.
+
+        Returns:
+            The constructed config object, typed as the calling subclass.
+
+        Raises:
+            ConfigError: When the extension names no supported format, or the file
+              is unreadable, malformed, non-mapping, or fails validation.
+        """
+        return _from_file(cls, path)
+
     def to_dict(self) -> Any:
         """Convert this config into plain JSON-safe Python data.
 
@@ -155,6 +177,24 @@ class ConfigRoot:
         from confingo._yaml import save_yaml as _save_yaml  # noqa: PLC0415
 
         return _save_yaml(self, path, indent=indent, sort_keys=sort_keys)
+
+    def to_file(self, path: str | Path, *, indent: int = 2) -> Path:
+        """Write this config to a file, choosing the writer by extension.
+
+        A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML,
+        which requires the ``yaml`` extra.
+
+        Args:
+            path: Destination file path. Parent directories are created as needed.
+            indent: Number of spaces per indentation level, by default 2.
+
+        Returns:
+            The path written.
+
+        Raises:
+            ConfigError: When the extension names no supported format.
+        """
+        return _to_file(self, path, indent=indent)
 
     def config_hash(self, *, length: int = 12) -> str:
         """Fingerprint this config with a stable digest over its canonical JSON form.

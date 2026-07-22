@@ -14,6 +14,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   through the same JSON-compatible data model as the JSON loaders, so a config
   round-trips across both formats. PyYAML is imported lazily on first use, so
   importing confingo needs only the standard library.
+- Extension-dispatching file IO: `from_file` / `to_file` (and matching
+  `ConfigRoot.from_file` / `to_file` methods) select JSON or YAML from the path
+  extension (`.json`, `.yaml`, `.yml`), raising `ConfigError` when the extension
+  names no supported format.
 
 ## [0.1.0] - 2026-07-22
 

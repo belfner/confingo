@@ -114,6 +114,20 @@ save_yaml(config, "config.yaml")
 A `ConfigRoot` subclass gains the matching `Config.load_yaml(path)` and
 `config.save_yaml(path)` methods.
 
+To let the file extension pick the format, use `from_file` / `to_file`. They
+route `.json` to the JSON functions and `.yaml` / `.yml` to the YAML functions,
+and raise `ConfigError` when the extension names no supported format:
+
+```python
+from confingo import from_file, to_file
+
+config = from_file(TrainingConfig, "config.yaml")
+to_file(config, "config.json")
+```
+
+A `ConfigRoot` subclass carries these as `Config.from_file(path)` and
+`config.to_file(path)`.
+
 ## What makes it more than "just load a file"
 
 The value is in four cross-cutting guarantees:
