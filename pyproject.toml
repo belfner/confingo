@@ -1,0 +1,118 @@
+[project]
+name = "confingo"
+version = "0.1.0"
+description = "A dataclass-driven configuration toolkit with typed coercion, collect-all validation, and stable hashing."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "belfner", email = "belfner@belfner.com" }
+]
+keywords = ["configuration", "config", "dataclass", "dataclasses", "validation", "json", "serialization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/belfner/confingo"
+Repository = "https://github.com/belfner/confingo"
+Issues = "https://github.com/belfner/confingo/issues"
+
+[build-system]
+requires = ["uv_build>=0.9.4,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.1",
+    "pyrefly>=1.1.1",
+    "pytest>=9.1.1",
+    "ruff==0.15.22",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "F", # Pyflakes — undefined names, unused imports, real bugs
+    "E", # pycodestyle errors — see note below about whitespace rules
+    "W", # pycodestyle warnings — W605 catches invalid escape sequences
+    "UP", # pyupgrade — modernize syntax to your target-version
+    "B", # flake8-bugbear — mutable defaults, loop-closure bugs, bad except
+    "SIM", # flake8-simplify — collapsible ifs, redundant booleans, dict.get
+    "C4", # flake8-comprehensions — unnecessary generators, casts, literals
+    "RUF", # Ruff-specific — RUF100 stale noqa, mutable class defaults
+    "PIE", # flake8-pie — dead pass, duplicate class fields, needless spread
+    "RET", # flake8-return — return-statement cleanup
+    "TC", # flake8-type-checking — move typing-only imports into TYPE_CHECKING
+    "PTH", # flake8-use-pathlib — os.path → pathlib
+    "FURB", # refurb — idiomatic rewrites beyond what UP catches
+    "PL", # Pylint (PLC/PLE/PLR/PLW) — broad correctness; thresholds ignored below
+    "DTZ", # flake8-datetimez — naive datetimes and tz-less constructor calls
+    "LOG", # flake8-logging — getLogger misuse, .exception() outside handlers
+    "G", # flake8-logging-format — f-strings/% in log calls (eager formatting)
+    "PERF", # Perflint — manual loops that should be comprehensions
+    "FLY", # flynt — static str.join() → f-string
+    "T10", # flake8-debugger — stray breakpoint() / pdb.set_trace()
+    "PGH", # pygrep-hooks — blanket noqa, bare type:ignore, invalid mock access
+    "PYI", # flake8-pyi — .pyi stub conventions (inert if you ship no stubs)
+    "YTT", # flake8-2020 — brittle sys.version string checks
+    "PT", # flake8-pytest-style — fixture and parametrize conventions
+    "TRY", # tryceratops — exception-handling antipatterns
+    "EXE", # flake8-executable — shebang vs. file-permission mismatches
+    "FA", # flake8-future-annotations — enforce `from __future__ import annotations`
+]
+
+ignore = [
+    "RET504", # unnecessary assignment before return
+    "TRY003", # avoid long exception messages
+    "PLR2004",
+    "PLR0911",
+    "PLR0912",
+    "PLR0913"
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "S101"]
+"__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyrefly]
+search-path = ["src", "."]
+preset = "strict"
+
+# tests/schemas.py declares bare containers (`tuple`, `list`, `set`, `dict`) as
+# fixtures that exercise the engine's bare-container coercion path, so the strict
+# implicit-any-type-argument check is relaxed for that file alone.
+[[tool.pyrefly.sub-config]]
+matches = "tests/schemas.py"
+
+[tool.pyrefly.sub-config.errors]
+implicit-any-type-argument = false

@@ -1,0 +1,67 @@
+# Pre-commit hooks for the ML team template repo
+# See https://pre-commit.com for more information
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files (WARNING: this will modify all files in repo destructivly with no easy to
+#   revert if there are other uncommited changes)
+
+
+repos:
+  # General file cleanup and validation
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: [ '--maxkb=1000' ]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [ '--fix=lf' ]
+      - id: detect-private-key
+
+  # Python-specific checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-ast
+      - id: check-builtin-literals
+      - id: debug-statements
+
+  # Ruff - Fast Python linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.22
+    hooks:
+      # Run the linter
+      - id: ruff
+        args: [ --fix ]
+      # Run the formatter
+      - id: ruff-format
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: [ "--profile", "pycharm", "--tc", "--line-length", "120","--treat-all-comment-as-code" ]
+
+# Configuration for specific checks
+default_language_version:
+  python: python3.10
+
+# Fail fast: stop running hooks after first failure
+fail_fast: false
+
+# Exclude patterns
+exclude: |
+  (?x)^(
+      \.git/|
+      \.venv/|
+      __pycache__/|
+      \.pytest_cache/|
+      \.mypy_cache/|
+      \.ruff_cache/|
+      htmlcov/|
+      uv\.lock
+  )
