@@ -8,20 +8,25 @@ object back to JSON text.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
     TypeVar,
 )
 
 from confingo._core import (
     ConfigError,
-    _typename,
-    from_dict,
     to_dict,
 )
+from confingo._fileio import (
+    atomic_write_text,
+    build_from_document,
+    read_source_text,
+)
 
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 T = TypeVar("T")
 
@@ -58,12 +63,7 @@ def save_json(config: Any, path: str | Path, *, indent: int = 2) -> Path:
     Returns:
         The path written.
     """
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f"{destination.name}.tmp")
-    temporary.write_text(dumps_json(config, indent=indent), encoding="utf-8")
-    temporary.replace(destination)
-    return destination
+    return atomic_write_text(path, dumps_json(config, indent=indent))
 
 
 def load_json(config_cls: type[T], path: str | Path) -> T:
@@ -81,17 +81,9 @@ def load_json(config_cls: type[T], path: str | Path) -> T:
           non-object document, or fails validation. Validation failures list every
           issue found.
     """
-    source = Path(path)
-    try:
-        text = source.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ConfigError.single(str(exc), context=f"config file {source}") from exc
+    source, text = read_source_text(path)
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ConfigError.single(str(exc), context=f"config file {source}") from exc
-    if data is None:
-        return from_dict(config_cls, {}, context=f"config file {source}")
-    if not isinstance(data, Mapping):
-        raise ConfigError.single(f"expected a mapping document, got {_typename(data)}", context=f"config file {source}")
-    return from_dict(config_cls, data, context=f"config file {source}")
+    return build_from_document(config_cls, data, source)

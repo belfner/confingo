@@ -93,6 +93,27 @@ Only the root subclasses ``ConfigRoot``; nested sections stay plain dataclasses.
 Giving a section a `field(default_factory=...)` default instead (as in the first
 example) is fully supported and lets a partial file omit that whole section.
 
+## YAML
+
+Install the optional extra to read and write YAML alongside JSON:
+
+```bash
+pip install confingo[yaml]
+```
+
+The YAML helpers mirror the JSON ones and move through the same data model of
+mappings, sequences, and scalars, so a config round-trips across both formats:
+
+```python
+from confingo import load_yaml, save_yaml
+
+config = load_yaml(TrainingConfig, "config.yaml")
+save_yaml(config, "config.yaml")
+```
+
+A `ConfigRoot` subclass gains the matching `Config.load_yaml(path)` and
+`config.save_yaml(path)` methods.
+
 ## What makes it more than "just load a file"
 
 The value is in four cross-cutting guarantees:
@@ -121,9 +142,9 @@ The value is in four cross-cutting guarantees:
 ## Scope
 
 - The core toolkit depends only on the Python standard library.
-- **JSON** is the config file format supported first.
-- **YAML** support arrives later as an optional extra, pulling in PyYAML only
-  when installed.
+- **JSON** is the built-in config file format.
+- **YAML** is available through the `yaml` extra (`pip install confingo[yaml]`),
+  which pulls in PyYAML and moves through the same JSON-compatible data model.
 - Targets Python 3.10 and newer.
 
 ## In one line

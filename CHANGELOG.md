@@ -4,6 +4,17 @@ All notable changes to confingo are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-22
+
+### Added
+
+- Optional YAML file IO behind the `yaml` extra (`pip install confingo[yaml]`):
+  `load_yaml`, `save_yaml` (atomic write), and `dumps_yaml`, plus matching
+  `ConfigRoot.load_yaml` / `save_yaml` / `dumps_yaml` methods. The helpers move
+  through the same JSON-compatible data model as the JSON loaders, so a config
+  round-trips across both formats. PyYAML is imported lazily on first use, so
+  importing confingo needs only the standard library.
+
 ## [0.1.0] - 2026-07-22
 
 ### Added
@@ -27,4 +38,5 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `py.typed` marker; the package ships with inline type annotations and runs on
   the Python standard library alone, targeting Python 3.10 and newer.
 
+[0.2.0]: https://github.com/belfner/confingo/releases/tag/v0.2.0
 [0.1.0]: https://github.com/belfner/confingo/releases/tag/v0.1.0

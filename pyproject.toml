@@ -1,6 +1,6 @@
 [project]
 name = "confingo"
-version = "0.1.0"
+version = "0.2.0"
 description = "A dataclass-driven configuration toolkit with typed coercion, collect-all validation, and stable hashing."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,11 @@ Homepage = "https://github.com/belfner/confingo"
 Repository = "https://github.com/belfner/confingo"
 Issues = "https://github.com/belfner/confingo/issues"
 
+[project.optional-dependencies]
+yaml = [
+    "pyyaml>=6.0",
+]
+
 [build-system]
 requires = ["uv_build>=0.9.4,<0.10.0"]
 build-backend = "uv_build"
@@ -38,7 +43,9 @@ dev = [
     "pre-commit>=4.6.1",
     "pyrefly>=1.1.1",
     "pytest>=9.1.1",
+    "pyyaml>=6.0",
     "ruff==0.15.22",
+    "types-pyyaml>=6.0.12.20260518",
 ]
 
 [tool.ruff]

@@ -72,6 +72,26 @@ class ConfigRoot:
         """
         return _load_json(cls, path)
 
+    @classmethod
+    def load_yaml(cls, path: str | Path) -> Self:
+        """Load a YAML file into an instance.
+
+        Requires the ``yaml`` extra (``pip install confingo[yaml]``).
+
+        Args:
+            path: Path to the YAML file.
+
+        Returns:
+            The constructed config object, typed as the calling subclass.
+
+        Raises:
+            ConfigError: When the file is unreadable, holds invalid YAML, holds a
+              non-mapping document, or fails validation.
+        """
+        from confingo._yaml import load_yaml as _load_yaml  # noqa: PLC0415
+
+        return _load_yaml(cls, path)
+
     def to_dict(self) -> Any:
         """Convert this config into plain JSON-safe Python data.
 
@@ -102,6 +122,39 @@ class ConfigRoot:
             The path written.
         """
         return _save_json(self, path, indent=indent)
+
+    def dumps_yaml(self, *, indent: int = 2, sort_keys: bool = False) -> str:
+        """Render this config as a YAML document.
+
+        Requires the ``yaml`` extra (``pip install confingo[yaml]``).
+
+        Args:
+            indent: Number of spaces per indentation level, by default 2.
+            sort_keys: Whether to sort mapping keys, by default False.
+
+        Returns:
+            The YAML document, ending with a newline.
+        """
+        from confingo._yaml import dumps_yaml as _dumps_yaml  # noqa: PLC0415
+
+        return _dumps_yaml(self, indent=indent, sort_keys=sort_keys)
+
+    def save_yaml(self, path: str | Path, *, indent: int = 2, sort_keys: bool = False) -> Path:
+        """Write this config to a YAML file, replacing the target atomically.
+
+        Requires the ``yaml`` extra (``pip install confingo[yaml]``).
+
+        Args:
+            path: Destination file path. Parent directories are created as needed.
+            indent: Number of spaces per indentation level, by default 2.
+            sort_keys: Whether to sort mapping keys, by default False.
+
+        Returns:
+            The path written.
+        """
+        from confingo._yaml import save_yaml as _save_yaml  # noqa: PLC0415
+
+        return _save_yaml(self, path, indent=indent, sort_keys=sort_keys)
 
     def config_hash(self, *, length: int = 12) -> str:
         """Fingerprint this config with a stable digest over its canonical JSON form.
