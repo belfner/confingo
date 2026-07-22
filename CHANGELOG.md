@@ -18,6 +18,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ConfigRoot.from_file` / `to_file` methods) select JSON or YAML from the path
   extension (`.json`, `.yaml`, `.yml`), raising `ConfigError` when the extension
   names no supported format.
+- `datetime`, `date`, and `time` fields: ISO 8601 strings and native
+  `datetime` / `date` / `time` objects load into the annotated type, and
+  `to_dict` renders them back as ISO 8601 strings.
+
+### Changed
+
+- The supported field-type set is an explicit boundary. A leaf type outside the
+  documented set is reported as a `ConfigError` on load; `to_dict` raises a
+  `ConfigError` for a value it cannot render as plain data; and a `TypedDict`
+  section is reported as a `ConfigError`.
 
 ## [0.1.0] - 2026-07-22
 

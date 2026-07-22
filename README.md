@@ -140,9 +140,10 @@ The value is in four cross-cutting guarantees:
 
 - **Type coercion toward the annotation.** Config data is loosely typed, so
   values are nudged into shape: an integral float lands on an `int` field,
-  strings resolve to `Enum` members and `Path` objects, and sequences become the
-  exact container the annotation asks for (`tuple`, `set`, and friends). It stays
-  strict where it matters, so a `bool` stays off an `int` field.
+  strings resolve to `Enum` members, `Path` objects, and `datetime` / `date` /
+  `time` values, and sequences become the exact container the annotation asks for
+  (`tuple`, `set`, and friends). It stays strict where it matters, so a `bool`
+  stays off an `int` field.
 
 - **Save reflects the in-memory object.** Saving serializes the resolved config
   object as the caller holds it, so any programmatic change made after loading is
@@ -160,6 +161,22 @@ The value is in four cross-cutting guarantees:
 - **YAML** is available through the `yaml` extra (`pip install confingo[yaml]`),
   which pulls in PyYAML and moves through the same JSON-compatible data model.
 - Targets Python 3.10 and newer.
+
+## Supported field types
+
+confingo covers a deliberate, fixed set of types:
+
+- **Leaf types:** `bool`, `int`, `float`, `str`, `Path`, `datetime` / `date` /
+  `time`, `Enum` subclasses, `Literal[...]`, `Any`, and `None`.
+- **Composite types:** nested dataclasses; `list`, `tuple`, `set`, `frozenset`,
+  and `Sequence` of a supported type; `dict[str, X]` and `Mapping` with `str`
+  keys; and unions of supported types.
+
+Values coerce toward the annotation on the way in (ISO 8601 strings become
+`datetime` / `date` / `time`, integral floats land on `int` fields, strings
+resolve to `Enum` members and `Path` objects) and serialize back to plain data on
+the way out. A field annotated with a type outside this set is reported as a
+`ConfigError`.
 
 ## In one line
 

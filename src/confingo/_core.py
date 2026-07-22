@@ -9,6 +9,14 @@ Runs on Python 3.10 and newer. Generics use ``TypeVar`` and ``Generic`` so the
 module stays importable on 3.10 and 3.11, which reach end of life after the
 PEP 695 syntax it would otherwise use.
 
+Supported field types:
+Leaf types are ``bool``, ``int``, ``float``, ``str``, ``Path``, ``datetime`` /
+``date`` / ``time``, ``Enum`` subclasses, ``Literal[...]``, ``Any``, and ``None``.
+Composite types are nested dataclasses, ``list`` / ``tuple`` / ``set`` /
+``frozenset`` / ``Sequence`` of a supported type, ``dict[str, X]`` / ``Mapping``
+with ``str`` keys, and unions of supported types. A field annotated with a type
+outside this set is reported as an issue.
+
 Resolution order:
 Values are layered lowest to highest precedence:
 
@@ -34,6 +42,7 @@ a rerun used the same settings.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import types
@@ -298,7 +307,9 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
     coerced toward the annotated type: sequences become the annotated container,
     strings and values resolve to ``Enum`` members, ``str`` becomes ``Path``,
     integral floats become ``int`` so forms like ``1e6`` land on ``int`` fields,
-    and ``Literal`` membership is checked. Dict fields carry ``str`` keys.
+    ISO 8601 strings resolve to ``datetime`` / ``date`` / ``time``, and ``Literal``
+    membership is checked. Dict fields carry ``str`` keys. A field whose annotation
+    names a type outside the supported set is reported as an issue.
 
     Args:
         config_cls: The root dataclass to build.
@@ -601,9 +612,41 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
             return Path(value)
         return _reject(collector, path, f"expected a path string, got {_typename(value)}")
 
-    if isinstance(value, hint):
-        return value
-    return _reject(collector, path, f"expected {hint.__name__}, got {_typename(value)}")
+    if issubclass(hint, dt.datetime):
+        if isinstance(value, dt.datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return dt.datetime.fromisoformat(value)
+            except ValueError:
+                return _reject(collector, path, f"expected an ISO 8601 datetime string, got {value!r}")
+        return _reject(collector, path, f"expected an ISO 8601 datetime string, got {_typename(value)}")
+
+    if issubclass(hint, dt.date):
+        # datetime is a subclass of date and is handled above, so a datetime on a
+        # plain date field is a type mismatch rather than a silent truncation.
+        if isinstance(value, dt.datetime):
+            return _reject(collector, path, f"expected a date, got {_typename(value)}")
+        if isinstance(value, dt.date):
+            return value
+        if isinstance(value, str):
+            try:
+                return dt.date.fromisoformat(value)
+            except ValueError:
+                return _reject(collector, path, f"expected an ISO 8601 date string, got {value!r}")
+        return _reject(collector, path, f"expected an ISO 8601 date string, got {_typename(value)}")
+
+    if issubclass(hint, dt.time):
+        if isinstance(value, dt.time):
+            return value
+        if isinstance(value, str):
+            try:
+                return dt.time.fromisoformat(value)
+            except ValueError:
+                return _reject(collector, path, f"expected an ISO 8601 time string, got {value!r}")
+        return _reject(collector, path, f"expected an ISO 8601 time string, got {_typename(value)}")
+
+    return _reject(collector, path, f"unsupported field type {hint.__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -615,10 +658,10 @@ def to_dict(value: Any) -> Any:
     """Convert a config object into plain JSON-safe Python data.
 
     Dataclasses become dicts in field-declaration order, ``Enum`` members become
-    their values, ``Path`` becomes ``str``, and tuples, sets, and frozensets
-    become lists. Mapping keys pass through these same rules. Sets are sorted
-    where their elements are mutually orderable so the output stays stable across
-    runs.
+    their values, ``Path`` and ``datetime`` / ``date`` / ``time`` become strings,
+    and tuples, sets, and frozensets become lists. Mapping keys pass through these
+    same rules. Sets are sorted where their elements are mutually orderable so the
+    output stays stable across runs.
 
     The result round-trips: ``from_dict(cls, to_dict(config)) == config`` holds
     for every field whose annotation names a type, including bare ``tuple``,
@@ -632,6 +675,10 @@ def to_dict(value: Any) -> Any:
 
     Returns:
         The converted plain-data structure.
+
+    Raises:
+        ConfigError: When a value's type falls outside the supported set and has
+          no plain-data form.
     """
     if is_dataclass(value) and not isinstance(value, type):
         return {field.name: to_dict(getattr(value, field.name)) for field in fields(value)}
@@ -639,6 +686,9 @@ def to_dict(value: Any) -> Any:
         return to_dict(value.value)
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, (dt.date, dt.time)):
+        # Covers date, datetime (itself a date subclass), and time.
+        return value.isoformat()
     if isinstance(value, Mapping):
         # Convert keys through the same rules; JSON carries string keys natively.
         return {to_dict(key): to_dict(item) for key, item in value.items()}
@@ -652,7 +702,9 @@ def to_dict(value: Any) -> Any:
             return items
     if isinstance(value, (list, tuple)):
         return [to_dict(item) for item in value]
-    return value
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise ConfigError.single(f"cannot serialize value of type {_typename(value)}", context="config")
 
 
 def config_hash(config: Any, *, length: int = 12) -> str:
