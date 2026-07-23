@@ -8,6 +8,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Python 3.11 is the minimum supported version.
 - Dataclass sections instantiate implicitly. A dataclass-typed field with no
   default builds from an empty mapping when the input omits it, recursively
   through nested sections, so a required value inside an omitted section is

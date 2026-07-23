@@ -12,7 +12,7 @@ pip install confingo          # core, stdlib-only
 pip install "confingo[yaml]"  # adds YAML support
 ```
 
-Runs on Python 3.10 and newer.
+Runs on Python 3.11 and newer.
 
 
 ## Quick example

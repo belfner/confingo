@@ -5,9 +5,9 @@ schema, the type validator, and the default values. ``from_dict`` builds a
 dataclass tree from a nested mapping, coercing each value toward its annotated
 type; ``to_dict`` renders a built config back into plain, serializable data.
 
-Runs on Python 3.10 and newer. Generics use ``TypeVar`` and ``Generic`` so the
-module stays importable on 3.10 and 3.11, which reach end of life after the
-PEP 695 syntax it would otherwise use.
+Runs on Python 3.11 and newer. Generics use ``TypeVar`` and ``Generic`` so the
+module stays importable on 3.11, which reaches end of life after the PEP 695
+syntax it would otherwise use.
 
 Supported field types:
 Leaf types are ``bool``, ``int``, ``float``, ``str``, ``Path``, ``datetime`` /

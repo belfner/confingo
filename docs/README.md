@@ -55,4 +55,4 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 
 ## Compatibility
 
-Python 3.10+. The core imports only the standard library; YAML support arrives with `pip install "confingo[yaml]"`.
+Python 3.11+. The core imports only the standard library; YAML support arrives with `pip install "confingo[yaml]"`.

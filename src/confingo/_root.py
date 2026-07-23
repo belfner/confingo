@@ -28,8 +28,7 @@ from confingo._json import save_json as _save_json
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
-
-    from typing_extensions import Self
+    from typing import Self
 
 
 class ConfigRoot:

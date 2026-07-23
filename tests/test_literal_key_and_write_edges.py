@@ -10,8 +10,8 @@ import os
 import stat
 from dataclasses import dataclass
 from enum import (
-    Enum,
     IntEnum,
+    StrEnum,
 )
 from typing import (  # noqa: UP035  (Tuple used to test the legacy alias)
     TYPE_CHECKING,
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 # --- enum-backed Literal arguments are rejected as non-primitive ----------
 
 
-class StrCode(str, Enum):
+class StrCode(StrEnum):
     A = "a"
 
 
