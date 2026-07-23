@@ -26,8 +26,10 @@ Values are layered lowest to highest precedence:
 2. the mapping passed to ``from_dict`` (typically parsed from a config file).
 
 A field absent from the mapping falls back to its declared default, used as the
-author wrote it; defaults are trusted rather than re-coerced. A field with no
-default is required.
+author wrote it; defaults are trusted rather than re-coerced. A dataclass-typed
+field with no default builds implicitly from an empty mapping, recursively, so
+its own required values are reported at their nested dotted paths. Every other
+field with no default is required.
 
 Validation:
 ``from_dict`` walks the whole dataclass tree before raising, so one call reports
@@ -452,6 +454,14 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
     membership is checked. Dict fields carry ``str`` keys. A field whose annotation
     names a type outside the supported set is reported as an issue.
 
+    An absent dataclass section builds implicitly from an empty mapping
+    (recursively), so the section's own required leaves are reported at their
+    nested dotted paths. Every other field without a default is required when
+    absent, container fields included, which keeps a forgotten container distinct
+    from an intentionally empty one authored as
+    ``field(default_factory=list)``. Explicit defaults and factories take
+    precedence and are used as authored.
+
     Args:
         config_cls: The root dataclass to build.
         data: Nested mapping of config values, typically parsed from a config file.
@@ -476,7 +486,13 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
     return typing.cast("T", instance)
 
 
-def _build(config_cls: type[Any], data: Any, path: str, collector: _IssueCollector) -> Any:
+def _build(
+    config_cls: type[Any],
+    data: Any,
+    path: str,
+    collector: _IssueCollector,
+    implicit_chain: tuple[type[Any], ...] = (),
+) -> Any:
     """Construct one dataclass node, recording issues rather than raising.
 
     Args:
@@ -484,6 +500,8 @@ def _build(config_cls: type[Any], data: Any, path: str, collector: _IssueCollect
         data: The mapping of values for this node.
         path: Dotted path of this node, empty at the root.
         collector: Destination for any issues found.
+        implicit_chain: Dataclass types currently being built implicitly on this
+          branch, used to terminate self-referential schemas, by default ``()``.
 
     Returns:
         The constructed instance, or the ``_UNSET`` sentinel when this node failed
@@ -511,6 +529,21 @@ def _build(config_cls: type[Any], data: Any, path: str, collector: _IssueCollect
         field_path = _join(path, field.name)
         if field.name not in data:
             if field.default is MISSING and field.default_factory is MISSING:
+                hint = hints[field.name]
+                if _is_dataclass_type(hint):
+                    # An absent dataclass section builds implicitly from an empty
+                    # mapping, so its own required leaves surface at their nested
+                    # paths. The chain terminates self-referential schemas.
+                    if hint in implicit_chain:
+                        collector.add(field_path, "missing required value")
+                        node_failed = True
+                        continue
+                    built = _build(hint, {}, field_path, collector, (*implicit_chain, hint))
+                    if built is _UNSET:
+                        node_failed = True
+                        continue
+                    kwargs[field.name] = built
+                    continue
                 collector.add(field_path, "missing required value")
                 node_failed = True
             continue

@@ -4,6 +4,21 @@ All notable changes to confingo are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Dataclass sections instantiate implicitly. A dataclass-typed field with no
+  default builds from an empty mapping when the input omits it, recursively
+  through nested sections, so a required value inside an omitted section is
+  reported at its nested dotted path (`optimizer.name: missing required value`).
+  Every other undefaulted field stays required when absent -- scalars, unions,
+  `Any`, and containers -- keeping a forgotten container distinct from an
+  intentionally empty one authored as `field(default_factory=list)`. A
+  self-referential section terminates with a missing-value issue at the point of
+  recursion. Explicit defaults and `default_factory` values take precedence and
+  are used as authored.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
