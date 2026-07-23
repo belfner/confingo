@@ -185,7 +185,12 @@ def inspect_annotation(hint: Any) -> AnnotationMatch:
 
 
 def _inspect_torch(torch: Any, metadata: tuple[Any, ...]) -> AnnotationMatch:
-    """Classify a ``torch.Tensor`` hint and its ``Annotated`` dtype metadata.
+    """Classify a ``torch.Tensor`` hint and its ``Annotated`` metadata.
+
+    A ``torch.dtype`` metadata object pins the concrete dtype, and a
+    fixed-arity all-``int`` tuple type such as ``tuple[int, int]`` encodes
+    exactly its arity as the tensor's dimensionality, matching the shape rule
+    of ``np.ndarray[tuple[int, int], ...]``. Unrelated metadata coexists.
 
     Args:
         torch: The loaded torch module.
@@ -195,16 +200,21 @@ def _inspect_torch(torch: Any, metadata: tuple[Any, ...]) -> AnnotationMatch:
         The classification for the tensor annotation.
     """
     dtype_meta = [item for item in metadata if isinstance(item, torch.dtype)]
-    if len(dtype_meta) == 0:
-        return AnnotationMatch(True, ArraySpec("torch", None, None, None, "Tensor"))
+    shape_meta = [item for item in metadata if _fixed_ndim(item) is not None]
     if len(dtype_meta) > 1:
         names = ", ".join(str(item) for item in dtype_meta)
         return AnnotationMatch(True, error=f"conflicting torch dtype metadata: {names}")
+    if len(shape_meta) > 1:
+        names = ", ".join(str(item) for item in shape_meta)
+        return AnnotationMatch(True, error=f"conflicting tensor shape metadata: {names}")
+    ndim = _fixed_ndim(shape_meta[0]) if len(shape_meta) == 1 else None
+    if len(dtype_meta) == 0:
+        return AnnotationMatch(True, ArraySpec("torch", None, None, ndim, "Tensor"))
     dtype = dtype_meta[0]
     if dtype not in _supported_torch_dtypes(torch):
         return AnnotationMatch(True, error=f"unsupported array dtype {_torch_dtype_name(dtype)}; {_SUPPORTED_MESSAGE}")
     display = f"Tensor[{_torch_dtype_name(dtype)}]"
-    return AnnotationMatch(True, ArraySpec("torch", dtype, None, None, display))
+    return AnnotationMatch(True, ArraySpec("torch", dtype, None, ndim, display))
 
 
 def _inspect_numpy_generic(np: Any, base: Any) -> AnnotationMatch:
@@ -1033,8 +1043,11 @@ def _coerce_native_torch(torch: Any, value: Any, spec: ArraySpec, path: str, iss
     if value.dtype.is_floating_point and not _report_nonfinite_torch(torch, value, path, issue):
         return FAILED
     if spec.dtype is None or value.dtype is spec.dtype:
-        return value
-    return _convert_torch(torch, value, spec.dtype, path, issue)
+        return _apply_ndim(value, spec, path, issue)
+    converted = _convert_torch(torch, value, spec.dtype, path, issue)
+    if converted is FAILED:
+        return FAILED
+    return _apply_ndim(converted, spec, path, issue)
 
 
 def _report_nonfinite_torch(torch: Any, value: Any, path: str, issue: IssueSink) -> bool:

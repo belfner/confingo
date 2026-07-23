@@ -22,7 +22,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `npt.NDArray[...]` with concrete dtypes or abstract families, shape-typed
   `np.ndarray[tuple[int, int], np.dtype[...]]` with dimensionality
   enforcement, bare `torch.Tensor` (rebuilt with value-stable pinned dtypes
-  bool / int64 / float64), and `Annotated[torch.Tensor, torch.dtype]`. Values
+  bool / int64 / float64), and `Annotated[torch.Tensor, torch.dtype]`, where a
+  fixed-arity shape tuple in the metadata
+  (`Annotated[torch.Tensor, torch.float32, tuple[int, int]]`) enforces
+  dimensionality exactly as the numpy shape spelling does. Values
   serialize as the validated `tolist()` form, detached and copied to the CPU
   for tensors; plain input validates leaf by leaf with indexed issue paths
   (`weights.2.0`), supplied arrays validate with vectorized masks, and every

@@ -107,6 +107,50 @@ def test_unrelated_metadata_coexists_with_torch_dtype():
     assert spec.dtype is torch.float32
 
 
+def test_tensor_shape_metadata_encodes_ndim():
+    both = spec_of(Annotated[torch.Tensor, torch.float32, tuple[int, int]])
+    assert both.dtype is torch.float32
+    assert both.ndim == 2
+    bare = spec_of(Annotated[torch.Tensor, tuple[int, int, int]])
+    assert bare.dtype is None
+    assert bare.ndim == 3
+    with_extras = spec_of(Annotated[torch.Tensor, "unit: kg", tuple[int, int], torch.int32])
+    assert with_extras.ndim == 2
+    assert with_extras.dtype is torch.int32
+
+
+def test_tensor_shape_metadata_without_a_claim_is_ignored():
+    assert spec_of(Annotated[torch.Tensor, torch.float32, tuple[int, ...]]).ndim is None
+    assert spec_of(Annotated[torch.Tensor, torch.float32, tuple[int, str]]).ndim is None
+
+
+def test_conflicting_tensor_shape_metadata_errors():
+    message = error_of(Annotated[torch.Tensor, tuple[int, int], tuple[int, int, int]])
+    assert "conflicting tensor shape metadata" in message
+
+
+def test_tensor_ndim_is_enforced(issues: Sink):
+    spec = spec_of(Annotated[torch.Tensor, torch.float32, tuple[int, int]])
+    built = _arrays.coerce_array([[1.0, 2.0]], spec, "w", sink(issues))
+    assert issues == []
+    assert built.shape == (1, 2)
+    assert _arrays.coerce_array([1.0, 2.0], spec, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w", "expected a 2-dimensional array, got 1 dimensions")]
+    issues.clear()
+    native = torch.zeros(2, 3, 4)
+    assert _arrays.coerce_array(native, spec, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w", "expected a 2-dimensional array, got 3 dimensions")]
+
+
+def test_tensor_zero_size_pads_to_the_annotated_ndim(issues: Sink):
+    spec = spec_of(Annotated[torch.Tensor, torch.float32, tuple[int, int]])
+    padded = _arrays.coerce_array([], spec, "w", sink(issues))
+    assert padded.shape == (0, 0)
+    native = _arrays.coerce_array(torch.zeros(0, dtype=torch.float32), spec, "w", sink(issues))
+    assert native.shape == (0, 0)
+    assert issues == []
+
+
 def test_annotated_numpy_metadata_is_transparent():
     spec = spec_of(Annotated[npt.NDArray[np.float32], "unit: kg"])
     assert spec.dtype == np.dtype(np.float32)

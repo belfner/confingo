@@ -306,6 +306,17 @@ def test_fixed_ndim_zero_size_round_trips_via_padding():
     assert to_dict(rebuilt) == plain
 
 
+def test_tensor_fixed_ndim_round_trips_through_from_dict():
+    cls = schema_for(Annotated[torch.Tensor, torch.float32, tuple[int, int]])
+    built = from_dict(cls, {"x": [[1.5, 2.5]]})
+    assert built.x.shape == (1, 2)
+    rebuilt = from_dict(cls, to_dict(built))
+    assert torch.equal(rebuilt.x, built.x)
+    with pytest.raises(ConfigError) as info:
+        from_dict(cls, {"x": [1.5, 2.5]})
+    assert any(i.message == "expected a 2-dimensional array, got 1 dimensions" for i in info.value.issues)
+
+
 def test_fixed_ndim_mismatch_reports_through_from_dict():
     cls = schema_for(np.ndarray[tuple[int, int], np.dtype[np.float64]])
     with pytest.raises(ConfigError) as info:

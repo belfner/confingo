@@ -131,6 +131,7 @@ The wire form is the array's validated `tolist()` result: a JSON scalar for a 0-
 | `np.ndarray[tuple[int, int], np.dtype[np.float64]]` | as the dtype rules | as above, and the fixed-arity shape tuple enforces exactly that dimensionality |
 | `torch.Tensor` | pinned: `bool` / `int64` / `float64` | values |
 | `Annotated[torch.Tensor, torch.float32]` (any supported `torch.dtype`, `bfloat16` included) | the annotated dtype | dtype + values |
+| `Annotated[torch.Tensor, torch.float32, tuple[int, int]]` | as the dtype rules | as above, and the fixed-arity shape tuple enforces exactly that dimensionality |
 
 Accepted input for an array field: a same-backend array or tensor, nested lists / tuples, or a single `bool` / `int` / `float` for a 0-d value. NumPy scalar leaves normalize to their exact Python equivalents. Strings, mappings, sets, and cross-backend objects are reported as type mismatches; a torch value headed into a numpy field converts explicitly at the call site via `tolist()`.
 
@@ -173,7 +174,7 @@ The accepted annotation set is explicit and closed:
 | Containers | `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `Mapping` (str keys for mappings), bare or parameterized |
 | Structure | dataclasses (all fields `init=True`), unions of accepted members, `Optional[T]`, `Any` |
 | Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
-| Wrappers | `Annotated[T, ...]`, treated as `T`; a `torch.dtype` in the metadata pins a tensor dtype |
+| Wrappers | `Annotated[T, ...]`, treated as `T`; on tensors, a `torch.dtype` in the metadata pins the dtype and a fixed-arity `tuple[int, ...]`-style type enforces dimensionality |
 
 Annotations outside this set produce a `ConfigError` during schema preflight, even when the offending field is omitted from the input and would have used its default. Rejected shapes include:
 
