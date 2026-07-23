@@ -1,9 +1,8 @@
-"""Tests for the ``@configclass`` decorator and the ``ConfigWarning`` advisory."""
+"""Tests for the ``@configclass`` decorator and canonical-equality injection."""
 
 from __future__ import annotations
 
 import dataclasses
-import warnings
 from dataclasses import (
     dataclass,
     field,
@@ -13,11 +12,11 @@ import pytest
 
 from confingo import (
     ConfigRoot,
-    ConfigWarning,
     configclass,
     from_dict,
     to_dict,
 )
+from confingo._configclass import _canonical_eq
 
 
 # --- schema fixtures (module level so annotations resolve) --------------------
@@ -159,21 +158,11 @@ def test_frozen_keeps_canonical_eq_and_identity_hash():
     assert Frozen.__hash__ is object.__hash__
 
 
-# --- ConfigWarning ------------------------------------------------------------
+# --- canonical-equality injection on plain dataclasses ------------------------
 
 
 @dataclass
-class PlainWarnOnce:
-    x: int = 0
-
-
-@dataclass
-class PlainFiltered:
-    x: int = 0
-
-
-@configclass
-class QuietRoot(ConfigRoot):
+class PlainInjected:
     x: int = 0
 
 
@@ -194,38 +183,84 @@ class PlainTwin:
     lr: float = 3e-4
 
 
-def test_unmarked_class_warns_exactly_once_across_repeated_loads():
-    with pytest.warns(ConfigWarning, match="PlainWarnOnce is a plain dataclass"):
-        from_dict(PlainWarnOnce, {})
-    with warnings.catch_warnings(record=True) as record:
-        warnings.simplefilter("always")
-        from_dict(PlainWarnOnce, {"x": 3})
-    assert [w for w in record if issubclass(w.category, ConfigWarning)] == []
+@dataclass
+class PlainUserEq:
+    x: int = 0
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, PlainUserEq)
+
+    __hash__ = object.__hash__
 
 
-def test_decorated_classes_stay_silent():
-    with warnings.catch_warnings(record=True) as record:
-        warnings.simplefilter("always")
-        from_dict(QuietRoot, {"x": 1})
-    assert [w for w in record if issubclass(w.category, ConfigWarning)] == []
+@dataclass(eq=False)
+class PlainEqFalse:
+    x: int = 0
 
 
-def test_unmarked_section_under_decorated_root_is_named():
-    with pytest.warns(ConfigWarning, match="PlainSection is a plain dataclass"):
-        from_dict(MixedRoot, {"section": {"y": 2}})
+@dataclass(frozen=True)
+class PlainFrozen:
+    x: int = 0
 
 
-def test_warning_filters_by_category():
-    assert issubclass(ConfigWarning, UserWarning)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        warnings.filterwarnings("ignore", category=ConfigWarning)
-        from_dict(PlainFiltered, {})
+@dataclass
+class PlainTupleField:
+    items: tuple[int, ...] = ()
+
+
+def test_plain_dataclass_gains_canonical_eq_at_first_schema_processing():
+    from_dict(PlainInjected, {})
+    assert PlainInjected.__dict__["__eq__"] is _canonical_eq
+    assert PlainInjected(x=1) == PlainInjected(x=1)
+    assert PlainInjected(x=1) != PlainInjected(x=2)
+
+
+def test_injection_restores_identity_hash():
+    from_dict(PlainInjected, {})
+    assert PlainInjected.__hash__ is object.__hash__
+    pair = {PlainInjected(), PlainInjected()}
+    assert len(pair) == 2
+
+
+def test_plain_section_under_decorated_root_is_injected():
+    built = from_dict(MixedRoot, {"section": {"y": 2}})
+    assert PlainSection.__dict__["__eq__"] is _canonical_eq
+    assert built.section == PlainSection(y=2)
+
+
+def test_plain_root_compares_across_loads():
+    assert from_dict(PlainTwin, {"name": "sgd"}) == from_dict(PlainTwin, {"name": "sgd"})
+    assert from_dict(PlainTwin, {"name": "sgd"}) != from_dict(PlainTwin, {"name": "adam"})
+
+
+def test_class_body_eq_on_a_plain_dataclass_is_kept():
+    user_eq = PlainUserEq.__dict__["__eq__"]
+    from_dict(PlainUserEq, {})
+    assert PlainUserEq.__dict__["__eq__"] is user_eq
+    assert PlainUserEq(x=1) == PlainUserEq(x=2)
+
+
+def test_eq_false_dataclass_gains_canonical_eq():
+    assert "__eq__" not in PlainEqFalse.__dict__
+    from_dict(PlainEqFalse, {})
+    assert PlainEqFalse.__dict__["__eq__"] is _canonical_eq
+    assert PlainEqFalse(x=1) == PlainEqFalse(x=1)
+
+
+def test_plain_frozen_gains_canonical_eq_and_keeps_generated_hash():
+    generated_hash = PlainFrozen.__dict__["__hash__"]
+    from_dict(PlainFrozen, {})
+    assert PlainFrozen.__dict__["__eq__"] is _canonical_eq
+    assert PlainFrozen.__dict__["__hash__"] is generated_hash
+    assert PlainFrozen(x=1) == PlainFrozen(x=1)
+
+
+def test_canonical_eq_compares_serialized_container_forms():
+    from_dict(PlainTupleField, {"items": [1, 2]})
+    assert PlainTupleField(items=(1, 2)) == PlainTupleField(items=[1, 2])  # type: ignore[arg-type]
 
 
 def test_plain_dataclass_loads_and_dumps_like_a_decorated_one():
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", ConfigWarning)
-        plain = from_dict(PlainTwin, {"name": "sgd"})
-        decorated = from_dict(Section, {"name": "sgd"})
+    plain = from_dict(PlainTwin, {"name": "sgd"})
+    decorated = from_dict(Section, {"name": "sgd"})
     assert to_dict(plain) == to_dict(decorated)

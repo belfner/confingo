@@ -29,7 +29,6 @@ import numpy.typing as npt  # noqa: E402
 from confingo import (  # noqa: E402
     ConfigError,
     ConfigRoot,
-    ConfigWarning,
     config_hash,
     configclass,
     from_dict,
@@ -356,7 +355,7 @@ def test_annotated_dataclass_sections_still_build_implicitly():
     assert from_dict(AnnotatedImplicit, {}).section.y == 3
 
 
-# --- ConfigWarning array variant ----------------------------------------------
+# --- canonical equality on array fields ---------------------------------------
 
 
 @dataclass
@@ -364,26 +363,49 @@ class PlainWithArray:
     weights: npt.NDArray[np.float32] = field(default_factory=lambda: np.zeros(1, dtype=np.float32))
 
 
-@dataclass
-class PlainWithOptionalArray:
-    weights: npt.NDArray[np.float32] | None = None
+@configclass
+class AnyHolder:
+    value: Any
 
 
-@dataclass
-class PlainWithArrayList:
-    weights: list[Annotated[torch.Tensor, torch.float32]] = field(default_factory=list)
+def test_plain_array_bearing_dataclass_compares_after_injection():
+    left = from_dict(PlainWithArray, {"weights": [[1.0, 2.0], [3.0, 4.0]]})
+    right = from_dict(PlainWithArray, {"weights": [[1.0, 2.0], [3.0, 4.0]]})
+    assert left == right
+    assert left != from_dict(PlainWithArray, {"weights": [[1.0, 2.0], [3.0, 9.0]]})
 
 
-def test_unmarked_array_bearing_class_gets_the_extended_warning():
-    with pytest.warns(ConfigWarning, match="generated __eq__ raises"):
-        from_dict(PlainWithArray, {})
+def test_tensor_and_ndarray_under_any_compare_by_value():
+    assert AnyHolder(value=np.array([1.0, 2.0])) == AnyHolder(value=torch.tensor([1.0, 2.0]))
+    assert AnyHolder(value=torch.tensor([[1, 2]])) == AnyHolder(value=np.array([[1, 2]]))
+    assert AnyHolder(value=np.array([1.0, 2.0])) != AnyHolder(value=torch.tensor([1.0, 2.5]))
+    assert AnyHolder(value=np.array([1.0, 2.0])) != AnyHolder(value=torch.tensor([[1.0, 2.0]]))
 
 
-def test_nested_array_annotations_also_get_the_extended_warning():
-    with pytest.warns(ConfigWarning, match="generated __eq__ raises"):
-        from_dict(PlainWithOptionalArray, {})
-    with pytest.warns(ConfigWarning, match="generated __eq__ raises"):
-        from_dict(PlainWithArrayList, {})
+def test_cross_kind_pairs_keep_exact_value_semantics():
+    huge = 2**63 - 1
+    assert AnyHolder(value=np.array([huge], dtype=np.int64)) != AnyHolder(value=np.array([float(huge)]))
+    assert AnyHolder(value=torch.tensor([3], dtype=torch.int64)) == AnyHolder(value=torch.tensor([3.0]))
+
+
+def test_zero_size_arrays_keep_dimension_collapse_equality():
+    assert AnyHolder(value=np.zeros((0, 3))) == AnyHolder(value=np.zeros((0, 4)))
+    assert AnyHolder(value=torch.zeros((0, 3))) == AnyHolder(value=torch.zeros((0, 5)))
+
+
+def test_grad_and_bfloat16_tensors_compare_by_value():
+    plain = torch.tensor([1.5, 2.5])
+    grad = torch.tensor([1.5, 2.5], requires_grad=True)
+    assert AnyHolder(value=plain) == AnyHolder(value=grad)
+    assert AnyHolder(value=torch.tensor([1.5], dtype=torch.bfloat16)) == AnyHolder(
+        value=np.array([1.5], dtype=np.float32)
+    )
+
+
+def test_nan_bearing_arrays_compare_unequal_outside_the_finite_domain():
+    left = PlainWithArray(weights=np.array([np.nan], dtype=np.float32))
+    right = PlainWithArray(weights=np.array([np.nan], dtype=np.float32))
+    assert left != right
 
 
 def test_array_mapping_keys_under_any_are_rejected_at_load():

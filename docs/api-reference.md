@@ -12,7 +12,6 @@ from confingo import (
     ConfigError,
     ConfigIssue,
     ConfigRoot,
-    ConfigWarning,
     config_hash,
     configclass,
     dumps_json,
@@ -35,11 +34,9 @@ Learn more: [configclass and equality](schema-design.md#configclass-and-equality
 
 ### `@configclass` / `@configclass(**dataclass_kwargs)`
 
-Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and the `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Installs canonical `__eq__` (`to_dict(self) == to_dict(other)`, `NotImplemented` for a different class) with `__hash__` kept as object identity. A user-defined `__eq__` in the class body is respected and carries standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
+Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and the `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Installs canonical `__eq__`: two configs are equal exactly when they serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A user-defined `__eq__` in the class body is respected and carries standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
 
-### `ConfigWarning`
-
-`UserWarning` subclass carrying confingo schema advisories. Emitted once per class per process when a schema dataclass lacks the `@configclass` marker; target it with `warnings.filterwarnings` to silence or escalate precisely.
+Plain `@dataclass` schema classes receive the same canonical `__eq__` (and identity hashing where the dataclass had disabled hashing) at their first schema processing, so sections and roots declared either way share one equality contract; a class-body `__eq__` on a plain schema class is likewise respected.
 
 
 ## Construction and conversion

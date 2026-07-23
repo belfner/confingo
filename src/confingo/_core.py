@@ -53,7 +53,6 @@ import json
 import math
 import types
 import typing
-import warnings
 from collections.abc import (
     Iterable,
     Mapping,
@@ -89,9 +88,6 @@ _HINT_CACHE: dict[type[Any], dict[str, Any]] = {}
 
 _CONFIGCLASS_MARKER = "__confingo_configclass__"
 """Class attribute stamped by ``@configclass``; checked on each class's own ``__dict__``."""
-
-_UNMARKED_WARNED: set[type[Any]] = set()
-"""Schema dataclasses already warned about lacking the ``@configclass`` marker."""
 
 _SCHEMA_CACHE: dict[type[Any], tuple[ConfigIssue, ...]] = {}
 """Per-dataclass cache of schema-validation issues, keyed by the root type."""
@@ -251,7 +247,9 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
         )
         raise ConfigError.single(message, context="config schema") from exc
     _HINT_CACHE[config_cls] = hints
-    _warn_unmarked_dataclass(config_cls, hints)
+    from confingo._configclass import _install_canonical_eq  # noqa: PLC0415
+
+    _install_canonical_eq(config_cls)
     return hints
 
 
@@ -267,54 +265,6 @@ def _strip_annotated(hint: Any) -> Any:
     while get_origin(hint) is Annotated:
         hint = get_args(hint)[0]
     return hint
-
-
-def _warn_unmarked_dataclass(config_cls: type[Any], hints: dict[str, Any]) -> None:
-    """Emit one ``ConfigWarning`` per plain-dataclass schema class per process.
-
-    Classes carrying the ``@configclass`` marker in their own ``__dict__`` pass
-    silently; each other schema dataclass warns exactly once, tracked by a
-    module-level seen-set on top of the per-class hint cache. When the class
-    holds array-annotated fields, the message additionally states that the
-    generated ``__eq__`` raises on comparison.
-
-    Args:
-        config_cls: The schema dataclass being processed for the first time.
-        hints: The class's resolved annotations.
-    """
-    if _CONFIGCLASS_MARKER in config_cls.__dict__ or config_cls in _UNMARKED_WARNED:
-        return
-    _UNMARKED_WARNED.add(config_cls)
-    from confingo._configclass import ConfigWarning  # noqa: PLC0415
-
-    message = f"{config_cls.__name__} is a plain dataclass; decorate it with @confingo.configclass"
-    if any(_hint_mentions_array(hint) for hint in hints.values()):
-        message += (
-            "; its generated __eq__ raises when instances holding multi-element array fields are compared, "
-            "while @confingo.configclass installs canonical equality"
-        )
-    warnings.warn(message, ConfigWarning, stacklevel=2)
-
-
-def _hint_mentions_array(hint: Any) -> bool:
-    """Report whether a hint names an array type anywhere in its structure.
-
-    Recurses through ``Annotated`` wrappers, unions, and container arguments,
-    so ``NDArray[...] | None`` and ``list[NDArray[...]]`` register as
-    array-bearing. Nested dataclasses stay out of the recursion; each warns
-    for itself.
-
-    Args:
-        hint: The resolved type hint to inspect.
-
-    Returns:
-        True when the hint or any of its type arguments is an array annotation
-        of a loaded backend.
-    """
-    if _arrays.inspect_annotation(hint).matched:
-        return True
-    hint = _strip_annotated(hint)
-    return any(_hint_mentions_array(arg) for arg in get_args(hint) if arg is not Ellipsis)
 
 
 def _is_dataclass_type(hint: Any) -> bool:

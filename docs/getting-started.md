@@ -16,7 +16,7 @@ The core library runs on Python 3.11+ and imports only the standard library. YAM
 
 ## Define the schema
 
-A confingo schema is a tree of dataclasses declared with `@configclass`, a drop-in wrapper around `@dataclass` that adds [config-aware equality](schema-design.md#configclass-and-equality). Each field's annotation is its validator and each default is its fallback value. The root class subclasses `ConfigRoot` to gain load/save/hash methods; nested sections carry the decorator alone.
+A confingo schema is a tree of dataclasses declared with `@configclass`, a wrapper around `@dataclass` that adds [config-aware equality](schema-design.md#configclass-and-equality). Each field's annotation is its validator and each default is its fallback value. The root class subclasses `ConfigRoot` to gain load/save/hash methods; nested sections carry the decorator alone.
 
 The sections (`model`, `data`, `optimizer`) carry bare annotations and build automatically; what the file must supply is decided by the fields inside them. Here the required values are the four fields declared with a bare annotation and no default:
 

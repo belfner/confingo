@@ -113,9 +113,6 @@ docstring-code-format = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The shared test schemas stay plain dataclasses to exercise the unmarked path;
-# the advisory is asserted explicitly in tests/test_configclass.py.
-filterwarnings = ["ignore::confingo.ConfigWarning"]
 
 [tool.pyrefly]
 search-path = ["src", "."]

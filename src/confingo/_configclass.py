@@ -1,14 +1,18 @@
-"""Public ``@configclass`` decorator installing canonical equality on config schemas.
+"""Public ``@configclass`` decorator and confingo's canonical equality engine.
 
 ``configclass`` is a thin wrapper around ``dataclasses.dataclass``: it forwards
-every dataclass keyword, generates the same fields and ``__init__``, and installs
-an ``__eq__`` that compares two configs by their canonical serialized forms
-(``to_dict(self) == to_dict(other)``). Canonical equality holds for every
-supported field type, including array-valued fields whose backend ``==`` returns
-elementwise results, so ``from_dict(cls, to_dict(config)) == config`` reads
-literally on a decorated tree. Each decorated class is stamped with a marker
-attribute that the engine checks during schema processing; a schema dataclass
-lacking the marker triggers one ``ConfigWarning`` per class per process.
+the layout keywords, generates the same fields and ``__init__``, and installs a
+canonical ``__eq__`` under which two configs are equal exactly when they
+serialize to the same plain form. Array and tensor fields compare through the
+backends' vectorized operations wherever that comparison is provably exact,
+dataclass sections and containers recurse structurally, and every remaining
+value pair compares by its ``to_dict`` form, so ``==`` runs at native speed on
+large arrays while ``from_dict(cls, to_dict(config)) == config`` reads
+literally on a decorated tree.
+
+The same canonical ``__eq__`` installs onto plain ``@dataclass`` schema classes
+at their first schema processing (see ``_install_canonical_eq``), so sections
+declared with either decorator share one equality contract.
 """
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ from __future__ import annotations
 from dataclasses import (
     dataclass,
     field,
+    fields,
+    is_dataclass,
 )
 from typing import (
     TYPE_CHECKING,
@@ -25,6 +31,7 @@ from typing import (
     overload,
 )
 
+from confingo import _arrays
 from confingo._core import (
     _CONFIGCLASS_MARKER,
     to_dict,
@@ -37,30 +44,99 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
+_MISSING = object()
+"""Sentinel distinguishing an absent class-dict entry from a stored None."""
 
-class ConfigWarning(UserWarning):
-    """Warning category for confingo schema advisories.
+_GENERATED_CODE_FILENAME = "<string>"
+"""Code filename ``dataclasses`` assigns to the methods it generates."""
 
-    Emitted once per class per process when a schema dataclass lacks the
-    ``@configclass`` marker. Target it with ``warnings.filterwarnings`` to
-    silence or escalate confingo advisories precisely.
+
+def _values_equal(a: Any, b: Any) -> bool:
+    """Compare two field values by their canonical serialized forms.
+
+    Array pairs of the loaded backends compare through
+    ``_arrays.native_equal`` where its vectorized path applies. Scalar
+    primitives compare directly, dataclass pairs of the same class and
+    list / tuple / dict pairs recurse structurally, and every other pair
+    compares by its ``to_dict`` form. Each branch agrees with plain-form
+    comparison on the supported value domain, so the walk is an evaluation
+    strategy for one equality relation.
+
+    Args:
+        a: The left-hand value.
+        b: The right-hand value.
+
+    Returns:
+        Whether the two values serialize to equal plain forms.
     """
+    verdict = _arrays.native_equal(a, b)
+    if verdict is not _arrays.NOT_COMPARABLE:
+        return bool(verdict)
+    if a is None or b is None:
+        return a is b
+    if isinstance(a, (bool, int, float, str)) and isinstance(b, (bool, int, float, str)):
+        return bool(a == b)
+    if is_dataclass(a) and not isinstance(a, type) and a.__class__ is b.__class__:
+        return all(_values_equal(getattr(a, f.name), getattr(b, f.name)) for f in fields(a))
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        if len(a) != len(b):
+            return False
+        return all(_values_equal(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, dict) and isinstance(b, dict):
+        if a.keys() != b.keys():
+            return False
+        return all(_values_equal(item, b[key]) for key, item in a.items())
+    return bool(to_dict(a) == to_dict(b))
 
 
 def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
-    """Compare two config objects by their canonical serialized forms.
+    """Compare two config objects by canonical value equality.
+
+    Equality means the two objects serialize to the same canonical plain
+    form: every field compares through ``_values_equal``, which runs array
+    fields through the backends' vectorized comparisons and recurses through
+    sections and containers.
 
     Args:
         self: The left-hand config object.
         other: The right-hand operand.
 
     Returns:
-        ``NotImplemented`` when ``other`` is a different class, else whether the
-        two canonical ``to_dict`` forms are equal.
+        ``NotImplemented`` when ``other`` is a different class, else whether
+        every field pair is canonically equal.
     """
     if other.__class__ is not self.__class__:
         return NotImplemented
-    return to_dict(self) == to_dict(other)
+    return all(_values_equal(getattr(self, f.name), getattr(other, f.name)) for f in fields(self))
+
+
+def _install_canonical_eq(config_cls: type[Any]) -> None:
+    """Install canonical equality on a schema dataclass at schema processing.
+
+    ``@configclass``-decorated classes already carry canonical equality. Any
+    other schema dataclass has it installed in place: the dataclass-generated
+    ``__eq__``, recognized by the synthetic code filename ``dataclasses``
+    assigns, is replaced with ``_canonical_eq``, and a ``__hash__`` slot the
+    dataclass set to None reverts to identity hashing, so plain
+    ``@dataclass`` sections carry the same equality and hashing contract as
+    decorated ones. A class whose body defines ``__eq__`` keeps it, and a
+    class carrying its own ``__hash__`` implementation keeps that.
+
+    Args:
+        config_cls: The schema dataclass being processed.
+    """
+    if _CONFIGCLASS_MARKER in config_cls.__dict__:
+        return
+    current = config_cls.__dict__.get("__eq__")
+    if current is _canonical_eq:
+        return
+    if current is not None:
+        code = getattr(current, "__code__", None)
+        if code is None or code.co_filename != _GENERATED_CODE_FILENAME:
+            return
+    config_cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
+    if config_cls.__dict__.get("__hash__", _MISSING) is None:
+        config_cls.__hash__ = object.__hash__  # type: ignore[method-assign]
 
 
 @overload
@@ -85,17 +161,21 @@ def configclass(cls: type[_T] | None = None, /, **kwargs: Any) -> type[_T] | Cal
     """Declare a config dataclass with canonical equality.
 
     A thin wrapper around ``dataclasses.dataclass``: fields, defaults, and
-    ``__init__`` are generated exactly as ``@dataclass`` generates them, and every
-    dataclass keyword (``frozen``, ``kw_only``, ``slots``, ``order``, ...) is
-    forwarded. ``eq`` is fixed to ``False`` so the decorator's own ``__eq__``
-    is the single equality mechanism: it returns ``NotImplemented`` for a
-    different class and otherwise compares ``to_dict(self)`` with
-    ``to_dict(other)``. A user-defined ``__eq__`` in the class body is respected
-    and left untouched. ``__hash__`` stays object identity; use ``config_hash``
+    ``__init__`` are generated exactly as ``@dataclass`` generates them, and
+    the layout keywords (``frozen``, ``kw_only``, ``slots``, ...) forward.
+    ``eq`` is fixed to ``False`` so the decorator's own ``__eq__`` is the
+    single equality mechanism: it returns ``NotImplemented`` for a different
+    class and otherwise compares the two objects' canonical serialized
+    values, with array fields running through the backends' vectorized
+    comparisons. A user-defined ``__eq__`` in the class body is respected and
+    left untouched. ``__hash__`` stays object identity; use ``config_hash``
     for value identity.
 
     Both the bare form (``@configclass``) and the parenthesized form
     (``@configclass(frozen=True)``) work, on root and section classes alike.
+    Plain ``@dataclass`` schema classes receive the same canonical ``__eq__``
+    at their first schema processing; decorating is the way to carry it from
+    class-creation time and to state the schema role explicitly.
 
     Args:
         cls: The class being decorated in the bare form, positional-only.

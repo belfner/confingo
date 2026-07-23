@@ -645,3 +645,64 @@ def test_python_and_extended_scalars_stay_unnormalized():
     assert _arrays.normalize_numpy_scalar(np.complex128(1 + 2j)) == (False, None)
     if np.dtype(np.longdouble).itemsize > 8:
         assert _arrays.normalize_numpy_scalar(np.longdouble(1.5)) == (False, None)
+
+
+# --- native equality -------------------------------------------------------------
+
+
+def test_native_equal_same_dtype_pairs():
+    assert _arrays.native_equal(np.array([1, 2]), np.array([1, 2])) is True
+    assert _arrays.native_equal(np.array([1, 2]), np.array([1, 3])) is False
+    assert _arrays.native_equal(torch.tensor([1.5]), torch.tensor([1.5])) is True
+    assert _arrays.native_equal(torch.tensor([1.5]), torch.tensor([2.5])) is False
+
+
+def test_native_equal_shape_mismatch_is_a_verdict():
+    assert _arrays.native_equal(np.array([1, 2]), np.array([[1, 2]])) is False
+    assert _arrays.native_equal(torch.tensor([1]), torch.tensor([[1]])) is False
+
+
+def test_native_equal_same_kind_widths_compare_exactly():
+    assert _arrays.native_equal(np.array([5], dtype=np.int8), np.array([5], dtype=np.int64)) is True
+    assert _arrays.native_equal(np.array([0.5], dtype=np.float16), np.array([0.5])) is True
+    assert _arrays.native_equal(torch.tensor([7], dtype=torch.int16), torch.tensor([7], dtype=torch.int64)) is True
+    assert (
+        _arrays.native_equal(torch.tensor([0.5], dtype=torch.bfloat16), torch.tensor([0.5], dtype=torch.float64))
+        is True
+    )
+
+
+def test_native_equal_cross_backend_converts_through_numpy():
+    assert _arrays.native_equal(torch.tensor([1.0, 2.0]), np.array([1.0, 2.0], dtype=np.float32)) is True
+    assert _arrays.native_equal(np.array([[1, 2]]), torch.tensor([[1, 2]])) is True
+    assert _arrays.native_equal(torch.tensor([1.0, 2.0]), np.array([1.0, 2.5])) is False
+    grad = torch.tensor([1.0], requires_grad=True)
+    assert _arrays.native_equal(grad, np.array([1.0])) is True
+
+
+def test_native_equal_declines_inexact_and_degenerate_pairs():
+    declined = [
+        (np.array([1], dtype=np.int64), np.array([1.0])),
+        (np.array([1], dtype=np.uint64), np.array([1], dtype=np.int64)),
+        (torch.tensor([1]), torch.tensor([1.0])),
+        (np.zeros((0, 3)), np.zeros((0, 4))),
+        (torch.zeros(0), torch.zeros(0)),
+        (np.array([1, 2]), [1, 2]),
+        ([1, 2], [1, 2]),
+    ]
+    for left, right in declined:
+        assert _arrays.native_equal(left, right) is _arrays.NOT_COMPARABLE
+
+
+def test_native_equal_bool_mixes_exactly_and_small_unsigned_mixes():
+    assert _arrays.native_equal(np.array([True]), np.array([1])) is True
+    assert _arrays.native_equal(np.array([1], dtype=np.uint8), np.array([1], dtype=np.int64)) is True
+    assert _arrays.native_equal(torch.tensor([1], dtype=torch.uint8), torch.tensor([1], dtype=torch.int8)) is True
+
+
+def test_native_equal_rejects_unsupported_forms():
+    sparse = torch.sparse_coo_tensor(torch.tensor([[0]]), torch.tensor([1.0]), (2,))
+    assert _arrays.native_equal(sparse, torch.tensor([1.0, 0.0])) is _arrays.NOT_COMPARABLE
+    assert _arrays.native_equal(sparse, np.array([1.0, 0.0])) is _arrays.NOT_COMPARABLE
+    strings = np.array(["a"])
+    assert _arrays.native_equal(strings, strings) is _arrays.NOT_COMPARABLE

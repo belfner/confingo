@@ -1232,3 +1232,175 @@ def array_to_plain(value: Any, path: str, issue: IssueSink) -> Any:
             issue(path, f"cannot copy torch tensor to CPU for serialization: {_sanitize(exc)}")
             return FAILED
     return NOT_ARRAY
+
+
+# ---------------------------------------------------------------------------
+# Native equality
+# ---------------------------------------------------------------------------
+
+NOT_COMPARABLE = object()
+"""Returned by ``native_equal`` for pairs outside the exact vectorized path."""
+
+
+def native_equal(a: Any, b: Any) -> Any:
+    """Compare two backend array values with vectorized operations.
+
+    The fast path covers pairs whose vectorized comparison provably matches
+    comparison of their serialized plain forms: both values are backend
+    arrays holding at least one element, in supported dense form, with dtype
+    kinds that promote exactly under elementwise comparison. A tensor
+    compared against a numpy array converts through ``detach().cpu().numpy()``
+    with bfloat16 widening exactly to float32 first, and tensor pairs on
+    different devices compare on the CPU. Every other pair -- inexactly
+    promoting kind mixes, zero-size values whose trailing dimensions collapse
+    in the encoding, ndarray subclasses, and unsupported dtypes or tensor
+    forms -- reports ``NOT_COMPARABLE`` so the caller compares plain forms.
+
+    Args:
+        a: The left-hand value.
+        b: The right-hand value.
+
+    Returns:
+        ``NOT_COMPARABLE`` when the pair falls outside the fast path, else
+        whether the two values match in shape and every element.
+    """
+    np = _numpy()
+    torch = _torch()
+    a_tensor = torch is not None and isinstance(a, torch.Tensor)
+    b_tensor = torch is not None and isinstance(b, torch.Tensor)
+    a_array = np is not None and type(a) is np.ndarray
+    b_array = np is not None and type(b) is np.ndarray
+    if a_tensor and b_tensor:
+        return _tensor_pair_equal(torch, a, b)
+    if a_array and b_array:
+        return _numpy_pair_equal(np, a, b)
+    if a_tensor and b_array:
+        converted = _tensor_as_numpy(torch, a)
+        return NOT_COMPARABLE if converted is None else _numpy_pair_equal(np, converted, b)
+    if a_array and b_tensor:
+        converted = _tensor_as_numpy(torch, b)
+        return NOT_COMPARABLE if converted is None else _numpy_pair_equal(np, a, converted)
+    return NOT_COMPARABLE
+
+
+def _kinds_promote_exactly(kind_a: str, size_a: int, kind_b: str, size_b: int) -> bool:
+    """Report whether elementwise comparison across two dtypes is value-exact.
+
+    Args:
+        kind_a: NumPy-style dtype kind of the left value.
+        size_a: Item size in bytes of the left dtype.
+        kind_b: NumPy-style dtype kind of the right value.
+        size_b: Item size in bytes of the right dtype.
+
+    Returns:
+        True when comparison promotes without changing any representable
+        value: matching kinds widen within the kind, bool widens exactly into
+        every numeric kind, and signed/unsigned integers mix exactly while
+        the unsigned side stays below 64 bits (a 64-bit unsigned operand
+        against a signed one promotes to float64 and loses integer
+        precision).
+    """
+    if kind_a in {kind_b, "b"} or kind_b == "b":
+        return True
+    if {kind_a, kind_b} == {"i", "u"}:
+        unsigned_size = size_a if kind_a == "u" else size_b
+        return unsigned_size < 8
+    return False
+
+
+def _numpy_pair_equal(np: Any, a: Any, b: Any) -> Any:
+    """Compare two numpy arrays where vectorized equality is provably exact.
+
+    Args:
+        np: The loaded numpy module.
+        a: The left-hand array.
+        b: The right-hand array.
+
+    Returns:
+        ``NOT_COMPARABLE`` for unsupported kinds, zero-size operands, or an
+        inexactly promoting kind mix, else the ``np.array_equal`` result.
+    """
+    kind_a, kind_b = a.dtype.kind, b.dtype.kind
+    if kind_a not in _SUPPORTED_KINDS or kind_b not in _SUPPORTED_KINDS:
+        return NOT_COMPARABLE
+    if int(a.size) == 0 or int(b.size) == 0:
+        return NOT_COMPARABLE
+    if not _kinds_promote_exactly(kind_a, a.dtype.itemsize, kind_b, b.dtype.itemsize):
+        return NOT_COMPARABLE
+    return bool(np.array_equal(a, b))
+
+
+def _torch_kind(torch: Any, dtype: Any) -> str:
+    """Map a supported torch dtype to its numpy-style kind letter.
+
+    Args:
+        torch: The loaded torch module.
+        dtype: A dtype from the supported set.
+
+    Returns:
+        ``"b"`` for bool, ``"f"`` for floating dtypes, ``"u"`` for uint8, and
+        ``"i"`` for the signed integer dtypes.
+    """
+    if dtype is torch.bool:
+        return "b"
+    if bool(dtype.is_floating_point):
+        return "f"
+    return "u" if dtype is torch.uint8 else "i"
+
+
+def _tensor_pair_equal(torch: Any, a: Any, b: Any) -> Any:
+    """Compare two tensors where vectorized equality is provably exact.
+
+    Args:
+        torch: The loaded torch module.
+        a: The left-hand tensor.
+        b: The right-hand tensor.
+
+    Returns:
+        ``NOT_COMPARABLE`` for unsupported dtypes or forms, zero-size
+        operands, or an inexactly promoting kind mix, else whether shapes and
+        every element match; a cross-device pair compares on the CPU.
+    """
+    supported = _supported_torch_dtypes(torch)
+    if a.dtype not in supported or b.dtype not in supported:
+        return NOT_COMPARABLE
+    if _torch_form_issue(torch, a, "are supported") is not None:
+        return NOT_COMPARABLE
+    if _torch_form_issue(torch, b, "are supported") is not None:
+        return NOT_COMPARABLE
+    if int(a.numel()) == 0 or int(b.numel()) == 0:
+        return NOT_COMPARABLE
+    if not _kinds_promote_exactly(
+        _torch_kind(torch, a.dtype), a.element_size(), _torch_kind(torch, b.dtype), b.element_size()
+    ):
+        return NOT_COMPARABLE
+    if tuple(a.shape) != tuple(b.shape):
+        return False
+    left, right = a, b
+    if left.device != right.device:
+        left, right = left.detach().cpu(), right.detach().cpu()
+    return bool((left == right).all().item())
+
+
+def _tensor_as_numpy(torch: Any, value: Any) -> Any | None:
+    """Convert a tensor to a numpy array for a cross-backend comparison.
+
+    Args:
+        torch: The loaded torch module.
+        value: The tensor to convert.
+
+    Returns:
+        A CPU numpy view of the detached tensor, with bfloat16 widened
+        exactly to float32, or None for tensors outside the supported dense
+        forms.
+    """
+    if value.dtype not in _supported_torch_dtypes(torch):
+        return None
+    if _torch_form_issue(torch, value, "are supported") is not None:
+        return None
+    out = value.detach()
+    if out.dtype is torch.bfloat16:
+        out = out.to(torch.float32)
+    if out.device.type != "cpu":
+        out = out.cpu()
+    return out.numpy()

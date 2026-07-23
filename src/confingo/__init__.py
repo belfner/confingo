@@ -8,10 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from confingo._configclass import (
-    ConfigWarning,
-    configclass,
-)
+from confingo._configclass import configclass
 from confingo._core import (
     ConfigError,
     ConfigIssue,
@@ -70,7 +67,6 @@ __all__ = [
     "ConfigError",
     "ConfigIssue",
     "ConfigRoot",
-    "ConfigWarning",
     "config_hash",
     "configclass",
     "dumps_json",

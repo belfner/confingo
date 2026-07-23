@@ -11,13 +11,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `@configclass`, the primary schema decorator: a wrapper around `@dataclass`
   that forwards the layout keywords (`init`, `repr`, `frozen`, `match_args`,
   `kw_only`, `slots`, `weakref_slot`) and installs canonical equality, where
-  `==` compares two configs by their `to_dict` forms at every tree level,
-  array fields included. `__hash__` stays object identity alongside the
-  installed equality, a user-defined `__eq__` is respected with standard
-  Python hashing semantics, and `eq` / `order` / `unsafe_hash` arguments
-  raise `TypeError`. Plain `@dataclass` schemas remain fully
-  supported; each triggers one `ConfigWarning` (a new `UserWarning` subclass)
-  per process at first schema processing.
+  two configs are `==` exactly when they serialize to the same plain form at
+  every tree level, array fields included. Array and tensor pairs compare
+  through the backends' vectorized equality wherever that comparison is
+  provably exact (with a tensor meeting a numpy array via
+  `detach().cpu().numpy()`), and every other pair compares by its serialized
+  form, so `==` on large arrays runs at native speed with exact value
+  semantics. `__hash__` stays object identity alongside the installed
+  equality, a user-defined `__eq__` is respected with standard Python hashing
+  semantics, and `eq` / `order` / `unsafe_hash` arguments raise `TypeError`.
+  Plain `@dataclass` schemas are equally supported: at first schema
+  processing each receives the same canonical `__eq__` in place of the
+  dataclass-generated one, with identity hashing restored alongside it, so
+  sections and roots declared either way share one equality contract.
 - NumPy array and PyTorch tensor fields, presence-detected: the backends
   install with the application, confingo's core stays stdlib-only, and
   `import confingo` loads neither. Supported annotations: bare `np.ndarray`,

@@ -14,7 +14,9 @@ Declare schema classes with `@configclass`, confingo's schema decorator built on
 
 ## `configclass` and equality
 
-`@configclass` installs an `__eq__` that compares two configs by their canonical serialized forms: `to_dict(self) == to_dict(other)`, with `NotImplemented` for a different class. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of a decorated tree.
+`@configclass` installs an `__eq__` under which two configs are equal exactly when they serialize to the same canonical plain form, with `NotImplemented` for a different class. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of a decorated tree.
+
+The comparison itself runs structurally: array and tensor pairs compare through the backends' vectorized equality wherever that is provably exact (same-kind dtypes, dense forms, elements present), so `==` on large arrays runs at native speed; a tensor meets a numpy array by converting through `detach().cpu().numpy()`; and pairs outside the provably-exact set (mixed integer/float dtypes, zero-size arrays) compare by their serialized forms, keeping exact value semantics everywhere. Runtime-only tensor state (device placement, `requires_grad`) compares equal, exactly as it serializes equal.
 
 ```python
 from confingo import ConfigRoot, configclass
@@ -39,7 +41,7 @@ The decorator's contract:
 - With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
 - A user-defined `__eq__` in the class body is respected and left untouched, carrying standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable.
 
-Plain `@dataclass` schemas load, dump, and hash identically. Each plain schema class triggers one `ConfigWarning` per process at its first schema processing, naming the class and the fix; the warning is precise to filter (`warnings.filterwarnings("ignore", category=confingo.ConfigWarning)`). The practical difference is `==`: the `__eq__` a plain dataclass generates compares field objects directly, which raises on multi-element array fields.
+Plain `@dataclass` schemas are equally supported, for sections and roots alike: at a class's first schema processing confingo installs the same canonical `__eq__` in place of the dataclass-generated one (and restores identity hashing where generating `__eq__` had disabled it), so a plain schema class compares exactly like a decorated one, array fields included. A class-body `__eq__` on a plain schema class is respected, matching the decorator's rule. Decorating remains the primary spelling: it states the schema role explicitly, carries canonical equality from class-creation time, and adds the `eq` / `order` / `unsafe_hash` guardrails.
 
 
 ## Implicit sections and leaf-level requirements
