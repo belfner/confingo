@@ -100,6 +100,14 @@ def test_order_raises_type_error():
             x: int = 0
 
 
+def test_unsafe_hash_raises_type_error():
+    with pytest.raises(TypeError, match="unsafe_hash"):
+
+        @configclass(unsafe_hash=True)  # type: ignore[call-overload]
+        class Hashed:
+            x: int = 0
+
+
 def test_marker_sits_in_each_classes_own_dict():
     assert Section.__dict__["__confingo_configclass__"] is True
     assert Tree.__dict__["__confingo_configclass__"] is True

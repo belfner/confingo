@@ -72,8 +72,6 @@ def configclass(
     *,
     init: bool = True,
     repr: bool = True,
-    order: bool = False,
-    unsafe_hash: bool = False,
     frozen: bool = False,
     match_args: bool = True,
     kw_only: bool = False,
@@ -109,14 +107,18 @@ def configclass(cls: type[_T] | None = None, /, **kwargs: Any) -> type[_T] | Cal
 
     Raises:
         TypeError: When ``eq`` is passed explicitly; the decorator controls
-          ``__eq__`` and fixes ``eq=False``. Also when ``order`` is true, since
-          dataclass ordering builds on the generated ``__eq__`` that
-          ``configclass`` replaces.
+          ``__eq__`` and fixes ``eq=False``. Also when ``order`` or
+          ``unsafe_hash`` is true: ordering builds on the generated ``__eq__``
+          that ``configclass`` replaces, and a generated field hash would
+          contradict the identity-``__hash__`` contract and fail on
+          array-valued fields.
     """
     if "eq" in kwargs:
         raise TypeError("configclass() installs canonical __eq__ itself and fixes eq=False; drop the eq argument")
     if kwargs.get("order") is True:
         raise TypeError("configclass() replaces the generated __eq__ that dataclass ordering builds on; drop order")
+    if kwargs.get("unsafe_hash") is True:
+        raise TypeError("configclass() keeps __hash__ as object identity; drop unsafe_hash and use config_hash")
 
     def wrap(inner: type[_T]) -> type[_T]:
         built = dataclass(eq=False, **kwargs)(inner)
