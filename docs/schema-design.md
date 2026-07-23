@@ -2,46 +2,48 @@
 
 # Schema design
 
-This page covers structuring a program's configuration as a dataclass tree: the `@configclass` decorator, implicit sections, leaf-level requirements, defaults, and where `ConfigRoot` and validation hooks fit.
+This page covers structuring a program's configuration as a dataclass tree: canonical equality, implicit sections, leaf-level requirements, defaults, and where `ConfigRoot` and validation hooks fit.
 
 
 ## A dataclass tree is the schema
 
 One dataclass declaration serves three roles: the field names define the accepted keys, the annotations define the accepted types, and the defaults define the fallback values. Nested dataclasses define sections, and containers of dataclasses (`list[StageConfig]`, `dict[str, DatasetConfig]`) define repeated sections.
 
-Declare schema classes with `@configclass`, confingo's schema decorator built on `@dataclass`. Fields, defaults, and `__init__` generate exactly as `@dataclass` generates them; the decorator adds config-aware equality, covered in [configclass and equality](#configclass-and-equality).
+Schema classes are ordinary `@dataclass` declarations. The root subclasses `ConfigRoot` for load/save/hash methods and config-aware equality, covered in [canonical equality](#canonical-equality); sections are plain dataclasses.
 
 
-## `configclass` and equality
+## Canonical equality
 
-`@configclass` installs an `__eq__` under which two configs are equal exactly when they serialize to the same canonical plain form, with `NotImplemented` for a different class. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of a decorated tree.
+Two configs are `==` exactly when they serialize to the same canonical plain form, with `NotImplemented` for a different class. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
 
 The comparison itself runs structurally: array and tensor pairs compare through the backends' vectorized equality wherever that is provably exact (same-kind dtypes, dense forms, elements present), so `==` on large arrays runs at native speed; a tensor meets a numpy array by converting through `detach().cpu().numpy()`; and pairs outside the provably-exact set (mixed integer/float dtypes, zero-size arrays) compare by their serialized forms, keeping exact value semantics everywhere. Runtime-only tensor state (device placement, `requires_grad`) compares equal, exactly as it serializes equal.
 
 ```python
-from confingo import ConfigRoot, configclass
+from dataclasses import dataclass
+
+from confingo import ConfigRoot
 
 
-@configclass
+@dataclass
 class OptimizerConfig:
     name: str = "adamw"
     lr: float = 3e-4
 
 
-@configclass(frozen=True)
+@dataclass(frozen=True)
 class RunConfig(ConfigRoot):
     optimizer: OptimizerConfig
     seed: int = 0
 ```
 
-The decorator's contract:
+Canonical equality reaches a schema class through two doors:
 
-- Both the bare form and the parenthesized form work, on roots and sections alike.
-- The `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Three raise `TypeError` because the decorator owns equality and hashing: `eq` (fixed to `False` internally), `order` (dataclass ordering builds on the generated `__eq__` the decorator replaces), and `unsafe_hash`.
-- With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
-- A user-defined `__eq__` in the class body is respected and left untouched, carrying standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable.
+- A `ConfigRoot` subclass carries it from class-creation time: `ConfigRoot.__init_subclass__` plants the canonical `__eq__` and identity `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own. A subclass whose body defines `__eq__` keeps it, with standard Python hashing semantics (define `__hash__` alongside it to keep instances hashable).
+- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing (any `from_dict`, `to_dict`, load, save, or hash call touching the tree), replacing the `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Custom equality therefore belongs on the root, where the class-body rule preserves it.
 
-Plain `@dataclass` schemas are equally supported, for sections and roots alike. The `@configclass` marker is the single signal: at a class's first schema processing, confingo installs the same canonical `__eq__` on every unmarked schema dataclass (and restores identity hashing where generating `__eq__` had disabled it), so a plain schema class compares exactly like a decorated one, array fields included. A custom `__eq__` belongs in a `@configclass` body, where the decorator respects it; on an unmarked class the installation replaces whatever `__eq__` the class carried. Decorating remains the primary spelling: it states the schema role explicitly, carries canonical equality from class-creation time, and adds the `eq` / `order` / `unsafe_hash` guardrails.
+With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
+
+The `config_equal` free function is the functional twin of `==`: `config_equal(a, b)` compares two config objects canonically ahead of any engine call and without touching the classes involved, matching the operator's same-class rule.
 
 
 ## Implicit sections and leaf-level requirements
@@ -64,25 +66,28 @@ A self-referential section (`class Node: child: Node`) terminates with a missing
 ```python
 from __future__ import annotations
 
-from dataclasses import field
+from dataclasses import (
+    dataclass,
+    field,
+)
 from pathlib import Path
 
-from confingo import ConfigRoot, configclass
+from confingo import ConfigRoot
 
 
-@configclass
+@dataclass
 class WarmupConfig:
     steps: int
     start_factor: float = 0.1
 
 
-@configclass
+@dataclass
 class ScheduleConfig:
     warmup: WarmupConfig
     decay: str = "cosine"
 
 
-@configclass
+@dataclass
 class RunConfig(ConfigRoot):
     schedule: ScheduleConfig
     stages: list[str]
@@ -107,19 +112,22 @@ The two layers are treated differently. Supplied values travel through [coercion
 An explicit `field(default_factory=...)` takes precedence over the implicit build and is used as authored, which makes it the tool for baseline sections whose fallback differs from the section's own defaults:
 
 ```python
-from dataclasses import field
+from dataclasses import (
+    dataclass,
+    field,
+)
 
-from confingo import ConfigRoot, configclass
+from confingo import ConfigRoot
 
 
-@configclass
+@dataclass
 class OptimizerConfig:
     name: str = "adamw"
     lr: float = 3e-4
     weight_decay: float = 0.01
 
 
-@configclass
+@dataclass
 class ExperimentConfig(ConfigRoot):
     seed: int = 0
     batch_size: int = 64
@@ -137,7 +145,7 @@ An empty mapping (`{}`) builds the full default config whenever every leaf in th
 
 ## Root facade and nested sections
 
-Apply `ConfigRoot` to the root class only; child sections carry `@configclass` alone.
+Apply `ConfigRoot` to the root class only; child sections are plain dataclasses.
 
 The base class is a thin facade: each method delegates to the matching free function (`TrainingConfig.load_json(path)` calls `load_json(TrainingConfig, path)`), so both styles are equivalent public surfaces. The full mapping is in the [API reference](api-reference.md#configroot-method-map).
 
@@ -164,7 +172,7 @@ Two hooks let a dataclass enforce invariants that span fields, and both feed the
 - `__validate__`: return an iterable of message strings; each becomes its own issue.
 
 ```python
-@configclass
+@dataclass
 class TrainerConfig:
     warmup_steps: int
     total_steps: int

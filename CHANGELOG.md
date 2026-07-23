@@ -8,23 +8,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `@configclass`, the primary schema decorator: a wrapper around `@dataclass`
-  that forwards the layout keywords (`init`, `repr`, `frozen`, `match_args`,
-  `kw_only`, `slots`, `weakref_slot`) and installs canonical equality, where
-  two configs are `==` exactly when they serialize to the same plain form at
-  every tree level, array fields included. Array and tensor pairs compare
-  through the backends' vectorized equality wherever that comparison is
-  provably exact (with a tensor meeting a numpy array via
-  `detach().cpu().numpy()`), and every other pair compares by its serialized
-  form, so `==` on large arrays runs at native speed with exact value
-  semantics. `__hash__` stays object identity alongside the installed
-  equality, a user-defined `__eq__` is respected with standard Python hashing
-  semantics, and `eq` / `order` / `unsafe_hash` arguments raise `TypeError`.
-  Plain `@dataclass` schemas are equally supported: at first schema
-  processing every unmarked schema class receives the same canonical
-  `__eq__` in place of the one it carried, with identity hashing restored
-  alongside it, so sections and roots declared either way share one
-  equality contract; a custom `__eq__` belongs in a `@configclass` body.
+- Canonical equality on every schema dataclass: two configs are `==` exactly
+  when they serialize to the same plain form at every tree level, array
+  fields included. Array and tensor pairs compare through the backends'
+  vectorized equality wherever that comparison is provably exact (with a
+  tensor meeting a numpy array via `detach().cpu().numpy()`), and every
+  other pair compares by its serialized form, so `==` on large arrays runs
+  at native speed with exact value semantics. A `ConfigRoot` subclass
+  carries the canonical `__eq__` and identity `__hash__` from class-creation
+  time, installed by `__init_subclass__` ahead of the `@dataclass`
+  decorator, and a body-defined `__eq__` there is respected with standard
+  Python hashing semantics. Every other schema dataclass receives canonical
+  equality at its first schema processing, replacing the `__eq__` it
+  carried, with identity hashing restored where generating `__eq__` had
+  disabled it. The new `config_equal(left, right)` free function exposes the
+  same relation ahead of any engine call.
 - NumPy array and PyTorch tensor fields, presence-detected: the backends
   install with the application, confingo's core stays stdlib-only, and
   `import confingo` loads neither. Supported annotations: bare `np.ndarray`,

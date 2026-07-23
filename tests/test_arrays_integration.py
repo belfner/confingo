@@ -30,7 +30,6 @@ from confingo import (  # noqa: E402
     ConfigError,
     ConfigRoot,
     config_hash,
-    configclass,
     from_dict,
     load_json,
     save_json,
@@ -46,14 +45,14 @@ def schema_for(hint: Any) -> type:
 # --- module-level schemas -----------------------------------------------------
 
 
-@configclass
+@dataclass
 class ArraySection:
     weights: npt.NDArray[np.float32]
     bias: Annotated[torch.Tensor, torch.float64]
     scale: float = 1.0
 
 
-@configclass
+@dataclass
 class ArrayRoot(ConfigRoot):
     section: ArraySection
     tags: npt.NDArray[np.int64] = field(default_factory=lambda: np.array([0], dtype=np.int64))
@@ -363,8 +362,8 @@ class PlainWithArray:
     weights: npt.NDArray[np.float32] = field(default_factory=lambda: np.zeros(1, dtype=np.float32))
 
 
-@configclass
-class AnyHolder:
+@dataclass
+class AnyHolder(ConfigRoot):
     value: Any
 
 

@@ -21,7 +21,7 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 ## Choose a topic
 
 - [Getting started](getting-started.md): first schema, first load, first run hash.
-- [Schema design](schema-design.md): `@configclass`, implicit sections, leaf-level requirements, defaults, `ConfigRoot`.
+- [Schema design](schema-design.md): dataclass schemas, canonical equality, implicit sections, leaf-level requirements, defaults, `ConfigRoot`.
 - [Types and coercion](types-and-coercion.md): accepted annotations and exact conversion rules.
 - [Validation and errors](validation-and-errors.md): the collect-all error model and custom invariants.
 - [Files, formats, and run identity](files-and-identity.md): JSON, YAML, extension dispatch, atomic saves, `config_hash`.

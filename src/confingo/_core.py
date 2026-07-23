@@ -86,9 +86,6 @@ _UNSET = object()
 
 _HINT_CACHE: dict[type[Any], dict[str, Any]] = {}
 
-_CONFIGCLASS_MARKER = "__confingo_configclass__"
-"""Class attribute stamped by ``@configclass``; checked on each class's own ``__dict__``."""
-
 _SCHEMA_CACHE: dict[type[Any], tuple[ConfigIssue, ...]] = {}
 """Per-dataclass cache of schema-validation issues, keyed by the root type."""
 
@@ -247,7 +244,7 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
         )
         raise ConfigError.single(message, context="config schema") from exc
     _HINT_CACHE[config_cls] = hints
-    from confingo._configclass import _install_canonical_eq  # noqa: PLC0415
+    from confingo._equality import _install_canonical_eq  # noqa: PLC0415
 
     _install_canonical_eq(config_cls)
     return hints

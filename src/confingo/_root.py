@@ -18,6 +18,10 @@ from typing import (
 from confingo._core import config_hash as _config_hash
 from confingo._core import from_dict as _from_dict
 from confingo._core import to_dict as _to_dict
+from confingo._equality import (
+    _CUSTOM_EQ_MARKER,
+    _canonical_eq,
+)
 from confingo._file import from_file as _from_file
 from confingo._file import to_file as _to_file
 from confingo._json import dumps_json as _dumps_json
@@ -38,7 +42,28 @@ class ConfigRoot:
     ``@dataclass`` as usual. The class carries its own schema, so building and
     loading read as ``Config.load_json(path)`` rather than
     ``load_json(Config, path)``.
+
+    Subclassing also installs canonical equality from class-creation time:
+    ``__init_subclass__`` plants the canonical ``__eq__`` and identity
+    ``__hash__`` into the subclass ahead of the ``@dataclass`` decorator,
+    which then keeps them in place of generating its own. A subclass whose
+    body defines ``__eq__`` keeps it, marked so schema processing preserves
+    it too.
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Install canonical equality on each subclass at class creation.
+
+        Args:
+            **kwargs: Keyword arguments forwarded to ``super().__init_subclass__``.
+        """
+        super().__init_subclass__(**kwargs)
+        current = cls.__dict__.get("__eq__")
+        if current is None:
+            cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
+            cls.__hash__ = object.__hash__  # type: ignore[method-assign]
+        elif current is not _canonical_eq:
+            setattr(cls, _CUSTOM_EQ_MARKER, True)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], *, context: str = "config") -> Self:

@@ -16,7 +16,7 @@ The core library runs on Python 3.11+ and imports only the standard library. YAM
 
 ## Define the schema
 
-A confingo schema is a tree of dataclasses declared with `@configclass`, a wrapper around `@dataclass` that adds [config-aware equality](schema-design.md#configclass-and-equality). Each field's annotation is its validator and each default is its fallback value. The root class subclasses `ConfigRoot` to gain load/save/hash methods; nested sections carry the decorator alone.
+A confingo schema is a tree of ordinary `@dataclass` declarations. Each field's annotation is its validator and each default is its fallback value. The root class subclasses `ConfigRoot` to gain load/save/hash methods and [config-aware equality](schema-design.md#canonical-equality); nested sections are plain dataclasses, and confingo gives them the same equality at first schema processing.
 
 The sections (`model`, `data`, `optimizer`) carry bare annotations and build automatically; what the file must supply is decided by the fields inside them. Here the required values are the four fields declared with a bare annotation and no default:
 
@@ -30,21 +30,24 @@ Omitting one is reported at that dotted path, and required fields come before de
 ```python
 from __future__ import annotations
 
-from dataclasses import field
+from dataclasses import (
+    dataclass,
+    field,
+)
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot, configclass
+from confingo import ConfigRoot
 
 
-@configclass
+@dataclass
 class ModelConfig:
     architecture: str
     hidden_widths: tuple[int, ...]
     dropout: float = 0.1
 
 
-@configclass
+@dataclass
 class DataConfig:
     dataset_path: Path
     batch_size: int = 64
@@ -52,14 +55,14 @@ class DataConfig:
     augmentations: list[str] = field(default_factory=list)
 
 
-@configclass
+@dataclass
 class OptimizerConfig:
     name: Literal["adamw", "sgd"]
     lr: float = 3e-4
     weight_decay: float = 0.01
 
 
-@configclass
+@dataclass
 class TrainingConfig(ConfigRoot):
     model: ModelConfig
     data: DataConfig

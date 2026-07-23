@@ -18,19 +18,20 @@ Runs on Python 3.11 and newer.
 ## Quick example
 
 ```python
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot, configclass
+from confingo import ConfigRoot
 
 
-@configclass
+@dataclass
 class TrainerConfig:
     lr: float = 3e-4
     algorithm: Literal["sac", "td3"] = "td3"
 
 
-@configclass
+@dataclass
 class TrainingConfig(ConfigRoot):
     trainer: TrainerConfig  # section; builds from its defaults when omitted
     seed: int = 0

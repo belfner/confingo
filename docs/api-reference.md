@@ -12,8 +12,8 @@ from confingo import (
     ConfigError,
     ConfigIssue,
     ConfigRoot,
+    config_equal,
     config_hash,
-    configclass,
     dumps_json,
     from_dict,
     from_file,
@@ -28,15 +28,15 @@ from confingo import dumps_yaml, load_yaml, save_yaml  # confingo[yaml]
 The YAML helpers resolve lazily on first attribute access, so the core import works on a stdlib-only install. `confingo.__version__` carries the package version.
 
 
-## Schema declaration
+## Schema declaration and equality
 
-Learn more: [configclass and equality](schema-design.md#configclass-and-equality).
+Learn more: [canonical equality](schema-design.md#canonical-equality).
 
-### `@configclass` / `@configclass(**dataclass_kwargs)`
+Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when they serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigRoot` subclass carries this from class-creation time, and a body-defined `__eq__` there is respected with standard Python hashing semantics; every other schema dataclass receives it at first schema processing, replacing the `__eq__` it carried.
 
-Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and the `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Installs canonical `__eq__`: two configs are equal exactly when they serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A user-defined `__eq__` in the class body is respected and carries standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
+### `config_equal(left, right) -> bool`
 
-Plain `@dataclass` schema classes receive the same canonical `__eq__` (and identity hashing where the dataclass had disabled hashing) at their first schema processing, so sections and roots declared either way share one equality contract. The `@configclass` marker is the single signal: unmarked classes always receive the installation, and a custom `__eq__` belongs in a `@configclass` body.
+The free-function twin of `==`: compares two config objects by canonical value equality, same-class rule included, ahead of any engine call and without touching the classes involved. Raises `TypeError` when `left` is anything other than a dataclass instance.
 
 
 ## Construction and conversion
@@ -103,7 +103,7 @@ Frozen dataclass; one problem at one dotted path. `str(issue)` renders `path: me
 
 ## `ConfigRoot` method map
 
-`ConfigRoot` is a mixin for the root dataclass; each method delegates to its free-function twin. Subclasses still carry the `@configclass` (or `@dataclass`) decorator, and nested sections carry the decorator alone.
+`ConfigRoot` is a mixin for the root dataclass; each method delegates to its free-function twin, and subclassing installs [canonical equality](schema-design.md#canonical-equality) at class-creation time. Subclasses still carry the `@dataclass` decorator, and nested sections are plain dataclasses.
 
 | Method | Free function |
 | --- | --- |
