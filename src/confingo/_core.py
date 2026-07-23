@@ -53,6 +53,7 @@ import json
 import math
 import types
 import typing
+import warnings
 from collections.abc import (
     Iterable,
     Mapping,
@@ -82,6 +83,12 @@ _UNSET = object()
 """Sentinel returned by coercion helpers when a value failed to convert."""
 
 _HINT_CACHE: dict[type[Any], dict[str, Any]] = {}
+
+_CONFIGCLASS_MARKER = "__confingo_configclass__"
+"""Class attribute stamped by ``@configclass``; checked on each class's own ``__dict__``."""
+
+_UNMARKED_WARNED: set[type[Any]] = set()
+"""Schema dataclasses already warned about lacking the ``@configclass`` marker."""
 
 _SCHEMA_CACHE: dict[type[Any], tuple[ConfigIssue, ...]] = {}
 """Per-dataclass cache of schema-validation issues, keyed by the root type."""
@@ -241,7 +248,30 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
         )
         raise ConfigError.single(message, context="config schema") from exc
     _HINT_CACHE[config_cls] = hints
+    _warn_unmarked_dataclass(config_cls)
     return hints
+
+
+def _warn_unmarked_dataclass(config_cls: type[Any]) -> None:
+    """Emit one ``ConfigWarning`` per plain-dataclass schema class per process.
+
+    Classes carrying the ``@configclass`` marker in their own ``__dict__`` pass
+    silently; each other schema dataclass warns exactly once, tracked by a
+    module-level seen-set on top of the per-class hint cache.
+
+    Args:
+        config_cls: The schema dataclass being processed for the first time.
+    """
+    if _CONFIGCLASS_MARKER in config_cls.__dict__ or config_cls in _UNMARKED_WARNED:
+        return
+    _UNMARKED_WARNED.add(config_cls)
+    from confingo._configclass import ConfigWarning  # noqa: PLC0415
+
+    warnings.warn(
+        f"{config_cls.__name__} is a plain dataclass; decorate it with @confingo.configclass",
+        ConfigWarning,
+        stacklevel=2,
+    )
 
 
 def _is_dataclass_type(hint: Any) -> bool:
