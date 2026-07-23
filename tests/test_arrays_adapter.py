@@ -14,12 +14,14 @@ from typing import (
     Any,
 )
 
-import numpy as np
-import numpy.typing as npt
 import pytest
-import torch
 
-from confingo import _arrays
+
+np = pytest.importorskip("numpy")
+torch = pytest.importorskip("torch")
+import numpy.typing as npt  # noqa: E402
+
+from confingo import _arrays  # noqa: E402
 
 
 Sink = list[tuple[str, str]]
@@ -350,6 +352,72 @@ def test_native_bool_never_crosses_the_numeric_boundary(issues: Sink):
     bool_spec = spec_of(npt.NDArray[np.bool_])
     assert _arrays.coerce_array(np.array([1]), bool_spec, "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "supplied dtype int64 does not satisfy array dtype bool")]
+
+
+def test_native_cross_signedness_wrap_is_rejected(issues: Sink):
+    unsigned = spec_of(npt.NDArray[np.uint8])
+    assert _arrays.coerce_array(np.array([-1], dtype=np.int8), unsigned, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", "value -1 is out of range for array dtype uint8")]
+    issues.clear()
+    signed = spec_of(npt.NDArray[np.int8])
+    assert _arrays.coerce_array(np.array([255], dtype=np.uint8), signed, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", "value 255 is out of range for array dtype int8")]
+    issues.clear()
+    torch_unsigned = spec_of(Annotated[torch.Tensor, torch.uint8])
+    tensor = torch.tensor([-1], dtype=torch.int8)
+    assert _arrays.coerce_array(tensor, torch_unsigned, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", "value -1 is out of range for array dtype uint8")]
+
+
+def test_native_int64_boundary_converts_to_uint64_exactly(issues: Sink):
+    spec = spec_of(npt.NDArray[np.uint64])
+    converted = _arrays.coerce_array(np.array([1, 2**62], dtype=np.int64), spec, "w", sink(issues))
+    assert issues == []
+    assert converted.dtype == np.dtype(np.uint64)
+    assert converted.tolist() == [1, 2**62]
+
+
+def test_integer_leaves_honor_float_target_bounds(issues: Sink):
+    half = spec_of(npt.NDArray[np.float16])
+    assert _arrays.coerce_array([10**100], half, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", f"value {10**100} is out of range for array dtype float16")]
+    issues.clear()
+    double = spec_of(npt.NDArray[np.float64])
+    assert _arrays.coerce_array([10**400], double, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", f"value {10**400} is out of range for array dtype float64")]
+    issues.clear()
+    number = spec_of(npt.NDArray[np.number])
+    assert _arrays.coerce_array([1.5, 10**400], number, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.1", f"value {10**400} is out of range for array dtype float64")]
+    issues.clear()
+    torch_half = spec_of(Annotated[torch.Tensor, torch.float16])
+    assert _arrays.coerce_array([10**100], torch_half, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", f"value {10**100} is out of range for array dtype float16")]
+
+
+def test_meta_and_nested_tensors_are_rejected(issues: Sink):
+    spec = spec_of(torch.Tensor)
+    meta = torch.empty(2, device="meta")
+    assert _arrays.coerce_array(meta, spec, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w", "meta torch tensors carry no element values")]
+    issues.clear()
+    assert _arrays.validate_array_value(meta, "w", sink(issues)) is _arrays.FAILED
+    issues.clear()
+    assert _arrays.array_to_plain(meta, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w", "meta torch tensors carry no element values")]
+    issues.clear()
+    nested = torch.nested.nested_tensor([[1.0], [2.0, 3.0]])
+    assert _arrays.coerce_array(nested, spec, "w", sink(issues)) is _arrays.FAILED
+    assert "nested tensor" in issues[0][1]
+    issues.clear()
+    assert _arrays.array_to_plain(nested, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w", "only dense strided torch tensors can be serialized; got a nested tensor")]
+
+
+def test_empty_row_before_a_scalar_is_ragged(issues: Sink):
+    spec = spec_of(npt.NDArray[np.float64])
+    assert _arrays.coerce_array([[], 1.0], spec, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.1", "ragged array: expected a nested sequence, got a scalar")]
 
 
 def test_native_family_mismatch_reports(issues: Sink):

@@ -53,6 +53,7 @@ _ELEMENT_CAP = 1_000_000
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 _UINT64_MAX = 2**64 - 1
+_FLOAT64_MAX = sys.float_info.max
 
 _SUPPORTED_KINDS = frozenset("biuf")
 """NumPy dtype kinds inside the boundary: bool, signed and unsigned integer, float."""
@@ -398,6 +399,11 @@ def _walk_plain(node: Any, depth: int, path: str, field_path: str, issue: IssueS
                 return
         return
     if state.leaf_depth is None:
+        if state.dims is not None and len(state.dims) > depth:
+            # A sibling at this depth was a sequence, so a scalar here is ragged.
+            state.ok = False
+            issue(path, "ragged array: expected a nested sequence, got a scalar")
+            return
         state.leaf_depth = depth
     elif depth != state.leaf_depth:
         state.ok = False
@@ -457,15 +463,20 @@ def _check_int_leaf(leaf: int, path: str, issue: IssueSink, state: _WalkState) -
     if leaf < 0:
         state.negatives = True
     if state.collect_range:
-        if leaf > _INT64_MAX:
+        if leaf > _INT64_MAX or leaf < _INT64_MIN:
+            # Range selection is deferred until the walk finishes, so values
+            # outside int64 are recorded and judged against the selected target.
             if state.overs is None:
                 state.overs = []
             state.overs.append((path, leaf))
-        elif leaf < _INT64_MIN:
-            state.ok = False
-            issue(path, f"value {leaf} is out of range for array dtype int64")
         return
-    if state.int_lo is not None and state.int_hi is not None and not state.int_lo <= leaf <= state.int_hi:
+    if state.int_lo is not None and state.int_hi is not None:
+        if not state.int_lo <= leaf <= state.int_hi:
+            state.ok = False
+            issue(path, f"value {leaf} is out of range for array dtype {state.label}")
+        return
+    # Float targets: integer leaves honor the target dtype's magnitude bound.
+    if state.float_bound is not None and abs(leaf) > state.float_bound:
         state.ok = False
         issue(path, f"value {leaf} is out of range for array dtype {state.label}")
 
@@ -564,13 +575,13 @@ def _configure_walk(spec: ArraySpec, np: Any, torch: Any) -> _WalkState:
             state.int_lo, state.int_hi = int(info.min), int(info.max)
         else:
             state.category = "number"
-            if spec.dtype.itemsize < 8:
-                state.float_bound = float(np.finfo(spec.dtype).max)
+            state.float_bound = float(np.finfo(spec.dtype).max)
     elif spec.backend == "numpy" and spec.family is not None:
         state.category = "number"
         name = spec.family.__name__
         if name == "floating":
             state.label = "float64"
+            state.float_bound = float(np.finfo(np.float64).max)
         elif name == "signedinteger":
             state.label = "int64"
             state.allow_float_leaves = False
@@ -589,8 +600,7 @@ def _configure_walk(spec: ArraySpec, np: Any, torch: Any) -> _WalkState:
             state.category = "bool"
         elif spec.dtype.is_floating_point:
             state.category = "number"
-            if spec.dtype is not torch.float64:
-                state.float_bound = float(torch.finfo(spec.dtype).max)
+            state.float_bound = float(torch.finfo(spec.dtype).max)
         else:
             state.category = "number"
             state.allow_float_leaves = False
@@ -618,22 +628,36 @@ def _select_integer_dtype(state: _WalkState, allow_uint64: bool, issue: IssueSin
     overs: list[tuple[str, int]] = state.overs if state.overs is not None else []
     if len(overs) == 0:
         return "int64"
-    if allow_uint64 and not state.negatives and all(value <= _UINT64_MAX for _, value in overs):
-        return "uint64"
     if allow_uint64 and not state.negatives:
-        selected = "uint64"
-        bound = _UINT64_MAX
+        selected, low, high = "uint64", 0, _UINT64_MAX
     else:
-        selected = "int64"
-        bound = _INT64_MAX
+        selected, low, high = "int64", _INT64_MIN, _INT64_MAX
     failed = False
     for over_path, value in overs:
-        if value > bound:
+        if not low <= value <= high:
             failed = True
             issue(over_path, f"value {value} is out of range for array dtype {selected}")
     if failed:
         return None
     return selected
+
+
+def _overs_fit_float64(state: _WalkState, issue: IssueSink) -> bool:
+    """Check recorded huge integer leaves against the float64 magnitude bound.
+
+    Args:
+        state: The finished walk facts carrying values outside the int64 range.
+        issue: Destination for out-of-range issues.
+
+    Returns:
+        True when every recorded value is representable as a finite float64.
+    """
+    fits = True
+    for over_path, value in state.overs if state.overs is not None else []:
+        if abs(value) > _FLOAT64_MAX:
+            fits = False
+            issue(over_path, f"value {value} is out of range for array dtype float64")
+    return fits
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +764,8 @@ def _numpy_plain_target(spec: ArraySpec, state: _WalkState, np: Any, issue: Issu
         # default, the bare form keeps numpy's own empty-input inference.
         return np.dtype(np.int64) if family_name is not None else np.dtype(np.float64)
     if state.has_float:
+        if not _overs_fit_float64(state, issue):
+            return None
         return np.dtype(np.float64)
     selected = _select_integer_dtype(state, allow_uint64=True, issue=issue)
     if selected is None:
@@ -769,6 +795,8 @@ def _torch_plain_target(spec: ArraySpec, state: _WalkState, torch: Any, issue: I
     if state.category is None:
         return torch.float64
     if state.has_float:
+        if not _overs_fit_float64(state, issue):
+            return None
         return torch.float64
     selected = _select_integer_dtype(state, allow_uint64=False, issue=issue)
     if selected is None:
@@ -899,6 +927,20 @@ def _convert_numpy(np: Any, value: Any, target: Any, path: str, issue: IssueSink
         issue(path, f"supplied dtype {src.name} does not satisfy array dtype {target.name}")
         return FAILED
     with np.errstate(all="ignore"):
+        if target.kind in "iu" and src.kind in "iu":
+            # Integer-to-integer conversions check the target's range directly:
+            # a cast round trip wraps bijectively across signedness at equal
+            # widths, so it would pass values the target cannot hold.
+            low, high = int(np.iinfo(target).min), int(np.iinfo(target).max)
+            if int(value.size) > 0 and not (low <= int(value.min()) and int(value.max()) <= high):
+                exact = value.astype(object)
+                out_of_range = (exact < low) | (exact > high)
+                for indices in np.argwhere(out_of_range):
+                    element = value[tuple(indices)].item()
+                    element_path = _index_path(path, [int(i) for i in indices])
+                    issue(element_path, f"value {element} is out of range for array dtype {target.name}")
+                return FAILED
+            return value.astype(target)
         converted = value.astype(target)
         if target.kind in "iu":
             back = converted.astype(src)
@@ -907,7 +949,7 @@ def _convert_numpy(np: Any, value: Any, target: Any, path: str, issue: IssueSink
                 for indices in np.argwhere(mismatched):
                     element = value[tuple(indices)].item()
                     element_path = _index_path(path, [int(i) for i in indices])
-                    if src.kind == "f" and element != int(element):
+                    if element != int(element):
                         issue(element_path, f"expected an integral value for array dtype {target.name}, got {element}")
                     else:
                         issue(element_path, f"value {element} is out of range for array dtype {target.name}")
@@ -921,6 +963,28 @@ def _convert_numpy(np: Any, value: Any, target: Any, path: str, issue: IssueSink
                     issue(element_path, f"value {element} is out of range for array dtype {target.name}")
                 return FAILED
     return converted
+
+
+def _torch_form_issue(torch: Any, value: Any, verb: str) -> str | None:
+    """Check a tensor's structural form: dense strided, materialized storage.
+
+    Args:
+        torch: The loaded torch module.
+        value: The tensor to check.
+        verb: The clause naming the operation, ``"are supported"`` at load and
+          ``"can be serialized"`` at marshal.
+
+    Returns:
+        The issue message for nested, sparse/quantized-layout, or meta tensors,
+        or None for a dense strided tensor with real storage.
+    """
+    if bool(value.is_nested):
+        return f"only dense strided torch tensors {verb}; got a nested tensor"
+    if value.layout is not torch.strided:
+        return f"only dense strided torch tensors {verb}; got {value.layout}"
+    if value.device.type == "meta":
+        return "meta torch tensors carry no element values"
+    return None
 
 
 def _coerce_native_torch(torch: Any, value: Any, spec: ArraySpec, path: str, issue: IssueSink) -> Any:
@@ -939,8 +1003,9 @@ def _coerce_native_torch(torch: Any, value: Any, spec: ArraySpec, path: str, iss
     Returns:
         The tensor itself, a new dtype-converted tensor, or ``FAILED``.
     """
-    if value.layout is not torch.strided:
-        issue(path, f"only dense strided torch tensors are supported; got {value.layout}")
+    form_issue = _torch_form_issue(torch, value, "are supported")
+    if form_issue is not None:
+        issue(path, form_issue)
         return FAILED
     if value.dtype not in _supported_torch_dtypes(torch):
         issue(path, f"unsupported array dtype {_torch_dtype_name(value.dtype)}; {_SUPPORTED_MESSAGE}")
@@ -994,8 +1059,21 @@ def _convert_torch(torch: Any, value: Any, target: Any, path: str, issue: IssueS
         src_name, target_name = _torch_dtype_name(src), _torch_dtype_name(target)
         issue(path, f"supplied dtype {src_name} does not satisfy array dtype {target_name}")
         return FAILED
-    converted = value.to(dtype=target)
     target_name = _torch_dtype_name(target)
+    if not target.is_floating_point and target is not torch.bool and not src.is_floating_point:
+        # Integer-to-integer conversions check the target's range directly:
+        # torch casts wrap silently, and a cast round trip wraps bijectively
+        # across signedness at equal widths. Every supported bound fits int64,
+        # so tensor comparison against Python ints is exact.
+        info = torch.iinfo(target)
+        out_of_range = (value < info.min) | (value > info.max)
+        if bool(out_of_range.any()):
+            for indices in torch.nonzero(out_of_range).cpu().tolist():
+                element = value[tuple(indices)].item()
+                issue(_index_path(path, indices), f"value {element} is out of range for array dtype {target_name}")
+            return FAILED
+        return value.to(dtype=target)
+    converted = value.to(dtype=target)
     if not target.is_floating_point and target is not torch.bool:
         back = converted.to(dtype=src)
         mismatched = back != value
@@ -1003,7 +1081,7 @@ def _convert_torch(torch: Any, value: Any, target: Any, path: str, issue: IssueS
             for indices in torch.nonzero(mismatched).cpu().tolist():
                 element = value[tuple(indices)].item()
                 element_path = _index_path(path, indices)
-                if src.is_floating_point and element != int(element):
+                if element != int(element):
                     issue(element_path, f"expected an integral value for array dtype {target_name}, got {element}")
                 else:
                     issue(element_path, f"value {element} is out of range for array dtype {target_name}")
@@ -1049,8 +1127,9 @@ def validate_array_value(value: Any, path: str, issue: IssueSink) -> Any:
         return value
     torch = _torch()
     if torch is not None and isinstance(value, torch.Tensor):
-        if value.layout is not torch.strided:
-            issue(path, f"only dense strided torch tensors are supported; got {value.layout}")
+        form_issue = _torch_form_issue(torch, value, "are supported")
+        if form_issue is not None:
+            issue(path, form_issue)
             return FAILED
         if value.dtype not in _supported_torch_dtypes(torch):
             issue(path, f"unsupported array dtype {_torch_dtype_name(value.dtype)}; {_SUPPORTED_MESSAGE}")
@@ -1096,8 +1175,9 @@ def array_to_plain(value: Any, path: str, issue: IssueSink) -> Any:
         return value.tolist()
     torch = _torch()
     if torch is not None and isinstance(value, torch.Tensor):
-        if value.layout is not torch.strided:
-            issue(path, f"only dense strided torch tensors can be serialized; got {value.layout}")
+        form_issue = _torch_form_issue(torch, value, "can be serialized")
+        if form_issue is not None:
+            issue(path, form_issue)
             return FAILED
         if value.dtype not in _supported_torch_dtypes(torch):
             issue(path, f"unsupported torch dtype {_torch_dtype_name(value.dtype)}")

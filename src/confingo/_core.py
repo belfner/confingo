@@ -68,6 +68,7 @@ from dataclasses import (
 from enum import Enum
 from pathlib import Path
 from typing import (
+    Annotated,
     Any,
     Literal,
     TypeVar,
@@ -75,6 +76,8 @@ from typing import (
     get_origin,
     get_type_hints,
 )
+
+from confingo import _arrays
 
 
 T = TypeVar("T")
@@ -239,7 +242,7 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
     if cached is not None:
         return cached
     try:
-        hints = get_type_hints(config_cls, include_extras=False)
+        hints = get_type_hints(config_cls, include_extras=True)
     except NameError as exc:
         message = (
             f"cannot resolve the annotations of {config_cls.__name__}: {exc}. "
@@ -248,30 +251,49 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
         )
         raise ConfigError.single(message, context="config schema") from exc
     _HINT_CACHE[config_cls] = hints
-    _warn_unmarked_dataclass(config_cls)
+    _warn_unmarked_dataclass(config_cls, hints)
     return hints
 
 
-def _warn_unmarked_dataclass(config_cls: type[Any]) -> None:
+def _strip_annotated(hint: Any) -> Any:
+    """Unwrap ``Annotated`` layers, returning the underlying type hint.
+
+    Args:
+        hint: A resolved type hint, possibly wrapped in ``Annotated``.
+
+    Returns:
+        The underlying hint; hints without metadata return unchanged.
+    """
+    while get_origin(hint) is Annotated:
+        hint = get_args(hint)[0]
+    return hint
+
+
+def _warn_unmarked_dataclass(config_cls: type[Any], hints: dict[str, Any]) -> None:
     """Emit one ``ConfigWarning`` per plain-dataclass schema class per process.
 
     Classes carrying the ``@configclass`` marker in their own ``__dict__`` pass
     silently; each other schema dataclass warns exactly once, tracked by a
-    module-level seen-set on top of the per-class hint cache.
+    module-level seen-set on top of the per-class hint cache. When the class
+    holds array-annotated fields, the message additionally states that the
+    generated ``__eq__`` raises on comparison.
 
     Args:
         config_cls: The schema dataclass being processed for the first time.
+        hints: The class's resolved annotations.
     """
     if _CONFIGCLASS_MARKER in config_cls.__dict__ or config_cls in _UNMARKED_WARNED:
         return
     _UNMARKED_WARNED.add(config_cls)
     from confingo._configclass import ConfigWarning  # noqa: PLC0415
 
-    warnings.warn(
-        f"{config_cls.__name__} is a plain dataclass; decorate it with @confingo.configclass",
-        ConfigWarning,
-        stacklevel=2,
-    )
+    message = f"{config_cls.__name__} is a plain dataclass; decorate it with @confingo.configclass"
+    if any(_arrays.inspect_annotation(hint).matched for hint in hints.values()):
+        message += (
+            "; its generated __eq__ raises when instances holding multi-element array fields are compared, "
+            "while @confingo.configclass installs canonical equality"
+        )
+    warnings.warn(message, ConfigWarning, stacklevel=2)
 
 
 def _is_dataclass_type(hint: Any) -> bool:
@@ -353,6 +375,12 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
         issues: Destination for any schema issues found.
         seen: Dataclasses already visited on this path, to break reference cycles.
     """
+    array_match = _arrays.inspect_annotation(hint)
+    if array_match.matched:
+        if array_match.error is not None:
+            issues.append(ConfigIssue(path, array_match.error))
+        return
+    hint = _strip_annotated(hint)
     if hint is Any or hint is type(None):
         return
 
@@ -385,9 +413,6 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
                 message = f"unsupported dict key type {_hint_name(key_hint)}; only str keys are supported"
                 issues.append(ConfigIssue(path, message))
             _validate_hint_schema(value_hint, path, issues, seen)
-            return
-        if origin is tuple and args == ((),):
-            # typing.Tuple[()] is the empty tuple; it has no element hints to check.
             return
         for element_hint in args:
             if element_hint is not Ellipsis:
@@ -426,6 +451,7 @@ def _hint_name(hint: Any) -> str:
     Returns:
         A display name such as ``int``, ``str | None``, or ``list[Path]``.
     """
+    hint = _strip_annotated(hint)
     if hint is type(None):
         return "None"
     if hint is Ellipsis:
@@ -559,7 +585,7 @@ def _build(
         field_path = _join(path, field.name)
         if field.name not in data:
             if field.default is MISSING and field.default_factory is MISSING:
-                hint = hints[field.name]
+                hint = _strip_annotated(hints[field.name])
                 if _is_dataclass_type(hint):
                     # An absent dataclass section builds implicitly from an empty
                     # mapping, so its own required leaves surface at their nested
@@ -614,6 +640,17 @@ def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any
     """
     if hint is Any:
         return _coerce_any(value, path, collector)
+
+    array_match = _arrays.inspect_annotation(hint)
+    if array_match.matched:
+        if array_match.spec is None:
+            return _reject(collector, path, typing.cast("str", array_match.error))
+        result = _arrays.coerce_array(value, array_match.spec, path, collector.add)
+        return _UNSET if result is _arrays.FAILED else result
+    hint = _strip_annotated(hint)
+
+    if hint is Any:
+        return _coerce_any(value, path, collector)
     if hint is type(None):
         if value is None:
             return None
@@ -663,6 +700,16 @@ def _coerce_any(value: Any, path: str, collector: _IssueCollector) -> Any:
         The value unchanged, or the ``_UNSET`` sentinel when it holds a non-finite
         float.
     """
+    array_result = _arrays.validate_array_value(value, path, collector.add)
+    if array_result is not _arrays.NOT_ARRAY:
+        return _UNSET if array_result is _arrays.FAILED else array_result
+    is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
+    if is_numpy_scalar:
+        # Supported numpy scalars stay in memory as written and serialize as
+        # Python scalars; only finiteness is enforced here.
+        if isinstance(normalized, float) and not math.isfinite(normalized):
+            return _reject(collector, path, f"expected a finite float, got {normalized!r}")
+        return value
     if isinstance(value, float) and not math.isfinite(value):
         return _reject(collector, path, f"expected a finite float, got {value!r}")
     if isinstance(value, Mapping):
@@ -791,10 +838,6 @@ def _coerce_container(
     items = list(value)
 
     if origin is tuple:
-        if args == ((),):
-            # typing.Tuple[()] reports its empty-tuple arg on 3.10; treat it as the
-            # zero-length form the built-in tuple[()] produces on 3.11+.
-            args = ()
         if len(args) == 2 and args[1] is Ellipsis:
             # tuple[X, ...]: one element type applied to every item.
             element_hints: list[Any] = [args[0]] * len(items)
@@ -840,6 +883,12 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
     Returns:
         The coerced value, or the ``_UNSET`` sentinel when coercion failed.
     """
+    is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
+    if is_numpy_scalar:
+        # A supported numpy scalar feeds the ordinary rules as its exact Python
+        # equivalent, so np.float32 lands on float fields and np.int64 on int.
+        value = normalized
+
     if not isinstance(hint, type):
         return _reject(collector, path, f"unsupported field type {_hint_name(hint)}")
 
@@ -958,40 +1007,91 @@ def to_dict(value: Any) -> Any:
 
     Raises:
         ConfigError: When a value's type falls outside the supported set and has
-          no plain-data form.
+          no plain-data form, or holds a non-finite float; the exception lists
+          every issue found, each tagged with its dotted path.
+    """
+    collector = _IssueCollector()
+    result = _to_plain(value, "", collector)
+    if not collector.clean():
+        raise ConfigError(collector.issues, context="config")
+    return result
+
+
+def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
+    """Convert one value to plain data, recording issues with dotted paths.
+
+    Args:
+        value: The config object or nested value to convert.
+        path: Dotted path of this value, empty at the root.
+        collector: Destination for any issues found.
+
+    Returns:
+        The converted plain-data structure, or the ``_UNSET`` sentinel when this
+        value failed to serialize.
     """
     if is_dataclass(value) and not isinstance(value, type):
         non_init = _non_init_field_names(type(value))
         if len(non_init) > 0:
-            raise ConfigError.single(
-                f"field {non_init[0]!r} is declared init=False, which is unsupported", context="config"
-            )
-        return {field.name: to_dict(getattr(value, field.name)) for field in fields(value)}
+            return _reject(collector, path, f"field {non_init[0]!r} is declared init=False, which is unsupported")
+        node: dict[str, Any] = {}
+        node_failed = False
+        for field in fields(value):
+            item = _to_plain(getattr(value, field.name), _join(path, field.name), collector)
+            if item is _UNSET:
+                node_failed = True
+                continue
+            node[field.name] = item
+        return _UNSET if node_failed else node
     if isinstance(value, Enum):
-        return to_dict(value.value)
+        return _to_plain(value.value, path, collector)
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, (dt.date, dt.time)):
         # Covers date, datetime (itself a date subclass), and time.
         return value.isoformat()
+
+    array_result = _arrays.array_to_plain(value, path, collector.add)
+    if array_result is not _arrays.NOT_ARRAY:
+        return _UNSET if array_result is _arrays.FAILED else array_result
+    is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
+    if is_numpy_scalar:
+        value = normalized
+
     if isinstance(value, Mapping):
         # Convert keys through the same rules; JSON carries string keys natively.
-        return {to_dict(key): to_dict(item) for key, item in value.items()}
+        mapping: dict[Any, Any] = {}
+        mapping_failed = False
+        for key, item in value.items():
+            item_path = _join(path, str(key))
+            plain_key = _to_plain(key, item_path, collector)
+            plain_item = _to_plain(item, item_path, collector)
+            if plain_key is _UNSET or plain_item is _UNSET:
+                mapping_failed = True
+                continue
+            mapping[plain_key] = plain_item
+        return _UNSET if mapping_failed else mapping
     if isinstance(value, (set, frozenset)):
-        items = [to_dict(item) for item in value]
+        # Set elements carry the set's own path: iteration order is unstable, so
+        # an element index would name a different element on each run.
+        elements = [_to_plain(item, path, collector) for item in value]
+        if any(element is _UNSET for element in elements):
+            return _UNSET
         # Sort by each element's canonical JSON text so the order is total and
         # stable across processes even for mixed-type sets whose elements are not
         # mutually orderable; equal sets must hash equal regardless of PYTHONHASHSEED.
-        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        return sorted(elements, key=lambda item: json.dumps(item, sort_keys=True, default=str))
     if isinstance(value, (list, tuple)):
-        return [to_dict(item) for item in value]
+        items = [_to_plain(item, _join(path, str(index)), collector) for index, item in enumerate(value)]
+        if any(item is _UNSET for item in items):
+            return _UNSET
+        return items
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise ConfigError.single(f"cannot serialize non-finite float {value!r}", context="config")
+            return _reject(collector, path, f"cannot serialize non-finite float {value!r}")
         return value
     if value is None or isinstance(value, (bool, int, str)):
         return value
-    raise ConfigError.single(f"cannot serialize value of type {_typename(value)}", context="config")
+    return _reject(collector, path, f"cannot serialize value of type {_typename(value)}")
 
 
 def config_hash(config: Any, *, length: int = 12) -> str:
