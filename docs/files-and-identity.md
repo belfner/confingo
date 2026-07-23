@@ -32,20 +32,15 @@ config = TrainingConfig.load_json(path)  # ConfigError on any failure
 Output uses two-space indentation by default (`indent` parameter), escapes text to ASCII, keeps field-declaration order, and ends with a trailing newline.
 
 
-## YAML extra
+## YAML
 
-YAML support installs as an optional extra and loads lazily, keeping the core import stdlib-only:
-
-```bash
-pip install "confingo[yaml]"
-```
+YAML support ships with the base install, alongside the JSON loaders:
 
 ```python
 config = TrainingConfig.load_yaml("experiment.yaml")
 config.save_yaml("resolved.yaml")
 ```
 
-- Calling a YAML helper on a core-only install raises `ImportError` with the install hint.
 - Loading uses `safe_load` and saving uses `safe_dump`, restricted to the shared plain-data model.
 - `sort_keys=False` is the default, so YAML output preserves field-declaration order; pass `sort_keys=True` for alphabetical keys.
 
@@ -59,7 +54,7 @@ config = TrainingConfig.from_file("experiment.yaml")
 config.to_file(run_dir / "resolved.json")
 ```
 
-A path with a missing or unrecognized suffix raises `ConfigError` naming the supported extensions. The YAML import happens only when a YAML suffix is selected, so JSON dispatch works on a core-only install.
+A path with a missing or unrecognized suffix raises `ConfigError` naming the supported extensions.
 
 
 ## Document and read rules

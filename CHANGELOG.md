@@ -43,6 +43,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- PyYAML (`>=6.0`) is now a core runtime dependency, so YAML file IO
+  (`load_yaml`, `save_yaml`, `dumps_yaml`, and the matching `ConfigRoot`
+  methods) and extension dispatch work from the base install. The three YAML
+  helpers are importable directly from `confingo` and resolve at import time.
+  The `yaml` optional extra is removed; `pip install confingo` now carries YAML
+  support.
 - Python 3.11 is the minimum supported version.
 - `to_dict` collects every serialization problem in one pass, each tagged with
   its dotted path, matching the collect-all model `from_dict` already follows.

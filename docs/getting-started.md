@@ -11,7 +11,7 @@ This page takes you from installation to a loaded, typed training configuration,
 pip install confingo
 ```
 
-The core library runs on Python 3.11+ and imports only the standard library. YAML support is an optional extra covered in [Files, formats, and run identity](files-and-identity.md#yaml-extra).
+The library runs on Python 3.11+. JSON and YAML file IO both work from the base install; YAML is covered in [Files, formats, and run identity](files-and-identity.md#yaml).
 
 
 ## Define the schema

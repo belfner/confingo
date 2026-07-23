@@ -15,7 +15,7 @@ config.to_file(Path("runs") / run_id / "resolved.json")
 pip install confingo
 ```
 
-New to the library? [Getting started](getting-started.md) goes from install to a loaded, hashed training config in about five minutes. YAML setup lives in [Files, formats, and run identity](files-and-identity.md#yaml-extra).
+New to the library? [Getting started](getting-started.md) goes from install to a loaded, hashed training config in about five minutes. YAML lives in [Files, formats, and run identity](files-and-identity.md#yaml).
 
 
 ## Choose a topic
@@ -57,4 +57,4 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 
 ## Compatibility
 
-Python 3.11+. The core imports only the standard library; YAML support arrives with `pip install "confingo[yaml]"`. NumPy and PyTorch fields activate through presence detection when the application imports those packages itself.
+Python 3.11+. The one runtime dependency is PyYAML (`>=6.0`), which carries the YAML loaders; JSON and hashing use only the standard library. NumPy and PyTorch fields activate through presence detection when the application imports those packages itself.

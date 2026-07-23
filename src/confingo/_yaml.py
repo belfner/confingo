@@ -1,12 +1,11 @@
-"""YAML file IO for config objects, available through the ``yaml`` extra.
+"""YAML file IO for config objects.
 
-The optional counterpart to the JSON loaders (``pip install confingo[yaml]``).
-``load_yaml`` reads a YAML document into a dataclass tree, and ``dumps_yaml`` /
-``save_yaml`` render a config object back to YAML text. Both sides move through
-the same JSON-safe data model as the JSON loaders -- mappings, sequences, and
-scalars -- so a config round-trips across the two formats. Documents are read
-with the safe loader and written with the safe dumper, which stays within that
-shared data model.
+The YAML counterpart to the JSON loaders. ``load_yaml`` reads a YAML document
+into a dataclass tree, and ``dumps_yaml`` / ``save_yaml`` render a config object
+back to YAML text. Both sides move through the same JSON-safe data model as the
+JSON loaders -- mappings, sequences, and scalars -- so a config round-trips
+across the two formats. Documents are read with the safe loader and written with
+the safe dumper, which stays within that shared data model.
 """
 
 from __future__ import annotations
@@ -17,11 +16,7 @@ from typing import (
     TypeVar,
 )
 
-
-try:
-    import yaml
-except ImportError as exc:  # PyYAML is an optional extra.
-    raise ImportError("YAML support requires PyYAML; install it with: pip install confingo[yaml]") from exc
+import yaml
 
 from confingo._core import (
     ConfigError,

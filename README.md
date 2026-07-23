@@ -8,8 +8,7 @@ The dataclass declaration is the single source of truth: it serves at once as th
 ## Installation
 
 ```bash
-pip install confingo          # core, stdlib-only
-pip install "confingo[yaml]"  # adds YAML support
+pip install confingo
 ```
 
 Runs on Python 3.11 and newer.

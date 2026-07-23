@@ -6,8 +6,6 @@ unmarshal config files back into validated dataclass trees.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from confingo._core import (
     ConfigError,
     ConfigIssue,
@@ -26,41 +24,15 @@ from confingo._json import (
     save_json,
 )
 from confingo._root import ConfigRoot
+from confingo._yaml import (
+    dumps_yaml,
+    load_yaml,
+    save_yaml,
+)
 
 
 # Kept in sync with the version declared in pyproject.toml.
-__version__ = "0.2.0"
-
-if TYPE_CHECKING:
-    from confingo._yaml import dumps_yaml as dumps_yaml
-    from confingo._yaml import load_yaml as load_yaml
-    from confingo._yaml import save_yaml as save_yaml
-
-_LAZY_YAML = frozenset({"dumps_yaml", "load_yaml", "save_yaml"})
-
-
-def __getattr__(name: str) -> object:
-    """Resolve the optional YAML helpers on first access.
-
-    The YAML helpers live behind the ``yaml`` extra so the core imports no
-    third-party packages. Accessing one imports it on demand, raising a helpful
-    error when PyYAML is absent.
-
-    Args:
-        name: The attribute being accessed on the package.
-
-    Returns:
-        The requested YAML helper function.
-
-    Raises:
-        ImportError: When a YAML helper is accessed and PyYAML is not installed.
-        AttributeError: When the name is not a package member.
-    """
-    if name in _LAZY_YAML:
-        from confingo import _yaml  # noqa: PLC0415
-
-        return getattr(_yaml, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__version__ = "0.3.0"
 
 
 __all__ = [
@@ -70,10 +42,13 @@ __all__ = [
     "config_equal",
     "config_hash",
     "dumps_json",
+    "dumps_yaml",
     "from_dict",
     "from_file",
     "load_json",
+    "load_yaml",
     "save_json",
+    "save_yaml",
     "to_dict",
     "to_file",
 ]

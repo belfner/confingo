@@ -22,10 +22,10 @@ from confingo import (
     to_dict,
     to_file,
 )
-from confingo import dumps_yaml, load_yaml, save_yaml  # confingo[yaml]
+from confingo import dumps_yaml, load_yaml, save_yaml
 ```
 
-The YAML helpers resolve lazily on first attribute access, so the core import works on a stdlib-only install. `confingo.__version__` carries the package version.
+`confingo.__version__` carries the package version.
 
 
 ## Schema declaration and equality
@@ -69,7 +69,7 @@ Learn more: [Files, formats, and run identity](files-and-identity.md#json).
 
 ## YAML functions
 
-Require the `yaml` extra; on a core-only install these raise `ImportError` with the install hint. Learn more: [YAML extra](files-and-identity.md#yaml-extra).
+Built into the base install. Learn more: [YAML](files-and-identity.md#yaml).
 
 | Function | Behavior |
 | --- | --- |

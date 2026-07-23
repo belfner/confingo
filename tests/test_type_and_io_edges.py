@@ -233,36 +233,6 @@ def test_config_hash_stable_across_hash_seeds():
     assert len(digests) == 1
 
 
-# --- the yaml extra stays isolated when PyYAML is absent ----------------
-
-_ISOLATION_PROG = (
-    "import sys\n"
-    "sys.modules['yaml'] = None\n"  # make `import yaml` raise ImportError
-    "import tempfile, pathlib\n"
-    "from dataclasses import dataclass\n"
-    "import confingo\n"
-    "from confingo import from_file, to_file\n"
-    "@dataclass\n"
-    "class C:\n"
-    "    x: int = 1\n"
-    "with tempfile.TemporaryDirectory() as d:\n"
-    "    p = pathlib.Path(d) / 'c.json'\n"
-    "    to_file(C(x=5), p)\n"
-    "    assert from_file(C, p).x == 5\n"
-    "try:\n"
-    "    confingo.load_yaml\n"
-    "    raise SystemExit('yaml did not raise')\n"
-    "except ImportError as e:\n"
-    "    assert 'confingo[yaml]' in str(e), str(e)\n"
-    "print('ISOLATION_OK')\n"
-)
-
-
-def test_yaml_isolated_without_pyyaml():
-    out = subprocess.run([sys.executable, "-c", _ISOLATION_PROG], capture_output=True, text=True, check=True)
-    assert "ISOLATION_OK" in out.stdout
-
-
 def test_supported_types_still_work():
     # A guard that the tightening did not break a normal supported schema.
     cfg = from_dict(Trainer, {"lr": 1e-4, "hidden": [128, 64]})

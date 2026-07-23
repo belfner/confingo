@@ -1,9 +1,8 @@
 """Format-dispatching file IO that picks JSON or YAML by the path's extension.
 
 ``from_file`` and ``to_file`` map a file extension to the matching loader:
-``.json`` uses the JSON functions, and ``.yaml`` / ``.yml`` use the YAML functions
-from the ``yaml`` extra. An extension that names no supported format raises a
-``ConfigError``.
+``.json`` uses the JSON functions, and ``.yaml`` / ``.yml`` use the YAML
+functions. An extension that names no supported format raises a ``ConfigError``.
 """
 
 from __future__ import annotations
@@ -18,6 +17,10 @@ from confingo._core import ConfigError
 from confingo._json import (
     load_json,
     save_json,
+)
+from confingo._yaml import (
+    load_yaml,
+    save_yaml,
 )
 
 
@@ -55,8 +58,7 @@ def _format_for(path: str | Path) -> str:
 def from_file(config_cls: type[T], path: str | Path) -> T:
     """Load a config file, choosing the loader from the path's extension.
 
-    A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML,
-    which requires the ``yaml`` extra.
+    A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML.
 
     Args:
         config_cls: The root dataclass to build.
@@ -71,16 +73,13 @@ def from_file(config_cls: type[T], path: str | Path) -> T:
     """
     if _format_for(path) == "json":
         return load_json(config_cls, path)
-    from confingo._yaml import load_yaml  # noqa: PLC0415
-
     return load_yaml(config_cls, path)
 
 
 def to_file(config: Any, path: str | Path, *, indent: int = 2) -> Path:
     """Write a config file, choosing the writer from the path's extension.
 
-    A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML, which
-    requires the ``yaml`` extra.
+    A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML.
 
     Args:
         config: The config object to write.
@@ -95,6 +94,4 @@ def to_file(config: Any, path: str | Path, *, indent: int = 2) -> Path:
     """
     if _format_for(path) == "json":
         return save_json(config, path, indent=indent)
-    from confingo._yaml import save_yaml  # noqa: PLC0415
-
     return save_yaml(config, path, indent=indent)
