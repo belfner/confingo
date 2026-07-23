@@ -706,3 +706,15 @@ def test_native_equal_rejects_unsupported_forms():
     assert _arrays.native_equal(sparse, np.array([1.0, 0.0])) is _arrays.NOT_COMPARABLE
     strings = np.array(["a"])
     assert _arrays.native_equal(strings, strings) is _arrays.NOT_COMPARABLE
+
+
+def test_native_equal_declines_tensor_subclasses():
+    param = torch.nn.Parameter(torch.tensor([1.0]))
+    assert _arrays.native_equal(param, torch.tensor([1.0])) is _arrays.NOT_COMPARABLE
+    assert _arrays.native_equal(param, np.array([1.0])) is _arrays.NOT_COMPARABLE
+
+
+def test_native_equal_resolves_negative_bit_views():
+    view = torch._neg_view(torch.tensor([1.0, -2.0]))
+    assert _arrays.native_equal(view, np.array([-1.0, 2.0])) is True
+    assert _arrays.native_equal(view, torch.tensor([-1.0, 2.0])) is True

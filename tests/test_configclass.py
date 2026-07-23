@@ -233,11 +233,18 @@ def test_plain_root_compares_across_loads():
     assert from_dict(PlainTwin, {"name": "sgd"}) != from_dict(PlainTwin, {"name": "adam"})
 
 
-def test_class_body_eq_on_a_plain_dataclass_is_kept():
-    user_eq = PlainUserEq.__dict__["__eq__"]
+def test_body_eq_on_an_unmarked_dataclass_is_replaced():
     from_dict(PlainUserEq, {})
-    assert PlainUserEq.__dict__["__eq__"] is user_eq
-    assert PlainUserEq(x=1) == PlainUserEq(x=2)
+    assert PlainUserEq.__dict__["__eq__"] is _canonical_eq
+    assert PlainUserEq(x=3) == PlainUserEq(x=3)
+    assert PlainUserEq(x=1) != PlainUserEq(x=2)
+
+
+def test_configclass_body_eq_is_the_custom_equality_path():
+    assert CustomEq.__dict__["__eq__"] is not _canonical_eq
+    from_dict(CustomEq, {})
+    assert CustomEq.__dict__["__eq__"] is not _canonical_eq
+    assert CustomEq(x=1) == CustomEq(x=2)
 
 
 def test_eq_false_dataclass_gains_canonical_eq():

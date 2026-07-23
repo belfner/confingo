@@ -21,9 +21,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   equality, a user-defined `__eq__` is respected with standard Python hashing
   semantics, and `eq` / `order` / `unsafe_hash` arguments raise `TypeError`.
   Plain `@dataclass` schemas are equally supported: at first schema
-  processing each receives the same canonical `__eq__` in place of the
-  dataclass-generated one, with identity hashing restored alongside it, so
-  sections and roots declared either way share one equality contract.
+  processing every unmarked schema class receives the same canonical
+  `__eq__` in place of the one it carried, with identity hashing restored
+  alongside it, so sections and roots declared either way share one
+  equality contract; a custom `__eq__` belongs in a `@configclass` body.
 - NumPy array and PyTorch tensor fields, presence-detected: the backends
   install with the application, confingo's core stays stdlib-only, and
   `import confingo` loads neither. Supported annotations: bare `np.ndarray`,

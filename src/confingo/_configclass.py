@@ -47,20 +47,26 @@ _T = TypeVar("_T")
 _MISSING = object()
 """Sentinel distinguishing an absent class-dict entry from a stored None."""
 
-_GENERATED_CODE_FILENAME = "<string>"
-"""Code filename ``dataclasses`` assigns to the methods it generates."""
+_EXACT_PRIMITIVES = (bool, int, float, str)
+"""Builtin scalar types whose own ``==`` matches plain-form comparison exactly.
+
+Membership is by exact type: subclasses such as ``np.float64`` (whose ``==``
+applies NumPy promotion) and enum members (whose ``==`` may be overridden)
+compare through their serialized forms instead.
+"""
 
 
 def _values_equal(a: Any, b: Any) -> bool:
     """Compare two field values by their canonical serialized forms.
 
     Array pairs of the loaded backends compare through
-    ``_arrays.native_equal`` where its vectorized path applies. Scalar
-    primitives compare directly, dataclass pairs of the same class and
-    list / tuple / dict pairs recurse structurally, and every other pair
-    compares by its ``to_dict`` form. Each branch agrees with plain-form
-    comparison on the supported value domain, so the walk is an evaluation
-    strategy for one equality relation.
+    ``_arrays.native_equal`` where its vectorized path applies. Exact-type
+    builtin scalars compare directly, dataclass pairs of the same class,
+    sequence pairs, and str-keyed dict pairs recurse structurally, and
+    every other pair -- scalar subclasses, enum members, dicts with
+    canonicalizing keys -- compares by its ``to_dict`` form. Each branch
+    agrees with plain-form comparison on the supported value domain, so the
+    walk is an evaluation strategy for one equality relation.
 
     Args:
         a: The left-hand value.
@@ -74,7 +80,7 @@ def _values_equal(a: Any, b: Any) -> bool:
         return bool(verdict)
     if a is None or b is None:
         return a is b
-    if isinstance(a, (bool, int, float, str)) and isinstance(b, (bool, int, float, str)):
+    if type(a) in _EXACT_PRIMITIVES and type(b) in _EXACT_PRIMITIVES:
         return bool(a == b)
     if is_dataclass(a) and not isinstance(a, type) and a.__class__ is b.__class__:
         return all(_values_equal(getattr(a, f.name), getattr(b, f.name)) for f in fields(a))
@@ -82,7 +88,12 @@ def _values_equal(a: Any, b: Any) -> bool:
         if len(a) != len(b):
             return False
         return all(_values_equal(x, y) for x, y in zip(a, b, strict=True))
-    if isinstance(a, dict) and isinstance(b, dict):
+    if (
+        isinstance(a, dict)
+        and isinstance(b, dict)
+        and all(type(key) is str for key in a)
+        and all(type(key) is str for key in b)
+    ):
         if a.keys() != b.keys():
             return False
         return all(_values_equal(item, b[key]) for key, item in a.items())
@@ -113,27 +124,21 @@ def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
 def _install_canonical_eq(config_cls: type[Any]) -> None:
     """Install canonical equality on a schema dataclass at schema processing.
 
-    ``@configclass``-decorated classes already carry canonical equality. Any
-    other schema dataclass has it installed in place: the dataclass-generated
-    ``__eq__``, recognized by the synthetic code filename ``dataclasses``
-    assigns, is replaced with ``_canonical_eq``, and a ``__hash__`` slot the
-    dataclass set to None reverts to identity hashing, so plain
-    ``@dataclass`` sections carry the same equality and hashing contract as
-    decorated ones. A class whose body defines ``__eq__`` keeps it, and a
-    class carrying its own ``__hash__`` implementation keeps that.
+    The ``@configclass`` marker is the single signal: a marked class already
+    carries its equality contract from decoration time (a body-defined
+    ``__eq__`` included) and is left alone, and every unmarked schema
+    dataclass has ``_canonical_eq`` installed in place of the ``__eq__`` it
+    carried, with a ``__hash__`` slot the dataclass set to None reverting to
+    identity hashing. A schema class that needs a custom ``__eq__`` declares
+    it in a ``@configclass`` body, where the decorator respects it.
 
     Args:
         config_cls: The schema dataclass being processed.
     """
     if _CONFIGCLASS_MARKER in config_cls.__dict__:
         return
-    current = config_cls.__dict__.get("__eq__")
-    if current is _canonical_eq:
+    if config_cls.__dict__.get("__eq__") is _canonical_eq:
         return
-    if current is not None:
-        code = getattr(current, "__code__", None)
-        if code is None or code.co_filename != _GENERATED_CODE_FILENAME:
-            return
     config_cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
     if config_cls.__dict__.get("__hash__", _MISSING) is None:
         config_cls.__hash__ = object.__hash__  # type: ignore[method-assign]

@@ -403,9 +403,35 @@ def test_grad_and_bfloat16_tensors_compare_by_value():
 
 
 def test_nan_bearing_arrays_compare_unequal_outside_the_finite_domain():
+    from_dict(PlainWithArray, {})
     left = PlainWithArray(weights=np.array([np.nan], dtype=np.float32))
     right = PlainWithArray(weights=np.array([np.nan], dtype=np.float32))
     assert left != right
+
+
+def test_scalar_shortcut_stays_exact_for_numpy_scalars():
+    assert AnyHolder(value=np.float64(2**53)) != AnyHolder(value=2**53 + 1)
+    assert AnyHolder(value=np.float64(1.5)) == AnyHolder(value=1.5)
+
+
+def test_canonicalizing_dict_keys_compare_by_plain_form():
+    from pathlib import Path  # noqa: PLC0415
+
+    assert AnyHolder(value={Path("x"): 1}) == AnyHolder(value={"x": 1})
+    assert AnyHolder(value={"x": 1}) != AnyHolder(value={"y": 1})
+
+
+def test_negative_bit_tensor_views_compare_by_value():
+    view = torch._neg_view(torch.tensor([1.0, -2.0]))
+    assert AnyHolder(value=view) == AnyHolder(value=np.array([-1.0, 2.0]))
+    assert AnyHolder(value=view) == AnyHolder(value=torch.tensor([-1.0, 2.0]))
+    assert AnyHolder(value=view) != AnyHolder(value=np.array([1.0, -2.0]))
+
+
+def test_tensor_subclasses_compare_by_serialized_value():
+    param = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    assert AnyHolder(value=param) == AnyHolder(value=torch.tensor([1.0, 2.0]))
+    assert AnyHolder(value=param) != AnyHolder(value=torch.tensor([1.0, 3.0]))
 
 
 def test_array_mapping_keys_under_any_are_rejected_at_load():

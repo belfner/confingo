@@ -36,7 +36,7 @@ Learn more: [configclass and equality](schema-design.md#configclass-and-equality
 
 Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and the `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Installs canonical `__eq__`: two configs are equal exactly when they serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A user-defined `__eq__` in the class body is respected and carries standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
 
-Plain `@dataclass` schema classes receive the same canonical `__eq__` (and identity hashing where the dataclass had disabled hashing) at their first schema processing, so sections and roots declared either way share one equality contract; a class-body `__eq__` on a plain schema class is likewise respected.
+Plain `@dataclass` schema classes receive the same canonical `__eq__` (and identity hashing where the dataclass had disabled hashing) at their first schema processing, so sections and roots declared either way share one equality contract. The `@configclass` marker is the single signal: unmarked classes always receive the installation, and a custom `__eq__` belongs in a `@configclass` body.
 
 
 ## Construction and conversion

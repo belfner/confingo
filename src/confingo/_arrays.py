@@ -1253,8 +1253,10 @@ def native_equal(a: Any, b: Any) -> Any:
     with bfloat16 widening exactly to float32 first, and tensor pairs on
     different devices compare on the CPU. Every other pair -- inexactly
     promoting kind mixes, zero-size values whose trailing dimensions collapse
-    in the encoding, ndarray subclasses, and unsupported dtypes or tensor
-    forms -- reports ``NOT_COMPARABLE`` so the caller compares plain forms.
+    in the encoding, subclasses of either backend's array type (whose
+    overridable operators could skew the verdict), and unsupported dtypes or
+    tensor forms -- reports ``NOT_COMPARABLE`` so the caller compares plain
+    forms.
 
     Args:
         a: The left-hand value.
@@ -1266,8 +1268,8 @@ def native_equal(a: Any, b: Any) -> Any:
     """
     np = _numpy()
     torch = _torch()
-    a_tensor = torch is not None and isinstance(a, torch.Tensor)
-    b_tensor = torch is not None and isinstance(b, torch.Tensor)
+    a_tensor = torch is not None and type(a) is torch.Tensor
+    b_tensor = torch is not None and type(b) is torch.Tensor
     a_array = np is not None and type(a) is np.ndarray
     b_array = np is not None and type(b) is np.ndarray
     if a_tensor and b_tensor:
@@ -1391,14 +1393,16 @@ def _tensor_as_numpy(torch: Any, value: Any) -> Any | None:
 
     Returns:
         A CPU numpy view of the detached tensor, with bfloat16 widened
-        exactly to float32, or None for tensors outside the supported dense
-        forms.
+        exactly to float32 and a lazy negative bit materialized, or None for
+        tensors outside the supported dense forms.
     """
     if value.dtype not in _supported_torch_dtypes(torch):
         return None
     if _torch_form_issue(torch, value, "are supported") is not None:
         return None
     out = value.detach()
+    if bool(out.is_neg()):
+        out = out.resolve_neg()
     if out.dtype is torch.bfloat16:
         out = out.to(torch.float32)
     if out.device.type != "cpu":
