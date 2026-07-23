@@ -14,8 +14,10 @@ Leaf types are ``bool``, ``int``, ``float``, ``str``, ``Path``, ``datetime`` /
 ``date`` / ``time``, ``Enum`` subclasses, ``Literal[...]``, ``Any``, and ``None``.
 Composite types are nested dataclasses, ``list`` / ``tuple`` / ``set`` /
 ``frozenset`` / ``Sequence`` of a supported type, ``dict[str, X]`` / ``Mapping``
-with ``str`` keys, and unions of supported types. A field annotated with a type
-outside this set is reported as an issue.
+with ``str`` keys, and unions of supported types. ``Enum`` members and ``Literal``
+arguments carry primitive values (``str`` / ``int`` / ``bool``) so they round-trip
+through plain data, and every field is constructor-settable (``init=True``). A
+field annotated with a type outside this set is reported as an issue.
 
 Resolution order:
 Values are layered lowest to highest precedence:
@@ -23,21 +25,22 @@ Values are layered lowest to highest precedence:
 1. dataclass field defaults,
 2. the mapping passed to ``from_dict`` (typically parsed from a config file).
 
-A field absent from the mapping falls back to its default; a field with no
+A field absent from the mapping falls back to its declared default, used as the
+author wrote it; defaults are trusted rather than re-coerced. A field with no
 default is required.
 
 Validation:
 ``from_dict`` walks the whole dataclass tree before raising, so one call reports
 every problem it found: unknown keys, missing required values, type mismatches,
-and failures raised from ``__post_init__``. To report several problems from a
-single node, give the dataclass an ``__validate__`` method returning an iterable
-of message strings; each becomes its own entry in the report.
+and a ``ValueError`` or ``TypeError`` raised from ``__post_init__``. To report
+several problems from a single node, give the dataclass an ``__validate__`` method
+returning an iterable of message strings; each becomes its own entry in the report.
 
 Identity:
 ``config_hash`` fingerprints the resolved config with a stable digest over its
-canonical JSON form. Equal configs hash equal across processes and key orderings,
-which makes the digest usable for run naming, deduplication, and confirming that
-a rerun used the same settings.
+canonical JSON form. The digest is stable across processes and independent of
+mapping key order and set iteration order, which makes it usable for run naming,
+deduplication, and confirming that a rerun used the same settings.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import types
 import typing
 from collections.abc import (
@@ -77,6 +81,9 @@ _UNSET = object()
 
 _HINT_CACHE: dict[type[Any], dict[str, Any]] = {}
 
+_SCHEMA_CACHE: dict[type[Any], tuple[ConfigIssue, ...]] = {}
+"""Per-dataclass cache of schema-validation issues, keyed by the root type."""
+
 _BARE_CONTAINERS: dict[Any, Any] = {
     tuple: tuple,
     list: list,
@@ -94,6 +101,9 @@ scalar path and keeps its own type.
 
 _SEQUENCE_BUILDERS: dict[Any, Any] = {tuple: tuple, set: set, frozenset: frozenset}
 """Sequence origins mapped to their builder; any other origin builds a ``list``."""
+
+_CONTAINER_ORIGINS: frozenset[Any] = frozenset({list, tuple, set, frozenset, dict, Sequence, Mapping})
+"""Parameterized generic origins the engine accepts; every other origin is rejected."""
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +254,137 @@ def _is_dataclass_type(hint: Any) -> bool:
     return isinstance(hint, type) and is_dataclass(hint)
 
 
+def _non_init_field_names(config_cls: type[Any]) -> list[str]:
+    """List a dataclass's ``init=False`` field names.
+
+    Args:
+        config_cls: The dataclass to inspect.
+
+    Returns:
+        The names of fields declared ``field(init=False)``, in declaration order.
+    """
+    return [field.name for field in fields(config_cls) if not field.init]
+
+
+def _validate_schema(config_cls: type[Any]) -> tuple[ConfigIssue, ...]:
+    """Validate a dataclass's field annotations against the supported type set.
+
+    This inspects the schema itself, independent of any config data, so an
+    unsupported annotation is reported even when the field is omitted and falls
+    back to its default. Field default values are left untouched.
+
+    Args:
+        config_cls: The root dataclass to validate.
+
+    Returns:
+        The schema issues found, empty when the schema is fully supported.
+    """
+    cached = _SCHEMA_CACHE.get(config_cls)
+    if cached is not None:
+        return cached
+    issues: list[ConfigIssue] = []
+    _validate_dataclass_schema(config_cls, "", issues, set())
+    result = tuple(issues)
+    _SCHEMA_CACHE[config_cls] = result
+    return result
+
+
+def _validate_dataclass_schema(
+    config_cls: type[Any], path: str, issues: list[ConfigIssue], seen: set[type[Any]]
+) -> None:
+    """Collect schema issues for one dataclass, recursing into nested dataclasses.
+
+    Args:
+        config_cls: The dataclass to inspect.
+        path: Dotted schema path of this node, empty at the root.
+        issues: Destination for any schema issues found.
+        seen: Dataclasses already visited on this path, to break reference cycles.
+    """
+    if config_cls in seen:
+        return
+    seen = seen | {config_cls}
+    hints = _resolved_hints(config_cls)
+    for field in fields(config_cls):
+        field_path = _join(path, field.name)
+        if not field.init:
+            issues.append(ConfigIssue(field_path, "field is declared init=False, which is unsupported"))
+            continue
+        _validate_hint_schema(hints[field.name], field_path, issues, seen)
+
+
+def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen: set[type[Any]]) -> None:
+    """Collect schema issues for one resolved type hint.
+
+    Args:
+        hint: The resolved type hint to inspect.
+        path: Dotted schema path of the field carrying this hint.
+        issues: Destination for any schema issues found.
+        seen: Dataclasses already visited on this path, to break reference cycles.
+    """
+    if hint is Any or hint is type(None):
+        return
+
+    origin = get_origin(hint)
+    args = get_args(hint)
+
+    if origin is Literal:
+        # Exact type, not isinstance: an Enum member can subclass str/int yet fails
+        # the exact-type Literal match, so it is not a supported primitive option.
+        issues.extend(
+            ConfigIssue(path, f"Literal values must be primitive (str, int, bool); got {option!r}")
+            for option in args
+            if option is not None and type(option) not in (bool, int, str)
+        )
+        return
+
+    if origin is typing.Union or origin is types.UnionType:
+        for member in args:
+            _validate_hint_schema(member, path, issues, seen)
+        return
+
+    if origin is not None:
+        if origin not in _CONTAINER_ORIGINS:
+            issues.append(ConfigIssue(path, f"unsupported field type {_hint_name(hint)}"))
+            return
+        if origin in (dict, Mapping):
+            key_hint = args[0] if len(args) == 2 else str
+            value_hint = args[1] if len(args) == 2 else Any
+            if key_hint is not str:
+                message = f"unsupported dict key type {_hint_name(key_hint)}; only str keys are supported"
+                issues.append(ConfigIssue(path, message))
+            _validate_hint_schema(value_hint, path, issues, seen)
+            return
+        if origin is tuple and args == ((),):
+            # typing.Tuple[()] is the empty tuple; it has no element hints to check.
+            return
+        for element_hint in args:
+            if element_hint is not Ellipsis:
+                _validate_hint_schema(element_hint, path, issues, seen)
+        return
+
+    if _is_dataclass_type(hint):
+        _validate_dataclass_schema(hint, path, issues, seen)
+        return
+
+    if isinstance(hint, type):
+        if hint in _BARE_CONTAINERS:
+            return
+        if issubclass(hint, Enum):
+            for member in hint:
+                if not isinstance(member.value, (bool, int, str)):
+                    issues.append(
+                        ConfigIssue(
+                            path, f"enum {hint.__name__} must carry primitive values; {member.name} is {member.value!r}"
+                        )
+                    )
+                    break
+            return
+        if hint in (bool, int, float, str) or issubclass(hint, (Path, dt.date, dt.time)):
+            return
+
+    issues.append(ConfigIssue(path, f"unsupported field type {_hint_name(hint)}"))
+
+
 def _hint_name(hint: Any) -> str:
     """Render a type hint as a short readable name for error messages.
 
@@ -325,6 +466,9 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
           value fails to coerce, or any node's ``__post_init__`` or ``__validate__``
           rejects it. The exception lists every issue found in the whole tree.
     """
+    schema_issues = _validate_schema(config_cls)
+    if len(schema_issues) > 0:
+        raise ConfigError(schema_issues, context=context)
     collector = _IssueCollector()
     instance = _build(config_cls, data, "", collector)
     if not collector.clean():
@@ -349,6 +493,12 @@ def _build(config_cls: type[Any], data: Any, path: str, collector: _IssueCollect
         return _reject(collector, path, f"expected a mapping for {config_cls.__name__}, got {_typename(data)}")
 
     hints = _resolved_hints(config_cls)
+    non_init = _non_init_field_names(config_cls)
+    if len(non_init) > 0:
+        for name in non_init:
+            collector.add(_join(path, name), "field is declared init=False, which is unsupported")
+        return _UNSET
+
     init_fields = [field for field in fields(config_cls) if field.init]
     known = {field.name for field in init_fields}
     for key in data:
@@ -400,7 +550,7 @@ def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any
         The coerced value, or the ``_UNSET`` sentinel when coercion failed.
     """
     if hint is Any:
-        return value
+        return _coerce_any(value, path, collector)
     if hint is type(None):
         if value is None:
             return None
@@ -419,7 +569,9 @@ def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any
         return _coerce_union(value, hint, args, path, collector)
 
     if origin is not None:
-        return _coerce_container(value, hint, origin, args, path, collector)
+        if origin in _CONTAINER_ORIGINS:
+            return _coerce_container(value, hint, origin, args, path, collector)
+        return _reject(collector, path, f"unsupported field type {_hint_name(hint)}")
 
     if _is_dataclass_type(hint):
         return _build(hint, value, path, collector)
@@ -430,6 +582,42 @@ def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any
             return _coerce_container(value, hint, bare_origin, (), path, collector)
 
     return _coerce_scalar(value, hint, path, collector)
+
+
+def _coerce_any(value: Any, path: str, collector: _IssueCollector) -> Any:
+    """Accept a value under an ``Any`` field, rejecting only non-finite floats.
+
+    ``Any`` passes plain data through unchanged, but a non-finite float has no JSON
+    form, so it is rejected wherever it appears in the accepted value, including
+    inside nested mappings and sequences.
+
+    Args:
+        value: The raw value from the config mapping.
+        path: Dotted path of this value.
+        collector: Destination for any issues found.
+
+    Returns:
+        The value unchanged, or the ``_UNSET`` sentinel when it holds a non-finite
+        float.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return _reject(collector, path, f"expected a finite float, got {value!r}")
+    if isinstance(value, Mapping):
+        failed = False
+        for key, item in value.items():
+            item_path = _join(path, str(key))
+            if _coerce_any(key, item_path, collector) is _UNSET:
+                failed = True
+            if _coerce_any(item, item_path, collector) is _UNSET:
+                failed = True
+        return _UNSET if failed else value
+    if isinstance(value, (list, tuple, set, frozenset)):
+        failed = False
+        for index, item in enumerate(value):
+            if _coerce_any(item, _join(path, str(index)), collector) is _UNSET:
+                failed = True
+        return _UNSET if failed else value
+    return value
 
 
 def _coerce_union(value: Any, hint: Any, args: tuple[Any, ...], path: str, collector: _IssueCollector) -> Any:
@@ -447,7 +635,13 @@ def _coerce_union(value: Any, hint: Any, args: tuple[Any, ...], path: str, colle
     """
     if value is None and type(None) in args:
         return None
-    for candidate in (arg for arg in args if arg is not type(None)):
+    non_none = [arg for arg in args if arg is not type(None)]
+    if len(non_none) == 1:
+        # A single-type optional (``X | None``) has one real branch, so coerce
+        # directly against it in a single pass: its own nested issues surface, and
+        # its ``__post_init__`` / ``__validate__`` run exactly once.
+        return _coerce(value, non_none[0], path, collector)
+    for candidate in non_none:
         # Probe each member with a throwaway collector so member-level failures
         # stay silent; the first clean conversion wins. Member order is precedence.
         trial = _IssueCollector()
@@ -506,10 +700,11 @@ def _coerce_container(
     if origin in (dict, Mapping):
         if not isinstance(value, Mapping):
             return _reject(collector, path, f"expected a mapping for {_hint_name(hint)}, got {_typename(value)}")
-        key_hint = args[0] if len(args) == 2 else Any
+        # Config files carry string keys, so bare mappings default to str keys and
+        # only str-keyed dicts are supported.
+        key_hint = args[0] if len(args) == 2 else str
         value_hint = args[1] if len(args) == 2 else Any
-        # Config files carry string keys, so only str-keyed dicts are supported.
-        if key_hint is not Any and key_hint is not str:
+        if key_hint is not str:
             return _reject(
                 collector, path, f"unsupported dict key type {_hint_name(key_hint)}; only str keys are supported"
             )
@@ -533,12 +728,22 @@ def _coerce_container(
     items = list(value)
 
     if origin is tuple:
+        if args == ((),):
+            # typing.Tuple[()] reports its empty-tuple arg on 3.10; treat it as the
+            # zero-length form the built-in tuple[()] produces on 3.11+.
+            args = ()
         if len(args) == 2 and args[1] is Ellipsis:
             # tuple[X, ...]: one element type applied to every item.
             element_hints: list[Any] = [args[0]] * len(items)
         elif len(args) == 0:
-            # Bare tuple: each item passes through under Any.
-            element_hints = [Any] * len(items)
+            if get_origin(hint) is tuple:
+                # tuple[()] is the subscripted empty-tuple form, so enforce arity 0.
+                if len(items) != 0:
+                    return _reject(collector, path, f"expected 0 items for {_hint_name(hint)}, got {len(items)}")
+                element_hints = []
+            else:
+                # Bare tuple: each item passes through under Any.
+                element_hints = [Any] * len(items)
         else:
             # Fixed-length tuple: each position has its own type, so arity must match.
             if len(items) != len(args):
@@ -551,7 +756,13 @@ def _coerce_container(
     coerced_items = _coerce_items(items, element_hints, path, collector)
     if coerced_items is _UNSET:
         return _UNSET
-    return _SEQUENCE_BUILDERS.get(origin, list)(coerced_items)
+    builder = _SEQUENCE_BUILDERS.get(origin, list)
+    try:
+        return builder(coerced_items)
+    except TypeError as exc:
+        # A set/frozenset of unhashable elements fails to build; report it as an
+        # issue rather than letting the raw TypeError escape the collector.
+        return _reject(collector, path, f"cannot build {_hint_name(hint)}: {exc}")
 
 
 def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any:
@@ -567,7 +778,7 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
         The coerced value, or the ``_UNSET`` sentinel when coercion failed.
     """
     if not isinstance(hint, type):
-        return value
+        return _reject(collector, path, f"unsupported field type {_hint_name(hint)}")
 
     if issubclass(hint, Enum):
         try:
@@ -599,7 +810,13 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
         if isinstance(value, bool):
             return _reject(collector, path, f"expected float, got {_typename(value)}")
         if isinstance(value, (int, float)):
-            return float(value)
+            try:
+                result = float(value)
+            except OverflowError:
+                return _reject(collector, path, f"value is too large to represent as a float: {value!r}")
+            if not math.isfinite(result):
+                return _reject(collector, path, f"expected a finite float, got {value!r}")
+            return result
         return _reject(collector, path, f"expected float, got {_typename(value)}")
 
     if hint is str:
@@ -660,13 +877,13 @@ def to_dict(value: Any) -> Any:
     Dataclasses become dicts in field-declaration order, ``Enum`` members become
     their values, ``Path`` and ``datetime`` / ``date`` / ``time`` become strings,
     and tuples, sets, and frozensets become lists. Mapping keys pass through these
-    same rules. Sets are sorted where their elements are mutually orderable so the
-    output stays stable across runs.
+    same rules. Set and frozenset elements are ordered by their canonical JSON text
+    so the output is stable across runs.
 
     The result round-trips: ``from_dict(cls, to_dict(config)) == config`` holds
-    for every field whose annotation names a type, including bare ``tuple``,
-    ``set``, and ``dict``, since ``from_dict`` rebuilds each container from its
-    annotation. A field annotated ``Any`` returns in the plain form it was written
+    for every field whose annotation names a supported type, including bare
+    ``tuple``, ``set``, and ``dict``, since ``from_dict`` rebuilds each container
+    from its annotation. A field annotated ``Any`` returns in the plain form it was written
     as, so a tuple held in one returns as a list; annotate such a field with a
     container type to restore its exact type.
 
@@ -681,6 +898,11 @@ def to_dict(value: Any) -> Any:
           no plain-data form.
     """
     if is_dataclass(value) and not isinstance(value, type):
+        non_init = _non_init_field_names(type(value))
+        if len(non_init) > 0:
+            raise ConfigError.single(
+                f"field {non_init[0]!r} is declared init=False, which is unsupported", context="config"
+            )
         return {field.name: to_dict(getattr(value, field.name)) for field in fields(value)}
     if isinstance(value, Enum):
         return to_dict(value.value)
@@ -694,15 +916,17 @@ def to_dict(value: Any) -> Any:
         return {to_dict(key): to_dict(item) for key, item in value.items()}
     if isinstance(value, (set, frozenset)):
         items = [to_dict(item) for item in value]
-        # Sort for stable output when elements are mutually orderable; a TypeError
-        # signals mixed types, so fall back to iteration order.
-        try:
-            return sorted(items)
-        except TypeError:
-            return items
+        # Sort by each element's canonical JSON text so the order is total and
+        # stable across processes even for mixed-type sets whose elements are not
+        # mutually orderable; equal sets must hash equal regardless of PYTHONHASHSEED.
+        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
     if isinstance(value, (list, tuple)):
         return [to_dict(item) for item in value]
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ConfigError.single(f"cannot serialize non-finite float {value!r}", context="config")
+        return value
+    if value is None or isinstance(value, (bool, int, str)):
         return value
     raise ConfigError.single(f"cannot serialize value of type {_typename(value)}", context="config")
 
@@ -710,8 +934,8 @@ def to_dict(value: Any) -> Any:
 def config_hash(config: Any, *, length: int = 12) -> str:
     """Fingerprint a config with a stable digest over its canonical JSON form.
 
-    Key ordering and container identity are normalized before hashing, so two
-    configs that compare equal hash equal in any process.
+    Mapping key order and set iteration order are normalized before hashing, so
+    the digest is stable across processes.
 
     Args:
         config: The config object to fingerprint.

@@ -8,6 +8,9 @@ so both formats behave identically.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import secrets
 from collections.abc import Mapping
 from pathlib import Path
 from typing import (
@@ -40,7 +43,7 @@ def read_source_text(path: str | Path) -> tuple[Path, str]:
     source = Path(path)
     try:
         return source, source.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ConfigError.single(str(exc), context=f"config file {source}") from exc
 
 
@@ -73,9 +76,10 @@ def build_from_document(config_cls: type[T], data: Any, source: Path) -> T:
 def atomic_write_text(path: str | Path, text: str) -> Path:
     """Write text to a file, replacing the target atomically.
 
-    The text goes to a ``.tmp`` sibling and is then renamed onto the target, so a
-    reader observes either the previous file or the complete new one. Parent
-    directories are created as needed.
+    The text goes to a uniquely named temporary file in the destination directory
+    and is then renamed onto the target, so a reader observes either the previous
+    file or the complete new one, and concurrent writers never share a temporary.
+    Parent directories are created as needed.
 
     Args:
         path: Destination file path.
@@ -86,7 +90,25 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f"{destination.name}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    temporary.replace(destination)
+    # Create the temporary with O_EXCL so the kernel applies the current umask
+    # atomically for a new file (matching an ordinary create), with no process-wide
+    # umask toggle. A random name keeps concurrent writers from sharing an inode.
+    while True:
+        temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            break
+        except FileExistsError:
+            continue
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        # Preserve an existing target's mode; a new file keeps the umask-applied mode.
+        if destination.exists():
+            temporary.chmod(destination.stat().st_mode & 0o777)
+        temporary.replace(destination)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
     return destination

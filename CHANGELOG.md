@@ -24,10 +24,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The supported field-type set is an explicit boundary. A leaf type outside the
-  documented set is reported as a `ConfigError` on load; `to_dict` raises a
-  `ConfigError` for a value it cannot render as plain data; and a `TypedDict`
-  section is reported as a `ConfigError`.
+- The supported field-type set is an explicit boundary, validated against the
+  schema itself so an unsupported annotation is reported even when the field is
+  omitted. Enforced: allowed leaf and container types only, `str` mapping keys
+  (including bare `dict`), primitive `Enum` / `Literal` values, finite floats,
+  constructor-settable (`init=True`) fields, and nested dataclasses recursively.
+  `to_dict` raises a `ConfigError` for a value it cannot render as plain data.
+- `config_hash` orders set elements by their canonical JSON text, so the digest is
+  stable across processes for mixed-type sets. Documented as stable across
+  processes and independent of mapping key order and set iteration order.
+- File loaders report a `ConfigError` (rather than a raw exception) for invalid
+  UTF-8, non-finite floats, unhashable set elements, and out-of-range numbers.
+  Atomic writes use a uniquely named temporary that preserves the destination's
+  file mode.
 
 ## [0.1.0] - 2026-07-22
 
@@ -43,8 +52,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `float` fields.
 - Collect-all validation: one pass walks the whole tree and reports every issue,
   each tagged with a dotted path such as `training.trainer.lr`, surfaced through
-  `ConfigError` and `ConfigIssue`. Custom `__validate__` methods and
-  `__post_init__` failures fold into the same report.
+  `ConfigError` and `ConfigIssue`. Custom `__validate__` messages and a
+  `ValueError` or `TypeError` from `__post_init__` fold into the same report.
 - JSON file IO: `load_json`, `save_json` (atomic write), and `dumps_json`.
 - `config_hash` for a stable SHA-256 fingerprint over the canonical JSON form.
 - `ConfigRoot` mixin exposing the same operations as methods on a root config

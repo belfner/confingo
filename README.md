@@ -34,7 +34,7 @@ tree as the spec:
   Python data, in field-declaration order.
 
 The two round-trip: `from_dict(cls, to_dict(config)) == config` holds for every
-field whose annotation names a type.
+field whose annotation names a supported type.
 
 File loading layers a config file on top of the dataclass defaults:
 
@@ -134,9 +134,9 @@ The value is in four cross-cutting guarantees:
 
 - **Collect-all validation.** Building a config walks the whole dataclass tree
   before it raises, so one run reports every problem at once: unknown keys,
-  missing required values, type mismatches, and failures raised from
-  `__post_init__` or a custom `__validate__` method. Each issue is tagged with a
-  dotted path such as `training.trainer.lr`.
+  missing required values, type mismatches, a `ValueError` or `TypeError` raised
+  from `__post_init__`, and the messages returned by a custom `__validate__`
+  method. Each issue is tagged with a dotted path such as `training.trainer.lr`.
 
 - **Type coercion toward the annotation.** Config data is loosely typed, so
   values are nudged into shape: an integral float lands on an `int` field,
@@ -150,9 +150,9 @@ The value is in four cross-cutting guarantees:
   captured in the written file.
 
 - **Stable identity.** A config hash fingerprints the resolved config over its
-  canonical JSON form, so equal configs hash equal across processes and key
-  orderings. The digest is usable for run naming, deduplication, and confirming
-  that a rerun used the same settings.
+  canonical JSON form, so the digest is stable across processes and independent of
+  mapping key order and set iteration order. It is usable for run naming,
+  deduplication, and confirming that a rerun used the same settings.
 
 ## Scope
 
@@ -167,16 +167,20 @@ The value is in four cross-cutting guarantees:
 confingo covers a deliberate, fixed set of types:
 
 - **Leaf types:** `bool`, `int`, `float`, `str`, `Path`, `datetime` / `date` /
-  `time`, `Enum` subclasses, `Literal[...]`, `Any`, and `None`.
+  `time`, `Enum` subclasses, `Literal[...]`, `Any`, and `None`. `Enum` members and
+  `Literal` arguments carry primitive values (`str` / `int` / `bool`), and floats
+  are finite.
 - **Composite types:** nested dataclasses; `list`, `tuple`, `set`, `frozenset`,
   and `Sequence` of a supported type; `dict[str, X]` and `Mapping` with `str`
-  keys; and unions of supported types.
+  keys; and unions of supported types. Every field is constructor-settable
+  (`init=True`).
 
 Values coerce toward the annotation on the way in (ISO 8601 strings become
 `datetime` / `date` / `time`, integral floats land on `int` fields, strings
 resolve to `Enum` members and `Path` objects) and serialize back to plain data on
-the way out. A field annotated with a type outside this set is reported as a
-`ConfigError`.
+the way out. A field whose annotation names a type outside this set is reported as
+a `ConfigError`, and the check runs against the schema itself, so an unsupported
+annotation is caught even when the field is omitted and falls back to its default.
 
 ## In one line
 
