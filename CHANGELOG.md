@@ -6,9 +6,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `@configclass`, the primary schema decorator: a drop-in wrapper around
+  `@dataclass` that forwards every dataclass keyword and installs canonical
+  equality, where `==` compares two configs by their `to_dict` forms at every
+  tree level, array fields included. `__hash__` stays object identity, a
+  user-defined `__eq__` is respected, and `eq` / `order` / `unsafe_hash`
+  arguments raise `TypeError`. Plain `@dataclass` schemas remain fully
+  supported; each triggers one `ConfigWarning` (a new `UserWarning` subclass)
+  per process at first schema processing.
+- NumPy array and PyTorch tensor fields, presence-detected: the backends
+  install with the application, confingo's core stays stdlib-only, and
+  `import confingo` loads neither. Supported annotations: bare `np.ndarray`,
+  `npt.NDArray[...]` with concrete dtypes or abstract families, shape-typed
+  `np.ndarray[tuple[int, int], np.dtype[...]]` with dimensionality
+  enforcement, bare `torch.Tensor` (rebuilt with value-stable pinned dtypes
+  bool / int64 / float64), and `Annotated[torch.Tensor, torch.dtype]`. Values
+  serialize as the validated `tolist()` form, detached and copied to the CPU
+  for tensors; plain input validates leaf by leaf with indexed issue paths
+  (`weights.2.0`), supplied arrays validate with vectorized masks, and every
+  array field is capped at one million elements. Arrays under `Any` validate
+  inbound and serialize as plain lists. Supported numpy scalars feed ordinary
+  scalar fields as their exact Python equivalents.
+
 ### Changed
 
 - Python 3.11 is the minimum supported version.
+- `to_dict` collects every serialization problem in one pass, each tagged with
+  its dotted path, matching the collect-all model `from_dict` already follows.
 - Dataclass sections instantiate implicitly. A dataclass-typed field with no
   default builds from an empty mapping when the input omits it, recursively
   through nested sections, so a required value inside an omitted section is

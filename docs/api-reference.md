@@ -12,7 +12,9 @@ from confingo import (
     ConfigError,
     ConfigIssue,
     ConfigRoot,
+    ConfigWarning,
     config_hash,
+    configclass,
     dumps_json,
     from_dict,
     from_file,
@@ -25,6 +27,19 @@ from confingo import dumps_yaml, load_yaml, save_yaml  # confingo[yaml]
 ```
 
 The YAML helpers resolve lazily on first attribute access, so the core import works on a stdlib-only install. `confingo.__version__` carries the package version.
+
+
+## Schema declaration
+
+Learn more: [configclass and equality](schema-design.md#configclass-and-equality).
+
+### `@configclass` / `@configclass(**dataclass_kwargs)`
+
+Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and every `dataclass()` keyword forwards. Installs canonical `__eq__` (`to_dict(self) == to_dict(other)`, `NotImplemented` for a different class), keeps `__hash__` as object identity, and respects a user-defined `__eq__` in the class body. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
+
+### `ConfigWarning`
+
+`UserWarning` subclass carrying confingo schema advisories. Emitted once per class per process when a schema dataclass lacks the `@configclass` marker; target it with `warnings.filterwarnings` to silence or escalate precisely.
 
 
 ## Construction and conversion
@@ -91,7 +106,7 @@ Frozen dataclass; one problem at one dotted path. `str(issue)` renders `path: me
 
 ## `ConfigRoot` method map
 
-`ConfigRoot` is a mixin for the root dataclass; each method delegates to its free-function twin. Subclasses must still carry the `@dataclass` decorator, and nested sections stay plain dataclasses.
+`ConfigRoot` is a mixin for the root dataclass; each method delegates to its free-function twin. Subclasses still carry the `@configclass` (or `@dataclass`) decorator, and nested sections carry the decorator alone.
 
 | Method | Free function |
 | --- | --- |

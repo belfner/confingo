@@ -102,6 +102,8 @@ Two properties make it useful as a run identity:
 - Equal resolved configs produce equal hashes across processes and `PYTHONHASHSEED` values, because the canonical JSON depends only on the resolved values.
 - Any nested field change changes that canonical input, so distinct configs get distinct digests up to the collision resistance of the chosen prefix length. Longer prefixes buy more resistance.
 
+[Array and tensor fields](types-and-coercion.md#arrays-and-tensors) hash by their encoded values and nesting, exactly what the file records. State the encoding leaves out collides by design: two bare-annotated arrays holding the same values at different integer widths hash equal, as do tensors differing only in device, gradient state, or layout, and zero-size arrays differing only in dimensions after the first zero-length axis. A concrete dtype annotation is schema, so it shapes the rebuilt value rather than the hash, the same way `tuple`-ness already works.
+
 That makes the hash a natural run-directory name for sweeps:
 
 ```python

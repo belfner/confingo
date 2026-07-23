@@ -21,7 +21,7 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 ## Choose a topic
 
 - [Getting started](getting-started.md): first schema, first load, first run hash.
-- [Schema design](schema-design.md): implicit sections, leaf-level requirements, defaults, `ConfigRoot`.
+- [Schema design](schema-design.md): `@configclass`, implicit sections, leaf-level requirements, defaults, `ConfigRoot`.
 - [Types and coercion](types-and-coercion.md): accepted annotations and exact conversion rules.
 - [Validation and errors](validation-and-errors.md): the collect-all error model and custom invariants.
 - [Files, formats, and run identity](files-and-identity.md): JSON, YAML, extension dispatch, atomic saves, `config_hash`.
@@ -42,6 +42,8 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 - [Null documents load as defaults; empty JSON text is malformed](files-and-identity.md#document-and-read-rules)
 - [Saves are atomic and preserve file modes](files-and-identity.md#atomic-writes)
 - [`config_hash` is stable across processes and hash seeds](files-and-identity.md#stable-run-identity)
+- [Bare tensors rebuild with pinned dtypes; broad numpy families select their width by value](types-and-coercion.md#arrays-and-tensors)
+- [Arrays under `Any` stay in memory as supplied and serialize as plain lists](types-and-coercion.md#any-and-plain-data)
 
 
 ## Core guarantees
@@ -55,4 +57,4 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 
 ## Compatibility
 
-Python 3.11+. The core imports only the standard library; YAML support arrives with `pip install "confingo[yaml]"`.
+Python 3.11+. The core imports only the standard library; YAML support arrives with `pip install "confingo[yaml]"`. NumPy and PyTorch fields activate through presence detection when the application imports those packages itself.

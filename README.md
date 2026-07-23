@@ -18,20 +18,19 @@ Runs on Python 3.11 and newer.
 ## Quick example
 
 ```python
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot
+from confingo import ConfigRoot, configclass
 
 
-@dataclass
+@configclass
 class TrainerConfig:
     lr: float = 3e-4
     algorithm: Literal["sac", "td3"] = "td3"
 
 
-@dataclass
+@configclass
 class TrainingConfig(ConfigRoot):
     trainer: TrainerConfig  # section; builds from its defaults when omitted
     seed: int = 0
@@ -50,6 +49,11 @@ confingo.ConfigError: config file config.json has 2 issues:
   - sed: unknown key (known keys: output_dir, seed, trainer)
   - trainer.lr: expected float, got str
 ```
+
+
+## Arrays and tensors
+
+NumPy arrays and PyTorch tensors work as field types whenever your application already imports the backend; confingo stays stdlib-only and detects them at runtime. Values serialize as plain JSON lists and rebuild against the annotated dtype, with bare `torch.Tensor` pinned to value-stable dtypes and `Annotated[torch.Tensor, torch.float32]` pinning a specific one. The rules live in [types and coercion](docs/types-and-coercion.md#arrays-and-tensors).
 
 
 ## Documentation

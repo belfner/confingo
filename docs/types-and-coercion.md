@@ -114,6 +114,46 @@ Finite-float validation still recurses through the value, including nested mappi
 
 Under `to_dict`, tuple- and set-shaped values held by an `Any` field serialize as lists. An explicit container annotation is what restores the exact container type on the next load. See [cross-format round trips](files-and-identity.md#cross-format-round-trip).
 
+Arrays and tensors follow the same rule under `Any`: a supplied array validates on the way in (supported dtype, finite elements, the size cap) and stays in memory as the object you passed, `to_dict` renders it as plain scalars and lists, and reloading yields that plain data. An [array annotation](#arrays-and-tensors) is what rebuilds a backend object on the next load.
+
+
+## Arrays and tensors
+
+NumPy arrays and PyTorch tensors are field types whenever the host application has already imported the backend. Detection reads `sys.modules` on each call and matches annotations and values against the loaded module's own classes, so `import confingo` keeps its stdlib-only core, and a numpy-only program keeps torch unloaded. The backend packages install with the application itself, on the application's own terms.
+
+The wire form is the array's validated `tolist()` result: a JSON scalar for a 0-d value, nested lists otherwise. The file carries values and nesting only; the annotation carries the dtype claim.
+
+| Annotation | Rebuilt dtype | Promise |
+| --- | --- | --- |
+| `np.ndarray`, `npt.NDArray[Any]` | inferred: `bool`, `int64` / `uint64` by value, `float64` | values |
+| `npt.NDArray[np.float32]` (any concrete `bool` / integer / float dtype up to 64 bits) | the annotated dtype | dtype + values |
+| `npt.NDArray[np.floating]` (also `integer`, `signedinteger`, `unsignedinteger`, `number`) | the family's target: `float64`, `int64` / `uint64` by value | family + values |
+| `np.ndarray[tuple[int, int], np.dtype[np.float64]]` | as the dtype rules | as above, and the fixed-arity shape tuple enforces exactly that dimensionality |
+| `torch.Tensor` | pinned: `bool` / `int64` / `float64` | values |
+| `Annotated[torch.Tensor, torch.float32]` (any supported `torch.dtype`, `bfloat16` included) | the annotated dtype | dtype + values |
+
+Accepted input for an array field: a same-backend array or tensor, nested lists / tuples, or a single `bool` / `int` / `float` for a 0-d value. NumPy scalar leaves normalize to their exact Python equivalents. Strings, mappings, sets, and cross-backend objects are reported as type mismatches; a torch value headed into a numpy field converts explicitly at the call site via `tolist()`.
+
+Plain input is validated leaf by leaf before any backend call, with element issues at exact indexed paths (`weights.2.0: expected a number for array dtype float32, got str`). The checks cover leaf category (`bool` stays fully separate from numbers, exactly as scalar fields keep them), integral values for integer dtypes, dtype range bounds, finiteness, and rectangularity, where a ragged row reports the divergent index (`weights.1: ragged array: expected 3 items, got 2`).
+
+A supplied array or tensor that already satisfies its annotation is stored as-is, preserving device placement and gradient state until serialization. A supplied array needing a concrete dtype conversion produces a new converted object, with the same per-element range and finiteness checks.
+
+Dtype normalization is value-preserving by construction:
+
+- Bare `torch.Tensor` rebuilds with pinned dtypes (`bool`, `int64`, `float64`) independent of `torch.set_default_dtype`, so every serialized value reloads exactly and `config_hash` stays stable across processes. `Annotated[torch.Tensor, torch.float32]` is the spelling that pins a narrower dtype.
+- The broad `np.integer` / `np.number` families select their integer target by value: `int64` when every value fits, `uint64` for nonnegative values above the `int64` range, so a retained `uint64` array holding `2**63` survives a save/load cycle.
+- Small float dtypes (`float16`, `bfloat16`, `float32`) widen exactly into JSON numbers, since every value they represent is exactly a binary64 float.
+
+Serialization normalizes tensor execution state: values detach from any autograd graph and copy to the CPU, so device, `requires_grad`, and layout/stride details stay out of the file. Dense strided tensors serialize; sparse, quantized, nested, and meta forms are reported as issues, as are complex, object, structured, temporal, and string dtypes on the numpy side.
+
+Every element must be finite, matching the scalar float rule, and an array field holds at most 1,000,000 elements; both directions check the limit before materializing data.
+
+Round trips hold as canonical serialized equality: `to_dict(from_dict(cls, to_dict(config))) == to_dict(config)` for every supported input, and concrete-dtype annotations additionally guarantee dtype and bit-exact values. On [`@configclass`](schema-design.md#configclass-and-equality) schemas the plain `==` operator implements this contract, so `from_dict(cls, to_dict(config)) == config` reads literally; the `__eq__` a plain `@dataclass` generates raises on multi-element array fields, which is what the once-per-class `ConfigWarning` points out.
+
+Two shape details are visible in the encoding. A 0-d array serializes as a JSON scalar and rebuilds 0-d. Dimensions after the first zero-length axis have no list representation (`(0, 3)` serializes as `[]`), so zero-size arrays rebuild with the sizes the encoding retains; under a fixed-dimensionality annotation they pad with trailing zero-length axes to the annotated rank, and the padded form serializes identically.
+
+For consumers outside Python, the file stays ordinary JSON: nested arrays of numbers. A reader that parses every number as a double sees the usual precision limits for integers above 2**53; confingo's own round trip keeps full 64-bit integer exactness.
+
 
 ## Finite numbers and temporal exactness
 
@@ -132,7 +172,8 @@ The accepted annotation set is explicit and closed:
 | Enums / literals | `Enum` subclasses with primitive member values; `Literal` with primitive or `None` options |
 | Containers | `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `Mapping` (str keys for mappings), bare or parameterized |
 | Structure | dataclasses (all fields `init=True`), unions of accepted members, `Optional[T]`, `Any` |
-| Wrappers | `Annotated[T, ...]`, treated as `T` |
+| Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
+| Wrappers | `Annotated[T, ...]`, treated as `T`; a `torch.dtype` in the metadata pins a tensor dtype |
 
 Annotations outside this set produce a `ConfigError` during schema preflight, even when the offending field is omitted from the input and would have used its default. Rejected shapes include:
 
