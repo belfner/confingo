@@ -9,7 +9,7 @@ This page covers structuring a program's configuration as a dataclass tree: the 
 
 One dataclass declaration serves three roles: the field names define the accepted keys, the annotations define the accepted types, and the defaults define the fallback values. Nested dataclasses define sections, and containers of dataclasses (`list[StageConfig]`, `dict[str, DatasetConfig]`) define repeated sections.
 
-Declare schema classes with `@configclass`, confingo's drop-in wrapper around `@dataclass`. Fields, defaults, and `__init__` generate exactly as `@dataclass` generates them; the wrapper adds config-aware equality, covered in [configclass and equality](#configclass-and-equality).
+Declare schema classes with `@configclass`, confingo's schema decorator built on `@dataclass`. Fields, defaults, and `__init__` generate exactly as `@dataclass` generates them; the decorator adds config-aware equality, covered in [configclass and equality](#configclass-and-equality).
 
 
 ## `configclass` and equality
@@ -35,9 +35,9 @@ class RunConfig(ConfigRoot):
 The decorator's contract:
 
 - Both the bare form and the parenthesized form work, on roots and sections alike.
-- Every `dataclass()` keyword forwards (`frozen`, `kw_only`, `slots`, `match_args`, ...). Three raise `TypeError` because the decorator owns equality and hashing: `eq` (fixed to `False` internally), `order` (dataclass ordering builds on the generated `__eq__` the decorator replaces), and `unsafe_hash`.
-- `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
-- A user-defined `__eq__` in the class body is respected and left untouched.
+- The `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Three raise `TypeError` because the decorator owns equality and hashing: `eq` (fixed to `False` internally), `order` (dataclass ordering builds on the generated `__eq__` the decorator replaces), and `unsafe_hash`.
+- With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
+- A user-defined `__eq__` in the class body is respected and left untouched, carrying standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable.
 
 Plain `@dataclass` schemas load, dump, and hash identically. Each plain schema class triggers one `ConfigWarning` per process at its first schema processing, naming the class and the fix; the warning is precise to filter (`warnings.filterwarnings("ignore", category=confingo.ConfigWarning)`). The practical difference is `==`: the `__eq__` a plain dataclass generates compares field objects directly, which raises on multi-element array fields.
 

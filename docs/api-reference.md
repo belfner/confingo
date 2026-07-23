@@ -35,7 +35,7 @@ Learn more: [configclass and equality](schema-design.md#configclass-and-equality
 
 ### `@configclass` / `@configclass(**dataclass_kwargs)`
 
-Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and every `dataclass()` keyword forwards. Installs canonical `__eq__` (`to_dict(self) == to_dict(other)`, `NotImplemented` for a different class), keeps `__hash__` as object identity, and respects a user-defined `__eq__` in the class body. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
+Declares a config dataclass: fields, defaults, and `__init__` generate exactly as `@dataclass` generates them, and the `dataclass()` keywords `init`, `repr`, `frozen`, `match_args`, `kw_only`, `slots`, and `weakref_slot` forward. Installs canonical `__eq__` (`to_dict(self) == to_dict(other)`, `NotImplemented` for a different class) with `__hash__` kept as object identity. A user-defined `__eq__` in the class body is respected and carries standard Python hashing semantics: define `__hash__` alongside it to keep instances hashable. Passing `eq`, `order=True`, or `unsafe_hash=True` raises `TypeError`.
 
 ### `ConfigWarning`
 

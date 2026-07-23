@@ -8,12 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `@configclass`, the primary schema decorator: a drop-in wrapper around
-  `@dataclass` that forwards every dataclass keyword and installs canonical
-  equality, where `==` compares two configs by their `to_dict` forms at every
-  tree level, array fields included. `__hash__` stays object identity, a
-  user-defined `__eq__` is respected, and `eq` / `order` / `unsafe_hash`
-  arguments raise `TypeError`. Plain `@dataclass` schemas remain fully
+- `@configclass`, the primary schema decorator: a wrapper around `@dataclass`
+  that forwards the layout keywords (`init`, `repr`, `frozen`, `match_args`,
+  `kw_only`, `slots`, `weakref_slot`) and installs canonical equality, where
+  `==` compares two configs by their `to_dict` forms at every tree level,
+  array fields included. `__hash__` stays object identity alongside the
+  installed equality, a user-defined `__eq__` is respected with standard
+  Python hashing semantics, and `eq` / `order` / `unsafe_hash` arguments
+  raise `TypeError`. Plain `@dataclass` schemas remain fully
   supported; each triggers one `ConfigWarning` (a new `UserWarning` subclass)
   per process at first schema processing.
 - NumPy array and PyTorch tensor fields, presence-detected: the backends
@@ -30,7 +32,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for tensors; plain input validates leaf by leaf with indexed issue paths
   (`weights.2.0`), supplied arrays validate with vectorized masks, and every
   array field is capped at one million elements. Arrays under `Any` validate
-  inbound and serialize as plain lists. Supported numpy scalars feed ordinary
+  inbound and serialize as plain scalars and lists. Supported numpy scalars
+  feed ordinary
   scalar fields as their exact Python equivalents.
 
 ### Changed

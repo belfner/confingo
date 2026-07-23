@@ -43,7 +43,7 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 - [Saves are atomic and preserve file modes](files-and-identity.md#atomic-writes)
 - [`config_hash` is stable across processes and hash seeds](files-and-identity.md#stable-run-identity)
 - [Bare tensors rebuild with pinned dtypes; broad numpy families select their width by value](types-and-coercion.md#arrays-and-tensors)
-- [Arrays under `Any` stay in memory as supplied and serialize as plain lists](types-and-coercion.md#any-and-plain-data)
+- [Arrays under `Any` stay in memory as supplied and serialize as plain scalars and lists](types-and-coercion.md#any-and-plain-data)
 
 
 ## Core guarantees
