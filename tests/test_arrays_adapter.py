@@ -420,6 +420,25 @@ def test_empty_row_before_a_scalar_is_ragged(issues: Sink):
     assert issues == [("w.1", "ragged array: expected a nested sequence, got a scalar")]
 
 
+def test_torch_integer_widening_converts_cleanly(issues: Sink):
+    wide = spec_of(Annotated[torch.Tensor, torch.int16])
+    converted = _arrays.coerce_array(torch.tensor([-128, 127], dtype=torch.int8), wide, "w", sink(issues))
+    assert issues == []
+    assert converted.dtype is torch.int16
+    assert converted.tolist() == [-128, 127]
+    huge = spec_of(Annotated[torch.Tensor, torch.int64])
+    converted = _arrays.coerce_array(torch.tensor([-32768, 32767], dtype=torch.int16), huge, "w", sink(issues))
+    assert issues == []
+    assert converted.tolist() == [-32768, 32767]
+    signed = spec_of(Annotated[torch.Tensor, torch.int16])
+    converted = _arrays.coerce_array(torch.tensor([255], dtype=torch.uint8), signed, "w", sink(issues))
+    assert issues == []
+    assert converted.tolist() == [255]
+    narrow = spec_of(Annotated[torch.Tensor, torch.uint8])
+    assert _arrays.coerce_array(torch.tensor([300], dtype=torch.int16), narrow, "w", sink(issues)) is _arrays.FAILED
+    assert issues == [("w.0", "value 300 is out of range for array dtype uint8")]
+
+
 def test_native_family_mismatch_reports(issues: Sink):
     spec = spec_of(npt.NDArray[np.unsignedinteger])
     assert _arrays.coerce_array(np.array([1], dtype=np.int64), spec, "w", sink(issues)) is _arrays.FAILED

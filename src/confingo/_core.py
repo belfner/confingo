@@ -288,12 +288,33 @@ def _warn_unmarked_dataclass(config_cls: type[Any], hints: dict[str, Any]) -> No
     from confingo._configclass import ConfigWarning  # noqa: PLC0415
 
     message = f"{config_cls.__name__} is a plain dataclass; decorate it with @confingo.configclass"
-    if any(_arrays.inspect_annotation(hint).matched for hint in hints.values()):
+    if any(_hint_mentions_array(hint) for hint in hints.values()):
         message += (
             "; its generated __eq__ raises when instances holding multi-element array fields are compared, "
             "while @confingo.configclass installs canonical equality"
         )
     warnings.warn(message, ConfigWarning, stacklevel=2)
+
+
+def _hint_mentions_array(hint: Any) -> bool:
+    """Report whether a hint names an array type anywhere in its structure.
+
+    Recurses through ``Annotated`` wrappers, unions, and container arguments,
+    so ``NDArray[...] | None`` and ``list[NDArray[...]]`` register as
+    array-bearing. Nested dataclasses stay out of the recursion; each warns
+    for itself.
+
+    Args:
+        hint: The resolved type hint to inspect.
+
+    Returns:
+        True when the hint or any of its type arguments is an array annotation
+        of a loaded backend.
+    """
+    if _arrays.inspect_annotation(hint).matched:
+        return True
+    hint = _strip_annotated(hint)
+    return any(_hint_mentions_array(arg) for arg in get_args(hint) if arg is not Ellipsis)
 
 
 def _is_dataclass_type(hint: Any) -> bool:
@@ -716,7 +737,11 @@ def _coerce_any(value: Any, path: str, collector: _IssueCollector) -> Any:
         failed = False
         for key, item in value.items():
             item_path = _join(path, str(key))
-            if _coerce_any(key, item_path, collector) is _UNSET:
+            if _arrays.is_array_value(key):
+                # Arrays serialize as lists, which have no mapping-key form.
+                collector.add(item_path, f"cannot use {_typename(key)} as a mapping key")
+                failed = True
+            elif _coerce_any(key, item_path, collector) is _UNSET:
                 failed = True
             if _coerce_any(item, item_path, collector) is _UNSET:
                 failed = True
@@ -1066,6 +1091,12 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
             plain_key = _to_plain(key, item_path, collector)
             plain_item = _to_plain(item, item_path, collector)
             if plain_key is _UNSET or plain_item is _UNSET:
+                mapping_failed = True
+                continue
+            if isinstance(plain_key, (list, dict)):
+                # Keys whose plain form is a container (arrays, tuples) have no
+                # mapping-key representation in JSON.
+                collector.add(item_path, f"cannot serialize {_typename(key)} as a mapping key")
                 mapping_failed = True
                 continue
             mapping[plain_key] = plain_item

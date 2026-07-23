@@ -137,6 +137,23 @@ def _torch() -> Any | None:
 # ---------------------------------------------------------------------------
 
 
+def is_array_value(value: Any) -> bool:
+    """Report whether a value is a native array of a loaded backend.
+
+    Args:
+        value: Any value.
+
+    Returns:
+        True for ``np.ndarray`` and ``torch.Tensor`` instances (subclasses
+        included) of backends the application has imported.
+    """
+    np = _numpy()
+    if np is not None and isinstance(value, np.ndarray):
+        return True
+    torch = _torch()
+    return torch is not None and isinstance(value, torch.Tensor)
+
+
 def inspect_annotation(hint: Any) -> AnnotationMatch:
     """Classify a resolved type hint against the loaded array backends.
 
@@ -1061,12 +1078,18 @@ def _convert_torch(torch: Any, value: Any, target: Any, path: str, issue: IssueS
         return FAILED
     target_name = _torch_dtype_name(target)
     if not target.is_floating_point and target is not torch.bool and not src.is_floating_point:
-        # Integer-to-integer conversions check the target's range directly:
-        # torch casts wrap silently, and a cast round trip wraps bijectively
-        # across signedness at equal widths. Every supported bound fits int64,
-        # so tensor comparison against Python ints is exact.
+        # Integer-to-integer conversions check the target's range directly,
+        # since torch casts wrap silently. Widening within the target's range
+        # is always safe; otherwise the comparison runs on an int64 copy,
+        # where every supported integer value and bound is exact. Comparing
+        # the source tensor itself would cast each Python-int bound into the
+        # source dtype and fail on bounds outside its range.
+        src_info = torch.iinfo(src)
         info = torch.iinfo(target)
-        out_of_range = (value < info.min) | (value > info.max)
+        if src_info.min >= info.min and src_info.max <= info.max:
+            return value.to(dtype=target)
+        wide = value.to(dtype=torch.int64)
+        out_of_range = (wide < info.min) | (wide > info.max)
         if bool(out_of_range.any()):
             for indices in torch.nonzero(out_of_range).cpu().tolist():
                 element = value[tuple(indices)].item()

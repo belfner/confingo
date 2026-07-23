@@ -353,9 +353,49 @@ class PlainWithArray:
     weights: npt.NDArray[np.float32] = field(default_factory=lambda: np.zeros(1, dtype=np.float32))
 
 
+@dataclass
+class PlainWithOptionalArray:
+    weights: npt.NDArray[np.float32] | None = None
+
+
+@dataclass
+class PlainWithArrayList:
+    weights: list[Annotated[torch.Tensor, torch.float32]] = field(default_factory=list)
+
+
 def test_unmarked_array_bearing_class_gets_the_extended_warning():
     with pytest.warns(ConfigWarning, match="generated __eq__ raises"):
         from_dict(PlainWithArray, {})
+
+
+def test_nested_array_annotations_also_get_the_extended_warning():
+    with pytest.warns(ConfigWarning, match="generated __eq__ raises"):
+        from_dict(PlainWithOptionalArray, {})
+    with pytest.warns(ConfigWarning, match="generated __eq__ raises"):
+        from_dict(PlainWithArrayList, {})
+
+
+def test_array_mapping_keys_under_any_are_rejected_at_load():
+    cls = schema_for(Any)
+    with pytest.raises(ConfigError) as info:
+        from_dict(cls, {"x": {torch.tensor([1, 2]): "v"}})
+    assert any("as a mapping key" in i.message for i in info.value.issues)
+
+
+def test_array_mapping_keys_collect_on_marshal():
+    cls = schema_for(Any)
+    built = cls(x={torch.tensor([1, 2]): "v"})
+    with pytest.raises(ConfigError) as info:
+        to_dict(built)
+    assert any("cannot serialize Tensor as a mapping key" in i.message for i in info.value.issues)
+
+
+def test_tuple_mapping_keys_collect_on_marshal():
+    cls = schema_for(Any)
+    built = cls(x={(1, 2): "v"})
+    with pytest.raises(ConfigError) as info:
+        to_dict(built)
+    assert any("cannot serialize tuple as a mapping key" in i.message for i in info.value.issues)
 
 
 # --- hidden backends through the full stack -----------------------------------
