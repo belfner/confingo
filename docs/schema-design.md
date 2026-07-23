@@ -39,11 +39,11 @@ class RunConfig(ConfigRoot):
 Canonical equality reaches a schema class through two doors:
 
 - A `ConfigRoot` subclass carries it from class-creation time: `ConfigRoot.__init_subclass__` plants the canonical `__eq__` and identity `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own. A subclass whose body defines `__eq__` keeps it, with standard Python hashing semantics (define `__hash__` alongside it to keep instances hashable).
-- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing (any `from_dict`, `to_dict`, load, save, or hash call touching the tree), replacing the `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Custom equality therefore belongs on the root, where the class-body rule preserves it.
+- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Ahead of that, a root already compares canonically through `ConfigRoot` (recursing into its sections structurally), and `config_equal` covers any tree. Custom equality belongs on the root, where the class-body rule preserves it.
 
 With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
 
-The `config_equal` free function is the functional twin of `==`: `config_equal(a, b)` compares two config objects canonically ahead of any engine call and without touching the classes involved, matching the operator's same-class rule.
+The `config_equal` free function compares two config objects by canonical value equality with the operator's same-class rule, ahead of any engine call and without touching the classes involved. It evaluates the canonical relation directly, independently of a custom root `__eq__` preserved by the class-body rule, so it always gives the value-comparison answer.
 
 
 ## Implicit sections and leaf-level requirements

@@ -36,7 +36,7 @@ Schema classes are ordinary `@dataclass` declarations. Every schema class carrie
 
 ### `config_equal(left, right) -> bool`
 
-The free-function twin of `==`: compares two config objects by canonical value equality, same-class rule included, ahead of any engine call and without touching the classes involved. Raises `TypeError` when `left` is anything other than a dataclass instance.
+Compares two config objects by canonical value equality, same-class rule included, ahead of any engine call and without touching the classes involved. Evaluates the canonical relation directly, independently of a custom root `__eq__` preserved by the class-body rule. Raises `TypeError` when `left` is anything other than a dataclass instance.
 
 
 ## Construction and conversion

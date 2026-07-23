@@ -234,11 +234,17 @@ def test_config_equal_works_ahead_of_any_engine_call():
     assert NeverProcessed.__dict__["__eq__"] is generated_eq
 
 
-def test_config_equal_mirrors_operator_semantics():
+def test_config_equal_applies_the_same_class_rule():
     assert config_equal(Tree(seed=1), Tree(seed=1))
     assert config_equal(Tree(seed=1), Tree(seed=2)) is False
     assert config_equal(Tree(), PlainTwin()) is False
     assert config_equal(Tree(), 5) is False
+
+
+def test_config_equal_evaluates_the_canonical_relation_directly():
+    assert CustomEqRoot(x=1) == CustomEqRoot(x=2)
+    assert config_equal(CustomEqRoot(x=1), CustomEqRoot(x=2)) is False
+    assert config_equal(CustomEqRoot(x=3), CustomEqRoot(x=3))
 
 
 def test_config_equal_rejects_non_dataclass_input():

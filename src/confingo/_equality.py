@@ -145,12 +145,13 @@ def _install_canonical_eq(config_cls: type[Any]) -> None:
 def config_equal(left: Any, right: Any) -> bool:
     """Compare two config objects by canonical value equality.
 
-    The free-function twin of the ``==`` schema classes carry: the two
-    objects are equal exactly when they are the same class and serialize to
-    the same canonical plain form, array fields compared through the
-    backends' vectorized operations. Works on any config dataclass instance,
-    ahead of any other engine call and whether or not the class subclasses
-    ``ConfigRoot``.
+    The two objects are equal exactly when they are the same class and
+    serialize to the same canonical plain form, array fields compared
+    through the backends' vectorized operations. Works on any config
+    dataclass instance, ahead of any other engine call and whether or not
+    the class subclasses ``ConfigRoot``, and touches no classes. The
+    canonical relation is evaluated directly, independently of a custom
+    root ``__eq__`` preserved by the class-body rule.
 
     Args:
         left: A config dataclass instance.
