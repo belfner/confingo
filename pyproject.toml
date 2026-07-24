@@ -37,7 +37,7 @@ build-backend = "uv_build"
 [dependency-groups]
 arrays = [
     "numpy>=2.4.6",
-    "torch>=2.13.0",
+    "torch>=2.4.0",
 ]
 dev = [
     "pre-commit>=4.6.1",
@@ -46,6 +46,16 @@ dev = [
     "ruff==0.15.22",
     "types-pyyaml>=6.0.12.20260518",
 ]
+
+[tool.uv.sources]
+torch = [
+    {index = "pytorch-cpu"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 120
