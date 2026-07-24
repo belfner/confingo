@@ -15,12 +15,15 @@ from typing import (
     Any,
 )
 
+from confingo._core import ConfigError as _ConfigError
+from confingo._core import ConfigIssue as _ConfigIssue
 from confingo._core import config_hash as _config_hash
 from confingo._core import from_dict as _from_dict
 from confingo._core import to_dict as _to_dict
 from confingo._equality import (
-    _CUSTOM_EQ_MARKER,
     _canonical_eq,
+    custom_eq_message,
+    custom_hash_message,
 )
 from confingo._file import from_file as _from_file
 from confingo._file import to_file as _to_file
@@ -50,8 +53,13 @@ class ConfigRoot:
     ``__init_subclass__`` plants the canonical ``__eq__`` and identity
     ``__hash__`` into the subclass ahead of the ``@dataclass`` decorator,
     which then keeps them in place of generating its own. A subclass whose
-    body defines ``__eq__`` keeps it, marked so schema processing preserves
-    it too.
+    body defines its own ``__eq__`` or ``__hash__`` is rejected here, since
+    confingo owns equality and hashing on config dataclasses; a conflicting
+    ``@dataclass`` flag is rejected later, at first schema processing, once
+    decoration has run. Because the identity ``__hash__`` lands ahead of the
+    decorator, a subclass declared ``@dataclass(unsafe_hash=True)`` fails at
+    class creation with the standard-library ``TypeError`` for overwriting
+    ``__hash__``; a section carrying that flag reports a ``ConfigError`` instead.
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -59,14 +67,24 @@ class ConfigRoot:
 
         Args:
             **kwargs: Keyword arguments forwarded to ``super().__init_subclass__``.
+
+        Raises:
+            ConfigError: When the subclass body defines its own ``__eq__`` or
+              ``__hash__``; both are reported together.
         """
         super().__init_subclass__(**kwargs)
         current = cls.__dict__.get("__eq__")
+        issues = []
+        if current is not None and current is not _canonical_eq:
+            issues.append(_ConfigIssue(path="", message=custom_eq_message(cls.__name__)))
+        hash_method = cls.__dict__.get("__hash__")
+        if hash_method is not None and hash_method is not object.__hash__:
+            issues.append(_ConfigIssue(path="", message=custom_hash_message(cls.__name__)))
+        if len(issues) > 0:
+            raise _ConfigError(issues, context="config schema")
         if current is None:
             cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
             cls.__hash__ = object.__hash__  # type: ignore[method-assign]
-        elif current is not _canonical_eq:
-            setattr(cls, _CUSTOM_EQ_MARKER, True)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], *, context: str = "config") -> Self:

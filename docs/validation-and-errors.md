@@ -62,6 +62,8 @@ The context on the raised error tells you where the problem came from:
 - Non-finite floats anywhere in supplied data.
 - A contradictory field declaration, `field(hash=True, compare=False)`, reported at preflight: a field in the fingerprint must participate in equality.
 - An `init=False` field left unset by `__post_init__`: `init=False field was not set during __post_init__`.
+- A schema class that hand-writes `__eq__` or `__hash__`, since [confingo owns equality and hashing](schema-design.md#canonical-equality): `<Class> defines a custom __eq__` / `__hash__`. A `ConfigRoot` subclass reports this at class creation, both together when it defines both; a section reports it at its first schema touch.
+- A schema class declared with a `@dataclass` flag confingo cannot honor -- `init=False`, `unsafe_hash=True`, `eq=False`, or `order=True` -- each named in the message, with every violation on one class reported together at first schema processing. A `ConfigRoot` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, because the root installs identity hashing ahead of the decorator.
 
 
 ## Dataclass invariants

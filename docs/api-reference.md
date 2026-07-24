@@ -32,11 +32,11 @@ from confingo import dumps_yaml, load_yaml, save_yaml
 
 Learn more: [canonical equality](schema-design.md#canonical-equality).
 
-Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigRoot` subclass carries this from class-creation time, and a body-defined `__eq__` there is respected with standard Python hashing semantics; every other schema dataclass receives it at first schema processing, replacing the `__eq__` it carried.
+Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigRoot` subclass carries this from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. confingo owns equality and hashing: a class that hand-writes `__eq__` or `__hash__` is rejected -- a root at class creation, a section at first schema touch -- and a conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigRoot` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported.
 
 ### `config_equal(left, right) -> bool`
 
-Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and without touching the classes involved. Evaluates the canonical relation directly, independently of a custom root `__eq__` preserved by the class-body rule. Raises `TypeError` when `left` is anything other than a dataclass instance.
+Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and without touching the classes involved. Evaluates the canonical relation directly. Raises `TypeError` when `left` is anything other than a dataclass instance.
 
 
 ## Construction and conversion

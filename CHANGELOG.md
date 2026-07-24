@@ -17,12 +17,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   at native speed with exact value semantics. A `ConfigRoot` subclass
   carries the canonical `__eq__` and identity `__hash__` from class-creation
   time, installed by `__init_subclass__` ahead of the `@dataclass`
-  decorator, and a body-defined `__eq__` there is respected with standard
-  Python hashing semantics. Every other schema dataclass receives canonical
-  equality at its first schema processing, replacing the `__eq__` it
+  decorator. Every other schema dataclass receives canonical
+  equality at its first schema processing, replacing the generated `__eq__` it
   carried, with identity hashing restored where generating `__eq__` had
   disabled it. The new `config_equal(left, right)` free function exposes the
   same relation ahead of any engine call.
+- confingo owns equality and hashing on config dataclasses: a class that
+  hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigRoot` subclass at
+  class creation (both reported together when it defines both), a section at its
+  first schema touch -- and a `@dataclass` flag confingo cannot honor
+  (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a
+  `ConfigError` at first schema processing, every violation on one class reported
+  together. A `ConfigRoot` subclass declared `unsafe_hash=True` is the exception:
+  it fails at class creation with the standard-library `TypeError` for
+  overwriting `__hash__`, since the root installs identity hashing ahead of the
+  decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported;
+  a frozen or inherited generated `__hash__` is reduced to identity hashing so
+  every config shares one value-equality plus identity-hash model.
 - NumPy array and PyTorch tensor fields, presence-detected: the backends
   install with the application, confingo's core stays stdlib-only, and
   `import confingo` loads neither. Supported annotations: bare `np.ndarray`,

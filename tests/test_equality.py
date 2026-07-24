@@ -11,15 +11,13 @@ from dataclasses import (
 import pytest
 
 from confingo import (
+    ConfigError,
     ConfigRoot,
     config_equal,
     from_dict,
     to_dict,
 )
-from confingo._equality import (
-    _CUSTOM_EQ_MARKER,
-    _canonical_eq,
-)
+from confingo._equality import _canonical_eq
 
 
 # --- schema fixtures (module level so annotations resolve) --------------------
@@ -45,16 +43,6 @@ class FrozenRoot(ConfigRoot):
 @dataclass(slots=True)
 class SlottedRoot(ConfigRoot):
     x: int = 1
-
-
-@dataclass
-class CustomEqRoot(ConfigRoot):
-    x: int = 0
-
-    def __eq__(self, other: object) -> bool:  # pyrefly: ignore[missing-override-decorator]
-        return isinstance(other, CustomEqRoot)
-
-    __hash__ = object.__hash__
 
 
 # --- ConfigRoot installs canonical equality at class creation -----------------
@@ -83,16 +71,20 @@ def test_frozen_root_keeps_canonical_eq_and_identity_hash():
 def test_slots_root_keeps_canonical_eq_through_class_recreation():
     assert "__slots__" in SlottedRoot.__dict__
     assert SlottedRoot.__dict__["__eq__"] is _canonical_eq
-    assert _CUSTOM_EQ_MARKER not in SlottedRoot.__dict__
     assert SlottedRoot() == SlottedRoot()
 
 
-def test_root_body_eq_is_marked_and_survives_schema_processing():
-    assert CustomEqRoot.__dict__[_CUSTOM_EQ_MARKER] is True
-    body_eq = CustomEqRoot.__dict__["__eq__"]
-    from_dict(CustomEqRoot, {})
-    assert CustomEqRoot.__dict__["__eq__"] is body_eq
-    assert CustomEqRoot(x=1) == CustomEqRoot(x=2)
+def test_root_body_eq_is_rejected_at_class_creation():
+    with pytest.raises(ConfigError, match="custom __eq__"):
+
+        @dataclass
+        class CustomEqRoot(ConfigRoot):
+            x: int = 0
+
+            def __eq__(self, other: object) -> bool:  # pyrefly: ignore[missing-override-decorator]
+                return isinstance(other, CustomEqRoot)
+
+            __hash__ = object.__hash__
 
 
 def test_identity_hash_keeps_equal_roots_distinct_in_sets():
@@ -187,24 +179,20 @@ def test_plain_root_compares_across_loads():
     assert from_dict(PlainTwin, {"name": "sgd"}) != from_dict(PlainTwin, {"name": "adam"})
 
 
-def test_body_eq_on_a_plain_dataclass_is_replaced():
-    from_dict(PlainUserEq, {})
-    assert PlainUserEq.__dict__["__eq__"] is _canonical_eq
-    assert PlainUserEq(x=3) == PlainUserEq(x=3)
-    assert PlainUserEq(x=1) != PlainUserEq(x=2)
+def test_body_eq_on_a_plain_dataclass_is_rejected():
+    with pytest.raises(ConfigError, match="PlainUserEq defines a custom __eq__"):
+        from_dict(PlainUserEq, {})
 
 
-def test_eq_false_dataclass_gains_canonical_eq():
-    from_dict(PlainEqFalse, {})
-    assert PlainEqFalse.__dict__["__eq__"] is _canonical_eq
-    assert PlainEqFalse(x=1) == PlainEqFalse(x=1)
+def test_eq_false_dataclass_is_rejected():
+    with pytest.raises(ConfigError, match=r"eq=False"):
+        from_dict(PlainEqFalse, {})
 
 
-def test_plain_frozen_gains_canonical_eq_and_keeps_generated_hash():
-    generated_hash = PlainFrozen.__dict__["__hash__"]
+def test_plain_frozen_gains_canonical_eq_and_identity_hash():
     from_dict(PlainFrozen, {})
     assert PlainFrozen.__dict__["__eq__"] is _canonical_eq
-    assert PlainFrozen.__dict__["__hash__"] is generated_hash
+    assert PlainFrozen.__dict__["__hash__"] is object.__hash__
     assert PlainFrozen(x=1) == PlainFrozen(x=1)
 
 
@@ -239,12 +227,6 @@ def test_config_equal_applies_the_same_class_rule():
     assert config_equal(Tree(seed=1), Tree(seed=2)) is False
     assert config_equal(Tree(), PlainTwin()) is False
     assert config_equal(Tree(), 5) is False
-
-
-def test_config_equal_evaluates_the_canonical_relation_directly():
-    assert CustomEqRoot(x=1) == CustomEqRoot(x=2)
-    assert config_equal(CustomEqRoot(x=1), CustomEqRoot(x=2)) is False
-    assert config_equal(CustomEqRoot(x=3), CustomEqRoot(x=3))
 
 
 def test_config_equal_rejects_non_dataclass_input():

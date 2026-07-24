@@ -234,14 +234,23 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
     Args:
         config_cls: The dataclass whose annotations to resolve.
 
+    On the first resolution of a class, confingo installs canonical equality and
+    identity hashing on it; the cache entry is written only after that install
+    succeeds, so a class that violates the ownership contract is re-checked and
+    re-rejected on every touch.
+
+    Args:
+        config_cls: The dataclass whose annotations to resolve.
+
     Returns:
         Mapping of field name to resolved type hint, with ``Annotated`` metadata
         stripped so decorated fields resolve to their base type.
 
     Raises:
         ConfigError: When an annotation names a type that is unreachable from the
-          defining module's namespace. Declare config dataclasses at module level so
-          every name they reference resolves there.
+          defining module's namespace, or the class defines its own ``__eq__`` /
+          ``__hash__`` or a conflicting ``@dataclass`` flag. Declare config
+          dataclasses at module level so every name they reference resolves there.
     """
     cached = _HINT_CACHE.get(config_cls)
     if cached is not None:
@@ -255,10 +264,10 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
             f"in the defining module's namespace."
         )
         raise ConfigError.single(message, context="config schema") from exc
-    _HINT_CACHE[config_cls] = hints
     from confingo._equality import _install_canonical_eq  # noqa: PLC0415
 
     _install_canonical_eq(config_cls)
+    _HINT_CACHE[config_cls] = hints
     return hints
 
 
