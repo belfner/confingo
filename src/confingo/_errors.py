@@ -13,6 +13,11 @@ from collections.abc import Iterable  # noqa: TC003 (runtime: keeps get_type_hin
 from dataclasses import dataclass
 from typing import Any
 
+from confingo._backend import (
+    BackendSnapshot,
+    capture_backend_snapshot,
+)
+
 
 _UNSET = object()
 """Sentinel returned by coercion helpers when a value failed to convert."""
@@ -72,10 +77,16 @@ class ConfigError(ValueError):
 
 
 class _IssueCollector:
-    """Accumulates config issues so one build reports all of them at once."""
+    """Accumulates config issues so one build reports all of them at once.
 
-    def __init__(self) -> None:
+    Also carries the array-backend snapshot for the operation, captured once and
+    shared across the whole walk so array handling is gated on one consistent
+    view of which backends are loaded.
+    """
+
+    def __init__(self, backend: BackendSnapshot | None = None) -> None:
         self.issues: list[ConfigIssue] = []
+        self.backend: BackendSnapshot = backend if backend is not None else capture_backend_snapshot()
 
     def add(self, path: str, message: str) -> None:
         """Record one issue.

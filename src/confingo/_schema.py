@@ -11,6 +11,7 @@ supported type set independently of any config data. Construction
 from __future__ import annotations
 
 import datetime as dt
+import os
 import types
 import typing
 from collections.abc import (
@@ -25,6 +26,7 @@ from dataclasses import (
     is_dataclass,
 )
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import (
     Annotated,
@@ -140,6 +142,142 @@ def _is_dataclass_type(hint: Any) -> bool:
       bool: True when the hint is a dataclass type rather than an instance.
     """
     return isinstance(hint, type) and is_dataclass(hint)
+
+
+class _HintKind(Enum):
+    """The unmarshal dispatch category of a resolved type hint."""
+
+    ANY = "any"
+    NONE = "none"
+    LITERAL = "literal"
+    UNION = "union"
+    CONTAINER = "container"
+    UNSUPPORTED_GENERIC = "unsupported_generic"
+    DATACLASS = "dataclass"
+    BARE_CONTAINER = "bare_container"
+    SCALAR = "scalar"
+
+
+@dataclass(frozen=True)
+class _HintClass:
+    """The value-independent structure of one resolved type hint.
+
+    Holds only facts derived from the hint, never a value, path, issue, or
+    coercion result, so one instance is reused across every value coerced against
+    the hint. Array matching is deliberately excluded: it depends on which
+    backends are loaded, which is resolved per operation rather than cached here.
+
+    Attributes:
+      kind (_HintKind): The dispatch category.
+      stripped (Any): The hint with any ``Annotated`` layers removed.
+      origin (Any): ``get_origin(stripped)`` for containers/unions/literals, else None.
+      args (tuple[Any, ...]): ``get_args(stripped)`` for containers/unions/literals.
+      dataclass_type (type[Any] | None): The dataclass type for a DATACLASS hint.
+      bare_origin (Any): The container origin for a BARE_CONTAINER hint.
+    """
+
+    kind: _HintKind
+    stripped: Any
+    origin: Any
+    args: tuple[Any, ...]
+    dataclass_type: type[Any] | None = None
+    bare_origin: Any = None
+
+
+def _classify_hint_uncached(hint: Any) -> _HintClass:
+    """Compute the dispatch structure of a resolved hint without caching.
+
+    Args:
+      hint (Any): A resolved type hint, possibly wrapped in ``Annotated``.
+
+    Returns:
+      _HintClass: The structural classification, mirroring the unmarshal engine's
+        post-strip dispatch order.
+    """
+    stripped = _strip_annotated(hint)
+    if stripped is Any:
+        return _HintClass(_HintKind.ANY, stripped, None, ())
+    if stripped is type(None):
+        return _HintClass(_HintKind.NONE, stripped, None, ())
+    origin = get_origin(stripped)
+    args = get_args(stripped)
+    if origin is Literal:
+        return _HintClass(_HintKind.LITERAL, stripped, origin, args)
+    if origin is typing.Union or origin is types.UnionType:
+        return _HintClass(_HintKind.UNION, stripped, origin, args)
+    if origin is not None:
+        if origin in _CONTAINER_ORIGINS:
+            return _HintClass(_HintKind.CONTAINER, stripped, origin, args)
+        return _HintClass(_HintKind.UNSUPPORTED_GENERIC, stripped, origin, args)
+    if isinstance(stripped, type):
+        if is_dataclass(stripped):
+            return _HintClass(_HintKind.DATACLASS, stripped, None, (), dataclass_type=stripped)
+        bare = _BARE_CONTAINERS.get(stripped)
+        if bare is not None:
+            return _HintClass(_HintKind.BARE_CONTAINER, stripped, None, (), bare_origin=bare)
+    return _HintClass(_HintKind.SCALAR, stripped, None, ())
+
+
+_TYPE_CACHE_DISABLED = os.environ.get("CONFINGO_DISABLE_TYPE_CACHE") == "1"
+"""Escape hatch: bypass the hint-plan cache for the whole process when set to 1."""
+
+_HINT_PLAN_CACHE_MAX = 2048
+"""Bound on distinct compiled hint plans, capping retention of dynamic generics."""
+
+
+class _IdKey:
+    """Identity cache key for a type hint.
+
+    Hashes on ``id(hint)`` and compares by ``is``, so the cache never invokes the
+    hint's own ``__hash__`` / ``__eq__`` (safe for unhashable hints such as
+    ``Annotated[int, []]`` and for surprising metadata equality). Holding a strong
+    reference to the hint for the entry's lifetime prevents an ``id()`` reused
+    after garbage collection from aliasing a live entry.
+    """
+
+    __slots__ = ("_hash", "hint")
+
+    def __init__(self, hint: Any) -> None:
+        self.hint = hint
+        self._hash = id(hint)
+
+    def __hash__(self) -> int:
+        return self._hash
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _IdKey) and self.hint is other.hint
+
+
+@lru_cache(maxsize=_HINT_PLAN_CACHE_MAX)
+def _classify_hint_by_id(key: _IdKey) -> _HintClass:
+    """Cache-backed classification keyed by hint identity.
+
+    Args:
+      key (_IdKey): Identity wrapper around the hint.
+
+    Returns:
+      _HintClass: The classification for ``key.hint``.
+    """
+    return _classify_hint_uncached(key.hint)
+
+
+def _classify_hint(hint: Any) -> _HintClass:
+    """Classify a resolved hint, reusing a bounded identity-keyed cache.
+
+    The classification is a pure function of the hint's structure, so it is safe
+    to reuse across every value coerced against the hint. Distinct-but-equal hint
+    aliases may miss the cache, which is a performance event, never a correctness
+    one; each still compiles to an equivalent plan.
+
+    Args:
+      hint (Any): A resolved type hint, possibly wrapped in ``Annotated``.
+
+    Returns:
+      _HintClass: The structural classification.
+    """
+    if _TYPE_CACHE_DISABLED:
+        return _classify_hint_uncached(hint)
+    return _classify_hint_by_id(_IdKey(hint))
 
 
 @dataclass(frozen=True)

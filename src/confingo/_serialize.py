@@ -140,6 +140,17 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector, *, projection: 
       Any: The converted plain-data structure, or the ``_UNSET`` sentinel when
         this value failed to serialize.
     """
+    # Exact-builtin leaves are the majority of nodes and cannot also be a
+    # dataclass, Enum, Path, temporal, array, numpy scalar, or mapping, so they
+    # short-circuit the ordered isinstance chain below. Subclasses fall through
+    # to the richer branches to preserve their behavior.
+    value_type = type(value)
+    if value is None or value_type is bool or value_type is int or value_type is str:
+        return value
+    if value_type is float:
+        if not math.isfinite(value):
+            return _reject(collector, path, f"cannot serialize non-finite float {value!r}")
+        return value
     if is_dataclass(value) and not isinstance(value, type):
         node: dict[str, Any] = {}
         node_failed = False
@@ -159,12 +170,15 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector, *, projection: 
         # Covers date, datetime (itself a date subclass), and time.
         return value.isoformat()
 
-    array_result = _arrays.array_to_plain(value, path, collector.add)
-    if array_result is not _arrays.NOT_ARRAY:
-        return _UNSET if array_result is _arrays.FAILED else array_result
-    is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
-    if is_numpy_scalar:
-        value = normalized
+    # Native arrays and numpy scalars only exist when a backend is loaded, so the
+    # value-driven array handling is skipped entirely when none is present.
+    if collector.backend.active:
+        array_result = _arrays.array_to_plain(value, path, collector.add)
+        if array_result is not _arrays.NOT_ARRAY:
+            return _UNSET if array_result is _arrays.FAILED else array_result
+        is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
+        if is_numpy_scalar:
+            value = normalized
 
     if isinstance(value, Mapping):
         # Convert keys through the same rules; JSON carries string keys natively.

@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-import types
 import typing
 from collections.abc import (
     Mapping,
@@ -64,9 +63,7 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
-    Literal,
     TypeVar,
-    get_args,
     get_origin,
 )
 
@@ -78,11 +75,11 @@ from confingo._errors import (
     _reject,
 )
 from confingo._schema import (
-    _BARE_CONTAINERS,
-    _CONTAINER_ORIGINS,
     _SEQUENCE_BUILDERS,
     _classify_dataclass_fields,
+    _classify_hint,
     _hint_name,
+    _HintKind,
     _is_dataclass_type,
     _join,
     _resolved_hints,
@@ -267,47 +264,46 @@ def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any
     if hint is Any:
         return _coerce_any(value, path, collector)
 
-    array_match = _arrays.inspect_annotation(hint)
-    if array_match.matched:
-        if array_match.spec is None:
-            return _reject(collector, path, typing.cast("str", array_match.error))
-        result = _arrays.coerce_array(value, array_match.spec, path, collector.add)
-        return _UNSET if result is _arrays.FAILED else result
-    hint = _strip_annotated(hint)
+    # A field can only carry an array annotation if its backend module is
+    # loaded (the annotation object references it), so when no backend is present
+    # there is nothing to match and the per-value inspection is skipped entirely.
+    if collector.backend.active:
+        array_match = _arrays.inspect_annotation(hint)
+        if array_match.matched:
+            if array_match.spec is None:
+                return _reject(collector, path, typing.cast("str", array_match.error))
+            result = _arrays.coerce_array(value, array_match.spec, path, collector.add)
+            return _UNSET if result is _arrays.FAILED else result
 
-    if hint is Any:
+    # The structural dispatch (strip Annotated, origin/args, dataclass/container
+    # detection) is a pure function of the hint, so it is computed once per hint
+    # and reused across every value coerced against it. Branches are ordered by
+    # frequency: leaves and nested dataclasses/containers dominate real configs.
+    plan = _classify_hint(hint)
+    kind = plan.kind
+
+    if kind is _HintKind.SCALAR:
+        return _coerce_scalar(value, plan.stripped, path, collector)
+    if kind is _HintKind.DATACLASS:
+        return _build(typing.cast("type[Any]", plan.dataclass_type), value, path, collector)
+    if kind is _HintKind.CONTAINER:
+        return _coerce_container(value, plan.stripped, plan.origin, plan.args, path, collector)
+    if kind is _HintKind.UNION:
+        return _coerce_union(value, plan.stripped, plan.args, path, collector)
+    if kind is _HintKind.ANY:
         return _coerce_any(value, path, collector)
-    if hint is type(None):
+    if kind is _HintKind.NONE:
         if value is None:
             return None
         return _reject(collector, path, f"expected None, got {_typename(value)}")
-
-    origin = get_origin(hint)
-    args = get_args(hint)
-
-    if origin is Literal:
+    if kind is _HintKind.LITERAL:
         # Exact-type match keeps bool True distinct from int 1, which compare equal.
-        if any(value == option and type(value) is type(option) for option in args):
+        if any(value == option and type(value) is type(option) for option in plan.args):
             return value
-        return _reject(collector, path, f"expected one of {_hint_name(hint)}, got {value!r}")
-
-    if origin is typing.Union or origin is types.UnionType:
-        return _coerce_union(value, hint, args, path, collector)
-
-    if origin is not None:
-        if origin in _CONTAINER_ORIGINS:
-            return _coerce_container(value, hint, origin, args, path, collector)
-        return _reject(collector, path, f"unsupported field type {_hint_name(hint)}")
-
-    if _is_dataclass_type(hint):
-        return _build(hint, value, path, collector)
-
-    if isinstance(hint, type):
-        bare_origin = _BARE_CONTAINERS.get(hint)
-        if bare_origin is not None:
-            return _coerce_container(value, hint, bare_origin, (), path, collector)
-
-    return _coerce_scalar(value, hint, path, collector)
+        return _reject(collector, path, f"expected one of {_hint_name(plan.stripped)}, got {value!r}")
+    if kind is _HintKind.BARE_CONTAINER:
+        return _coerce_container(value, plan.stripped, plan.bare_origin, (), path, collector)
+    return _reject(collector, path, f"unsupported field type {_hint_name(plan.stripped)}")
 
 
 def _coerce_any(value: Any, path: str, collector: _IssueCollector) -> Any:
@@ -326,23 +322,25 @@ def _coerce_any(value: Any, path: str, collector: _IssueCollector) -> Any:
       Any: The value unchanged, or the ``_UNSET`` sentinel when it holds a
         non-finite float.
     """
-    array_result = _arrays.validate_array_value(value, path, collector.add)
-    if array_result is not _arrays.NOT_ARRAY:
-        return _UNSET if array_result is _arrays.FAILED else array_result
-    is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
-    if is_numpy_scalar:
-        # Supported numpy scalars stay in memory as written and serialize as
-        # Python scalars; only finiteness is enforced here.
-        if isinstance(normalized, float) and not math.isfinite(normalized):
-            return _reject(collector, path, f"expected a finite float, got {normalized!r}")
-        return value
+    backend_active = collector.backend.active
+    if backend_active:
+        array_result = _arrays.validate_array_value(value, path, collector.add)
+        if array_result is not _arrays.NOT_ARRAY:
+            return _UNSET if array_result is _arrays.FAILED else array_result
+        is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
+        if is_numpy_scalar:
+            # Supported numpy scalars stay in memory as written and serialize as
+            # Python scalars; only finiteness is enforced here.
+            if isinstance(normalized, float) and not math.isfinite(normalized):
+                return _reject(collector, path, f"expected a finite float, got {normalized!r}")
+            return value
     if isinstance(value, float) and not math.isfinite(value):
         return _reject(collector, path, f"expected a finite float, got {value!r}")
     if isinstance(value, Mapping):
         failed = False
         for key, item in value.items():
             item_path = _join(path, str(key))
-            if _arrays.is_array_value(key):
+            if backend_active and _arrays.is_array_value(key):
                 # Arrays serialize as lists, which have no mapping-key form.
                 collector.add(item_path, f"cannot use {_typename(key)} as a mapping key")
                 failed = True
@@ -384,7 +382,8 @@ def _coerce_union(value: Any, hint: Any, args: tuple[Any, ...], path: str, colle
     for candidate in non_none:
         # Probe each member with a throwaway collector so member-level failures
         # stay silent; the first clean conversion wins. Member order is precedence.
-        trial = _IssueCollector()
+        # It inherits the operation's backend snapshot so array gating stays consistent.
+        trial = _IssueCollector(collector.backend)
         result = _coerce(value, candidate, path, trial)
         if result is not _UNSET and trial.clean():
             return result
@@ -517,11 +516,13 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
     Returns:
         The coerced value, or the ``_UNSET`` sentinel when coercion failed.
     """
-    is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
-    if is_numpy_scalar:
-        # A supported numpy scalar feeds the ordinary rules as its exact Python
-        # equivalent, so np.float32 lands on float fields and np.int64 on int.
-        value = normalized
+    # A numpy scalar can only exist when numpy is loaded; skip the check otherwise.
+    if collector.backend.numpy is not None:
+        is_numpy_scalar, normalized = _arrays.normalize_numpy_scalar(value)
+        if is_numpy_scalar:
+            # A supported numpy scalar feeds the ordinary rules as its exact Python
+            # equivalent, so np.float32 lands on float fields and np.int64 on int.
+            value = normalized
 
     if not isinstance(hint, type):
         return _reject(collector, path, f"unsupported field type {_hint_name(hint)}")
