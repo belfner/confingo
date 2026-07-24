@@ -450,7 +450,7 @@ def test_meta_and_nested_tensors_are_rejected(issues: Sink):
     assert _arrays.array_to_plain(meta, "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "meta torch tensors carry no element values")]
     issues.clear()
-    nested = torch.nested.nested_tensor([[1.0], [2.0, 3.0]])
+    nested = torch.nested.nested_tensor([[1.0], [2.0, 3.0]], layout=torch.jagged)
     assert _arrays.coerce_array(nested, spec, "w", sink(issues)) is _arrays.FAILED
     assert "nested tensor" in issues[0][1]
     issues.clear()
@@ -507,7 +507,9 @@ def test_native_nonfinite_reports_indexed_paths(issues: Sink):
 
 
 def test_sparse_tensors_are_rejected(issues: Sink):
-    sparse = torch.sparse_coo_tensor(torch.zeros((2, 0), dtype=torch.int64), torch.zeros(0), (2, 2))
+    sparse = torch.sparse_coo_tensor(
+        torch.zeros((2, 0), dtype=torch.int64), torch.zeros(0), (2, 2), check_invariants=False
+    )
     assert _arrays.coerce_array(sparse, spec_of(torch.Tensor), "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "only dense strided torch tensors are supported; got torch.sparse_coo")]
 
@@ -583,7 +585,9 @@ def test_marshal_rejects_unsupported_forms(issues: Sink):
     assert _arrays.array_to_plain(np.array([object()]), "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "unsupported numpy dtype object")]
     issues.clear()
-    sparse = torch.sparse_coo_tensor(torch.zeros((2, 0), dtype=torch.int64), torch.zeros(0), (2, 2))
+    sparse = torch.sparse_coo_tensor(
+        torch.zeros((2, 0), dtype=torch.int64), torch.zeros(0), (2, 2), check_invariants=False
+    )
     assert _arrays.array_to_plain(sparse, "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "only dense strided torch tensors can be serialized; got torch.sparse_coo")]
 
@@ -705,7 +709,7 @@ def test_native_equal_small_unsigned_mixes_and_bool_defers_to_plain_form():
 
 
 def test_native_equal_rejects_unsupported_forms():
-    sparse = torch.sparse_coo_tensor(torch.tensor([[0]]), torch.tensor([1.0]), (2,))
+    sparse = torch.sparse_coo_tensor(torch.tensor([[0]]), torch.tensor([1.0]), (2,), check_invariants=False)
     assert _arrays.native_equal(sparse, torch.tensor([1.0, 0.0])) is _arrays.NOT_COMPARABLE
     assert _arrays.native_equal(sparse, np.array([1.0, 0.0])) is _arrays.NOT_COMPARABLE
     strings = np.array(["a"])
