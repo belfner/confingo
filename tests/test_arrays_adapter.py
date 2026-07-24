@@ -19,7 +19,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
-import numpy.typing as npt  # noqa: E402
+npt = pytest.importorskip("numpy.typing")
 
 from confingo import _arrays  # noqa: E402
 
