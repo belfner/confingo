@@ -14,15 +14,13 @@ from typing import (
     TypeVar,
 )
 
-from confingo._core import (
-    ConfigError,
-    to_dict,
-)
+from confingo._errors import ConfigError
 from confingo._fileio import (
     atomic_write_text,
     build_from_document,
     read_source_text,
 )
+from confingo._serialize import to_dict
 
 
 if TYPE_CHECKING:
@@ -35,11 +33,11 @@ def dumps_json(config: Any, *, indent: int = 2) -> str:
     """Render a config object as JSON text.
 
     Args:
-        config: The config object to render.
-        indent: Number of spaces per indentation level, by default 2.
+      config (Any): The config object to render.
+      indent (int = 2): Number of spaces per indentation level.
 
     Returns:
-        The JSON document, in field-declaration order, ending with a newline.
+      str: The JSON document, in field-declaration order, ending with a newline.
     """
     body = json.dumps(to_dict(config), indent=indent, ensure_ascii=True)
     return f"{body}\n"
@@ -56,12 +54,13 @@ def save_json(config: Any, path: str | Path, *, indent: int = 2) -> Path:
     a reader observes either the previous file or the complete new one.
 
     Args:
-        config: The config object to write.
-        path: Destination file path. Parent directories are created as needed.
-        indent: Number of spaces per indentation level, by default 2.
+      config (Any): The config object to write.
+      path (str | Path): Destination file path. Parent directories are created as
+        needed.
+      indent (int = 2): Number of spaces per indentation level.
 
     Returns:
-        The path written.
+      Path: The path written.
     """
     return atomic_write_text(path, dumps_json(config, indent=indent))
 
@@ -70,16 +69,16 @@ def load_json(config_cls: type[T], path: str | Path) -> T:
     """Load a JSON file into a config object.
 
     Args:
-        config_cls: The root dataclass to build.
-        path: Path to the JSON file.
+      config_cls (type[T]): The root dataclass to build.
+      path (str | Path): Path to the JSON file.
 
     Returns:
-        The constructed config object.
+      T: The constructed config object.
 
     Raises:
-        ConfigError: When the file is unreadable, holds invalid JSON, holds a
-          non-object document, or fails validation. Validation failures list every
-          issue found.
+      ConfigError: When the file is unreadable, holds invalid JSON, holds a
+        non-object document, or fails validation. Validation failures list every
+        issue found.
     """
     source, text = read_source_text(path)
     try:

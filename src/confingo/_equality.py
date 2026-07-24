@@ -43,11 +43,13 @@ from typing import (
 )
 
 from confingo import _arrays
-from confingo._core import (
+from confingo._errors import (
     ConfigError,
     ConfigIssue,
+)
+from confingo._schema import _classify_dataclass_fields
+from confingo._serialize import (
     _canonical_json,
-    _classify_dataclass_fields,
     _PlainProjection,
     _project_plain,
 )
@@ -55,6 +57,7 @@ from confingo._core import (
 
 if TYPE_CHECKING:
     import types
+    from collections.abc import Callable
 
 _MISSING = object()
 """Sentinel distinguishing an absent class-dict entry from a stored None."""
@@ -86,11 +89,11 @@ def _values_equal(a: Any, b: Any) -> bool:
     evaluation strategy for one equality relation.
 
     Args:
-        a: The left-hand value.
-        b: The right-hand value.
+      a (Any): The left-hand value.
+      b (Any): The right-hand value.
 
     Returns:
-        Whether the two values serialize to equal plain forms.
+      bool: Whether the two values serialize to equal plain forms.
     """
     verdict = _arrays.native_equal(a, b)
     if verdict is not _arrays.NOT_COMPARABLE:
@@ -141,12 +144,12 @@ def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
     containers. ``init=False`` and ``compare=False`` fields carry no weight.
 
     Args:
-        self: The left-hand config object.
-        other: The right-hand operand.
+      other (Any): The right-hand operand.
 
     Returns:
-        ``NotImplemented`` when ``other`` is a different class, else whether
-        every compared field pair is canonically equal.
+      bool | types.NotImplementedType: ``NotImplemented`` when ``other`` is a
+        different class, else whether every compared field pair is canonically
+        equal.
     """
     if other.__class__ is not self.__class__:
         return NotImplemented
@@ -158,10 +161,10 @@ def custom_eq_message(name: str) -> str:
     """Build the rejection message for a config dataclass defining its own ``__eq__``.
 
     Args:
-        name (str): The name of the offending class.
+      name (str): The name of the offending class.
 
     Returns:
-        str: The rejection message naming the class and the required remedy.
+      str: The rejection message naming the class and the required remedy.
     """
     return (
         f"{name} defines a custom __eq__; confingo installs canonical value equality on config "
@@ -173,10 +176,10 @@ def custom_hash_message(name: str) -> str:
     """Build the rejection message for a config dataclass defining its own ``__hash__``.
 
     Args:
-        name (str): The name of the offending class.
+      name (str): The name of the offending class.
 
     Returns:
-        str: The rejection message naming the class and the required remedy.
+      str: The rejection message naming the class and the required remedy.
     """
     return (
         f"{name} defines a custom __hash__; confingo owns hashing and installs identity __hash__ on "
@@ -192,12 +195,12 @@ def _resolve_owner(config_cls: type[Any], name: str) -> tuple[type[Any], Any]:
     subclass has an empty own dict yet ``is_dataclass`` still reports it.
 
     Args:
-        config_cls (type[Any]): The class whose method to resolve.
-        name (str): The dunder name to look up (``"__eq__"`` or ``"__hash__"``).
+      config_cls (type[Any]): The class whose method to resolve.
+      name (str): The dunder name to look up (``"__eq__"`` or ``"__hash__"``).
 
     Returns:
-        tuple[type[Any], Any]: The owning class and the method object; the owner
-          is ``object`` when nothing nearer defines it.
+      tuple[type[Any], Any]: The owning class and the method object; the owner
+        is ``object`` when nothing nearer defines it.
     """
     for base in config_cls.__mro__:
         if name in base.__dict__:
@@ -213,15 +216,15 @@ def _reference_code(owner: type[Any], names: list[str], *, frozen: bool) -> Any:
     object confingo compares provenance against.
 
     Args:
-        owner (type[Any]): The class whose provenance is being checked, used only
-          for the reference name.
-        names (list[str]): Field names, in declaration order, the generated method
-          ranges over.
-        frozen (bool): Whether to build a frozen reference, which generates
-          ``__hash__``; a mutable reference generates only ``__eq__``.
+      owner (type[Any]): The class whose provenance is being checked, used only
+        for the reference name.
+      names (list[str]): Field names, in declaration order, the generated method
+        ranges over.
+      frozen (bool): Whether to build a frozen reference, which generates
+        ``__hash__``; a mutable reference generates only ``__eq__``.
 
     Returns:
-        Any: The generated ``__eq__`` (mutable) or ``__hash__`` (frozen) code object.
+      Any: The generated ``__eq__`` (mutable) or ``__hash__`` (frozen) code object.
     """
     reference = make_dataclass(f"_ConfingoRef_{owner.__name__}", [(name, int) for name in names], frozen=frozen)
     method = reference.__hash__ if frozen else reference.__eq__
@@ -237,11 +240,11 @@ def _code_matches(method: Any, reference_code: Any) -> bool:
     confingo does not defend against that.
 
     Args:
-        method (Any): The method object under inspection.
-        reference_code (Any): The generated reference code object.
+      method (Any): The method object under inspection.
+      reference_code (Any): The generated reference code object.
 
     Returns:
-        bool: Whether the method's code object is byte-identical to the reference.
+      bool: Whether the method's code object is byte-identical to the reference.
     """
     code = getattr(method, "__code__", None)
     if code is None:
@@ -254,45 +257,81 @@ def _code_matches(method: Any, reference_code: Any) -> bool:
     )
 
 
+def _custom_method_owner(
+    config_cls: type[Any],
+    name: str,
+    *,
+    owned: Callable[[Any], bool],
+    names_of: Callable[[type[Any]], list[str]],
+    frozen: bool,
+) -> type[Any] | None:
+    """Report the class owning a hand-written dunder, or None when confingo owns it.
+
+    Resolves the method through the MRO, treats the owned sentinels and any
+    dataclass-generated body (matched by provenance against ``names_of`` codegen)
+    as owned, and otherwise names the class that hand-wrote it.
+
+    Args:
+      config_cls (type[Any]): The class to inspect.
+      name (str): The dunder to resolve (``"__eq__"`` or ``"__hash__"``).
+      owned (Callable[[Any], bool]): Whether a resolved method is a confingo- or
+        object-owned sentinel that needs no provenance check.
+      names_of (Callable[[type[Any]], list[str]]): The field names the generated
+        reference method ranges over, in declaration order.
+      frozen (bool): Whether the reference method is generated frozen, selecting
+        ``__hash__`` codegen over ``__eq__`` codegen.
+
+    Returns:
+      type[Any] | None: The owning class when the method is hand-written, else
+        None when confingo, ``object``, or dataclass codegen owns it.
+    """
+    owner, method = _resolve_owner(config_cls, name)
+    if owned(method):
+        return None
+    if is_dataclass(owner) and _code_matches(method, _reference_code(owner, names_of(owner), frozen=frozen)):
+        return None
+    return owner
+
+
 def _custom_eq_owner(config_cls: type[Any]) -> type[Any] | None:
     """Report the class owning a custom ``__eq__``, or None when equality is owned.
 
     Args:
-        config_cls (type[Any]): The class to inspect.
+      config_cls (type[Any]): The class to inspect.
 
     Returns:
-        type[Any] | None: The owning class when its ``__eq__`` is hand-written,
-          else None for ``_canonical_eq``, ``object.__eq__``, or dataclass-generated.
+      type[Any] | None: The owning class when its ``__eq__`` is hand-written,
+        else None for ``_canonical_eq``, ``object.__eq__``, or dataclass-generated.
     """
-    owner, method = _resolve_owner(config_cls, "__eq__")
-    if method is _canonical_eq or method is object.__eq__ or method is None:
-        return None
-    if is_dataclass(owner):
-        names = [field.name for field in fields(owner) if field.compare]
-        if _code_matches(method, _reference_code(owner, names, frozen=False)):
-            return None
-    return owner
+    return _custom_method_owner(
+        config_cls,
+        "__eq__",
+        owned=lambda method: method is _canonical_eq or method is object.__eq__ or method is None,
+        names_of=lambda owner: [field.name for field in fields(owner) if field.compare],
+        frozen=False,
+    )
 
 
 def _custom_hash_owner(config_cls: type[Any]) -> type[Any] | None:
     """Report the class owning a custom ``__hash__``, or None when hashing is owned.
 
     Args:
-        config_cls (type[Any]): The class to inspect.
+      config_cls (type[Any]): The class to inspect.
 
     Returns:
-        type[Any] | None: The owning class when its ``__hash__`` is hand-written,
-          else None for ``object.__hash__``, an unhashable ``None``, or the
-          dataclass-generated frozen hash.
+      type[Any] | None: The owning class when its ``__hash__`` is hand-written,
+        else None for ``object.__hash__``, an unhashable ``None``, or the
+        dataclass-generated frozen hash.
     """
-    owner, method = _resolve_owner(config_cls, "__hash__")
-    if method is None or method is object.__hash__:
-        return None
-    if is_dataclass(owner):
-        names = [field.name for field in fields(owner) if (field.compare if field.hash is None else field.hash)]
-        if _code_matches(method, _reference_code(owner, names, frozen=True)):
-            return None
-    return owner
+    return _custom_method_owner(
+        config_cls,
+        "__hash__",
+        owned=lambda method: method is None or method is object.__hash__,
+        names_of=lambda owner: [
+            field.name for field in fields(owner) if (field.compare if field.hash is None else field.hash)
+        ],
+        frozen=True,
+    )
 
 
 def _flag_conflicts(config_cls: type[Any]) -> list[str]:
@@ -303,10 +342,10 @@ def _flag_conflicts(config_cls: type[Any]) -> list[str]:
     is complete, so inherited params are authoritative.
 
     Args:
-        config_cls (type[Any]): The class to inspect.
+      config_cls (type[Any]): The class to inspect.
 
     Returns:
-        list[str]: One message per violated flag, empty when the flags are honored.
+      list[str]: One message per violated flag, empty when the flags are honored.
     """
     params = getattr(config_cls, "__dataclass_params__", None)
     if params is None:
@@ -345,10 +384,10 @@ def _enforce_class_contract(config_cls: type[Any]) -> None:
     a rejected class is never partially modified.
 
     Args:
-        config_cls (type[Any]): The schema dataclass being processed.
+      config_cls (type[Any]): The schema dataclass being processed.
 
     Raises:
-        ConfigError: When the class carries any contract violation.
+      ConfigError: When the class carries any contract violation.
     """
     issues = [ConfigIssue(path="", message=message) for message in _flag_conflicts(config_cls)]
     eq_owner = _custom_eq_owner(config_cls)
@@ -374,7 +413,7 @@ def _normalize_hash(config_cls: type[Any]) -> None:
     generated hashes reach here.
 
     Args:
-        config_cls (type[Any]): The schema dataclass being processed.
+      config_cls (type[Any]): The schema dataclass being processed.
     """
     _owner, current = _resolve_owner(config_cls, "__hash__")
     if current is object.__hash__:
@@ -393,10 +432,10 @@ def _install_canonical_eq(config_cls: type[Any]) -> None:
     already carries ``_canonical_eq`` from class-creation time.
 
     Args:
-        config_cls: The schema dataclass being processed.
+      config_cls (type[Any]): The schema dataclass being processed.
 
     Raises:
-        ConfigError: When the class violates the ownership contract.
+      ConfigError: When the class violates the ownership contract.
     """
     _enforce_class_contract(config_cls)
     if config_cls.__dict__.get("__eq__") is not _canonical_eq:
@@ -416,14 +455,14 @@ def config_equal(left: Any, right: Any) -> bool:
     independently of a custom root ``__eq__`` preserved by the class-body rule.
 
     Args:
-        left: A config dataclass instance.
-        right: The object to compare against.
+      left (Any): A config dataclass instance.
+      right (Any): The object to compare against.
 
     Returns:
-        Whether the two objects are canonically equal.
+      bool: Whether the two objects are canonically equal.
 
     Raises:
-        TypeError: When ``left`` is anything other than a dataclass instance.
+      TypeError: When ``left`` is anything other than a dataclass instance.
     """
     if not is_dataclass(left) or isinstance(left, type):
         raise TypeError(f"config_equal() expects a config dataclass instance, got {type(left).__name__}")

@@ -92,6 +92,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   self-referential section terminates with a missing-value issue at the point of
   recursion. Explicit defaults and `default_factory` values take precedence and
   are used as authored.
+- Internal restructure of the engine: the marshal / unmarshal core is split into
+  focused modules (`_errors`, `_schema`, `_core`, `_serialize`), the NumPy and
+  PyTorch array paths share one validation and indexed issue-reporting kernel,
+  scalar coercion routes through a shared ISO temporal parser, and equality and
+  hashing ownership resolves through one method-contract helper. Every docstring
+  follows the project's Google style. The public API (`from confingo import ...`)
+  and observable behavior are preserved.
 
 ## [0.2.0] - 2026-07-22
 

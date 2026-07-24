@@ -18,11 +18,9 @@ from typing import (
     TypeVar,
 )
 
-from confingo._core import (
-    ConfigError,
-    _typename,
-    from_dict,
-)
+from confingo._core import from_dict
+from confingo._errors import ConfigError
+from confingo._schema import _typename
 
 
 T = TypeVar("T")
@@ -32,13 +30,13 @@ def read_source_text(path: str | Path) -> tuple[Path, str]:
     """Read a config file's text, reporting a read failure as a config error.
 
     Args:
-        path: Path to the config file.
+      path (str | Path): Path to the config file.
 
     Returns:
-        The resolved path and the file's decoded text.
+      tuple[Path, str]: The resolved path and the file's decoded text.
 
     Raises:
-        ConfigError: When the file cannot be read.
+      ConfigError: When the file cannot be read.
     """
     source = Path(path)
     try:
@@ -54,16 +52,16 @@ def build_from_document(config_cls: type[T], data: Any, source: Path) -> T:
     anything other than a mapping is rejected.
 
     Args:
-        config_cls: The root dataclass to build.
-        data: The parsed document.
-        source: The file the document came from, used for the error context.
+      config_cls (type[T]): The root dataclass to build.
+      data (Any): The parsed document.
+      source (Path): The file the document came from, used for the error context.
 
     Returns:
-        The constructed config object.
+      T: The constructed config object.
 
     Raises:
-        ConfigError: When the document is not a mapping, or validation fails. A
-          validation failure lists every issue found.
+      ConfigError: When the document is not a mapping, or validation fails. A
+        validation failure lists every issue found.
     """
     context = f"config file {source}"
     if data is None:
@@ -82,11 +80,11 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     Parent directories are created as needed.
 
     Args:
-        path: Destination file path.
-        text: The full file contents to write.
+      path (str | Path): Destination file path.
+      text (str): The full file contents to write.
 
     Returns:
-        The path written.
+      Path: The path written.
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -18,15 +18,13 @@ from typing import (
 
 import yaml
 
-from confingo._core import (
-    ConfigError,
-    to_dict,
-)
+from confingo._errors import ConfigError
 from confingo._fileio import (
     atomic_write_text,
     build_from_document,
     read_source_text,
 )
+from confingo._serialize import to_dict
 
 
 if TYPE_CHECKING:
@@ -42,13 +40,13 @@ def dumps_yaml(config: Any, *, indent: int = 2, sort_keys: bool = False) -> str:
     only mappings, sequences, and scalar values.
 
     Args:
-        config: The config object to render.
-        indent: Number of spaces per indentation level, by default 2.
-        sort_keys: Whether to sort mapping keys, by default False, which keeps
-          field-declaration order.
+      config (Any): The config object to render.
+      indent (int = 2): Number of spaces per indentation level.
+      sort_keys (bool = False): Whether to sort mapping keys, which keeps
+        field-declaration order.
 
     Returns:
-        The YAML document, in field-declaration order, ending with a newline.
+      str: The YAML document, in field-declaration order, ending with a newline.
     """
     return yaml.safe_dump(
         to_dict(config),
@@ -69,13 +67,14 @@ def save_yaml(config: Any, path: str | Path, *, indent: int = 2, sort_keys: bool
     a reader observes either the previous file or the complete new one.
 
     Args:
-        config: The config object to write.
-        path: Destination file path. Parent directories are created as needed.
-        indent: Number of spaces per indentation level, by default 2.
-        sort_keys: Whether to sort mapping keys, by default False.
+      config (Any): The config object to write.
+      path (str | Path): Destination file path. Parent directories are created as
+        needed.
+      indent (int = 2): Number of spaces per indentation level.
+      sort_keys (bool = False): Whether to sort mapping keys.
 
     Returns:
-        The path written.
+      Path: The path written.
     """
     return atomic_write_text(path, dumps_yaml(config, indent=indent, sort_keys=sort_keys))
 
@@ -84,16 +83,16 @@ def load_yaml(config_cls: type[T], path: str | Path) -> T:
     """Load a YAML file into a config object.
 
     Args:
-        config_cls: The root dataclass to build.
-        path: Path to the YAML file.
+      config_cls (type[T]): The root dataclass to build.
+      path (str | Path): Path to the YAML file.
 
     Returns:
-        The constructed config object.
+      T: The constructed config object.
 
     Raises:
-        ConfigError: When the file is unreadable, holds invalid YAML, holds a
-          non-mapping document, or fails validation. Validation failures list
-          every issue found.
+      ConfigError: When the file is unreadable, holds invalid YAML, holds a
+        non-mapping document, or fails validation. Validation failures list
+        every issue found.
     """
     source, text = read_source_text(path)
     try:

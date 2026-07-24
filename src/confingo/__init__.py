@@ -6,14 +6,12 @@ unmarshal config files back into validated dataclass trees.
 
 from __future__ import annotations
 
-from confingo._core import (
+from confingo._core import from_dict
+from confingo._equality import config_equal
+from confingo._errors import (
     ConfigError,
     ConfigIssue,
-    config_hash,
-    from_dict,
-    to_dict,
 )
-from confingo._equality import config_equal
 from confingo._file import (
     from_file,
     to_file,
@@ -24,6 +22,10 @@ from confingo._json import (
     save_json,
 )
 from confingo._root import ConfigRoot
+from confingo._serialize import (
+    config_hash,
+    to_dict,
+)
 from confingo._yaml import (
     dumps_yaml,
     load_yaml,
