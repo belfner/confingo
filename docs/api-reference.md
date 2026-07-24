@@ -36,7 +36,7 @@ Schema classes are ordinary `@dataclass` declarations. Every schema class carrie
 
 ### `config_equal(left, right) -> bool`
 
-Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and without touching the classes involved. Evaluates the canonical relation directly. Raises `TypeError` when `left` is anything other than a dataclass instance.
+Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and operating on the two instances alone. Evaluates the canonical relation directly. Raises `TypeError` when `left` is anything other than a dataclass instance.
 
 
 ## Construction and conversion
@@ -53,7 +53,7 @@ Converts a config object to plain serializable data in field-declaration order. 
 
 ### `config_hash(config, *, length=12) -> str`
 
-SHA-256 fingerprint of the config's canonical JSON over its hashing fields (`init=True`, `compare=True`, effective hash enabled), so a `compare=False` or `hash=False` field is carried by `to_dict` yet excluded from the digest: the digest's leading `length` hex characters (useful range 1-64; the full digest is 64). Stable across processes and hash seeds. Learn more: [stable run identity](files-and-identity.md#stable-run-identity).
+SHA-256 fingerprint of the config's canonical JSON over its hashing fields (`init=True`, `compare=True`, effective hash enabled), so a `compare=False` or `hash=False` field is carried by `to_dict` while the digest covers the hashing fields: the digest's leading `length` hex characters (useful range 1-64; the full digest is 64). Stable across processes and hash seeds. Learn more: [stable run identity](files-and-identity.md#stable-run-identity).
 
 
 ## JSON functions

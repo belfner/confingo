@@ -2,66 +2,30 @@
 
 # Schema design
 
-This page covers structuring a program's configuration as a dataclass tree: canonical equality, implicit sections, leaf-level requirements, defaults, and where `ConfigRoot` and validation hooks fit.
+This page covers structuring a program's configuration as a dataclass tree: implicit sections, leaf-level requirements, defaults, authored factories, `ConfigRoot`, field options, validation hooks, and a summary of canonical equality.
 
 
 ## A dataclass tree is the schema
 
 One dataclass declaration serves three roles: the field names define the accepted keys, the annotations define the accepted types, and the defaults define the fallback values. Nested dataclasses define sections, and containers of dataclasses (`list[StageConfig]`, `dict[str, DatasetConfig]`) define repeated sections.
 
-Schema classes are ordinary `@dataclass` declarations. The root subclasses `ConfigRoot` for load/save/hash methods and config-aware equality, covered in [canonical equality](#canonical-equality); sections are plain dataclasses.
-
-
-## Canonical equality
-
-Two configs are `==` exactly when their compared fields serialize to the same canonical plain form, with `NotImplemented` for a different class. A compared field is one that is `init=True` and `compare=True` (the defaults); a [`field(compare=False)`](#field-options) is carried by `to_dict` yet ignored here, and an `init=False` runtime field is outside equality entirely. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
-
-The comparison itself runs structurally: array and tensor pairs compare through the backends' vectorized equality wherever that is provably exact (same-kind dtypes, dense forms, elements present), so `==` on large arrays runs at native speed; a tensor meets a numpy array by converting through `detach().cpu().numpy()`; and pairs outside the provably-exact set (mixed integer/float dtypes, zero-size arrays) compare by their canonical JSON form, the same encoding `config_hash` uses, so equality tracks the fingerprint exactly. A cross-kind pair therefore compares equal only when it serializes to the same plain form: an integer and a float array of the same value are distinct (`3` versus `3.0`), while same-kind arrays of any width and float dtypes carrying the same value are equal. Runtime-only tensor state (device placement, `requires_grad`) compares equal, exactly as it serializes equal.
-
-```python
-from dataclasses import dataclass
-
-from confingo import ConfigRoot
-
-
-@dataclass
-class OptimizerConfig:
-    name: str = "adamw"
-    lr: float = 3e-4
-
-
-@dataclass(frozen=True)
-class RunConfig(ConfigRoot):
-    optimizer: OptimizerConfig
-    seed: int = 0
-```
-
-Canonical equality reaches a schema class through two doors:
-
-- A `ConfigRoot` subclass carries it from class-creation time: `ConfigRoot.__init_subclass__` plants the canonical `__eq__` and identity `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own.
-- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the generated `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Ahead of that, a root already compares canonically through `ConfigRoot` (recursing into its sections structurally), and `config_equal` covers any tree.
-
-confingo owns equality and hashing on config dataclasses. A class that hand-writes `__eq__` or `__hash__` is rejected -- a root at class creation (both reported together when it defines both), a section at its first schema touch -- because a hand-written definition would disagree with `config_equal` and `config_hash`. The same guard rejects `@dataclass` flags confingo cannot honor, reported at first schema processing once decoration has run: `init=False` (the class needs its generated `__init__` to build), `unsafe_hash=True` (it installs a field-tuple hash that disagrees with the fingerprint and raises on array fields), `eq=False`, and `order=True` (ordering compares the raw field tuple). A `ConfigRoot` subclass declared `unsafe_hash=True` is the one flag caught earlier: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the root installs identity hashing ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported; the generated hash of a frozen class, or one inherited by an undecorated dataclass subclass, is reduced to identity so it shares the same model as every other config. Provenance is told from a hand-written method by matching its code object against dataclass codegen on the current interpreter; a method fabricated to be byte-identical to that codegen is treated as generated.
-
-With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](files-and-identity.md#stable-run-identity) is the value-identity tool.
-
-The `config_equal` free function compares two config objects by canonical value equality with the operator's same-class rule, ahead of any engine call and without touching the classes involved. It evaluates the canonical relation directly, so it always gives the value-comparison answer.
+Schema classes are ordinary `@dataclass` declarations. The root subclasses `ConfigRoot` for load/save/hash methods and config-aware equality, summarized in [canonical equality](#canonical-equality) below; sections are plain dataclasses.
 
 
 ## Implicit sections and leaf-level requirements
 
-Sections declare themselves. A dataclass-typed field with a bare annotation builds automatically when the file omits it, recursively through sub-sections of sub-sections.
+Sections declare themselves. A dataclass-typed field with a bare annotation defaults to an automatic build, recursively through sub-sections of sub-sections.
 
-That makes a section's required-ness a property of its leaves: every leaf field without a default must come from the file, at its nested position, wherever it sits in the tree. A required leaf inside an omitted section is reported at its dotted path, so the schema author thinks only about which values a run needs, and an error names exactly the value to add.
+That makes a section's required-ness a property of its leaves: every required leaf must come from the file, at its nested position, wherever it sits in the tree. A required leaf reached through an implicit build is reported at its dotted path, so the schema author thinks only about which values a run needs, and an error names exactly the value to add.
 
-The implicit build applies to direct dataclass annotations only. Every other undefaulted field stays required when absent:
+The implicit build applies to direct dataclass annotations only. Every other field type is required, and a default makes it optional:
 
 - scalars (`int`, `str`, `Path`, ...)
 - unions, including `Section | None`
 - `Any`
 - containers (`list[StageConfig]`, `dict[str, DatasetConfig]`, `tuple[int, ...]`)
 
-Containers stay required deliberately. An intentionally empty container is authored as `field(default_factory=list)`, which keeps "forgot to supply `stages`" distinguishable from "this run has zero stages". Elements the file does supply enforce their own required leaves (`stages.0.name`).
+Containers stay required deliberately. An intentionally empty container is authored as `field(default_factory=list)`, which keeps an authored-empty container distinct from a required one. Elements the file does supply enforce their own required leaves (`stages.0.name`).
 
 A self-referential section (`class Node: child: Node`) terminates with a missing-value issue at the point of recursion and needs an explicit default.
 
@@ -106,7 +70,7 @@ A file supplying `{"schedule": {"warmup": {"steps": 500}}, "stages": ["warmup", 
 
 Defaults form the base layer; the input mapping overrides whichever leaves it supplies.
 
-The two layers are treated differently. Supplied values travel through [coercion](types-and-coercion.md), while defaults are trusted as authored: an omitted field receives exactly the object you wrote in the declaration, byte for byte. Author defaults that already have the annotated type (`Path("runs")` for a `Path` field, `0.1` for a `float` field) so both code paths produce the same shapes.
+The two layers are treated differently. Supplied values travel through [coercion](types-and-coercion.md), while defaults are trusted as authored: a defaulted field receives exactly the object you wrote in the declaration, byte for byte. Author defaults that already have the annotated type (`Path("runs")` for a `Path` field, `0.1` for a `float` field) so both code paths produce the same shapes.
 
 
 ## Authored factories and partial files
@@ -161,7 +125,7 @@ A name that fails to resolve is reported as a schema error with the `config sche
 
 ## Field options
 
-`init` is the master switch. An `init=True` field (the dataclass default) is loaded from the config, exported by `to_dict`, and — subject to `compare` and `hash` below — weighed by equality and `config_hash`. An `init=False` field is runtime state: it is loaded from none of the config, populated by its default or in `__post_init__`, and excluded from export, equality, and the fingerprint. On an `init=True` field, `compare` and `hash` scope equality and the fingerprint:
+`init` is the master switch. An `init=True` field (the dataclass default) is loaded from the config, exported by `to_dict`, and — subject to `compare` and `hash` below — weighed by equality and `config_hash`. An `init=False` field is runtime state that its default or `__post_init__` populates; loading, export, equality, and the fingerprint all draw from the `init=True` fields. On an `init=True` field, `compare` and `hash` scope equality and the fingerprint:
 
 | Field | Loaded | In `to_dict` | In equality | In `config_hash` |
 | --- | :---: | :---: | :---: | :---: |
@@ -171,7 +135,7 @@ A name that fails to resolve is reported as a schema error with the `config sche
 | `field(hash=False)` | yes | yes | yes | no |
 | `field(hash=True, compare=False)` | reported as a contradiction |
 
-A `compare=False` field is still serialized (so it round-trips) yet ignored by equality, and therefore by the fingerprint too, since a field out of equality must stay out of the digest. A `hash=False` field stays in equality but leaves the fingerprint. Because `init=False` excludes a field from all three projections, its `compare` and `hash` flags are inert, and its annotation is exempt from the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) — it may hold any resolvable runtime object.
+The three projections nest: export ranges over the `init=True` fields, equality over the `compare=True` fields within them, and the fingerprint over the hashing fields within that — the compared fields with `hash` left at its default or set `True`. So a `compare=False` field round-trips through export and falls outside equality and the fingerprint, and a `hash=False` field takes part in export and equality while the fingerprint ranges over the hashing fields. `init=False` scopes a field to runtime state across all three, so its `compare` and `hash` flags are inert, and its annotation is exempt from the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) — it may hold any resolvable runtime object.
 
 ```python
 @dataclass
@@ -183,9 +147,18 @@ class Model:
         self.logger = logging.getLogger(f"model.{self.layers}")
 ```
 
-`from_dict(Model, {"layers": 4})` builds the config, runs `__post_init__`, and then checks that every `init=False` field was populated; a field left unset is reported as `init=False field was not set during __post_init__`. Supplying an `init=False` field's key in the input is reported as `field is not configurable (init=False)`. On a frozen dataclass, `__post_init__` assigns runtime fields through `object.__setattr__`.
+`from_dict(Model, {"layers": 4})` builds the config, runs `__post_init__`, and then checks that every `init=False` field was populated by `__post_init__`, reporting one still awaiting a value as `init=False field was not set during __post_init__`. Supplying an `init=False` field's key in the input is reported as `field is not configurable (init=False)`. On a frozen dataclass, `__post_init__` assigns runtime fields through `object.__setattr__`.
 
-Before coercing any value, `from_dict` runs a recursive schema preflight over every annotation in the tree, including sections that the input omits and fields that will use defaults. An annotation outside the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) on an `init=True` field produces a `ConfigError` at load time, so schema mistakes surface on the very first load.
+Before coercing any value, `from_dict` runs a recursive schema preflight over every annotation in the tree, including sections built implicitly and fields that will use defaults. An annotation outside the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) on an `init=True` field produces a `ConfigError` at load time, so schema mistakes surface on the very first load.
+
+
+## Canonical equality
+
+Two configs are `==` exactly when their compared fields serialize to the same canonical plain form, with `NotImplemented` for a different class. Equality compares the fields that are `init=True` and `compare=True` (the defaults); a [`field(compare=False)`](#field-options) still serializes through `to_dict`, and an `init=False` field holds runtime state. The relation works uniformly for every supported field type, [array-valued fields](arrays-and-tensors.md) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
+
+A `ConfigRoot` subclass carries canonical equality from class-creation time; every other schema dataclass receives the same canonical `__eq__` at its first schema processing. confingo owns equality and hashing on config dataclasses, so a hand-written `__eq__` or `__hash__`, or a `@dataclass` flag that conflicts with that ownership (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`), is rejected; `frozen`, `slots`, and `weakref_slot` are supported. `__hash__` stays object identity, so [`config_hash`](equality-and-hashing.md#stable-run-identity) is the value-identity tool, and the `config_equal` free function exposes the same relation ahead of any engine call.
+
+The full account -- structural array and tensor comparison, the two installation doors, the ownership guard and its rejected-flag behavior, and `config_equal` -- lives in [Equality and hashing](equality-and-hashing.md#canonical-equality).
 
 
 ## Schema-level invariants

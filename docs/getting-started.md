@@ -2,7 +2,10 @@
 
 # Getting started
 
-This page takes you from installation to a loaded, typed training configuration, then saves the resolved config and derives a run identifier. The whole path is copyable and runs on the core install.
+This page starts with a complete, runnable example you can copy in one minute,
+then grows that same schema into a realistic training configuration, saves the
+resolved config, and derives a run identifier. Everything here runs on the core
+install.
 
 
 ## Install
@@ -11,21 +14,139 @@ This page takes you from installation to a loaded, typed training configuration,
 pip install confingo
 ```
 
-The library runs on Python 3.11+. JSON and YAML file IO both work from the base install; YAML is covered in [Files, formats, and run identity](files-and-identity.md#yaml).
+The library runs on Python 3.11+. JSON and YAML file IO both work from the base
+install; YAML is covered in [Files, formats, and run identity](files-and-identity.md#yaml).
 
 
-## Define the schema
+## Minimal example
 
-A confingo schema is a tree of ordinary `@dataclass` declarations. Each field's annotation is its validator and each default is its fallback value. The root class subclasses `ConfigRoot` to gain load/save/hash methods and [config-aware equality](schema-design.md#canonical-equality); nested sections are plain dataclasses, and confingo gives them the same equality at first schema processing.
+Three files make a complete confingo program: a schema, a config file, and a
+script that loads it.
 
-The sections (`model`, `data`, `optimizer`) carry bare annotations and build automatically; what the file must supply is decided by the fields inside them. Here the required values are the four fields declared with a bare annotation and no default:
+```
+quickstart/
+  config.py
+  train.json
+  run.py
+```
+
+The schema is a tree of `@dataclass` declarations. Each field's annotation is its
+validator and each default is its fallback value. The root subclasses `ConfigRoot`
+for load, save, and hash methods; the `optimizer` section carries a bare
+annotation and builds itself, so `optimizer.name` is the one value the file must
+supply.
+
+<!-- canonical:config.py -->
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from confingo import ConfigRoot
+
+
+@dataclass
+class OptimizerConfig:
+    name: Literal["adamw", "sgd"]
+    lr: float = 3e-4
+
+
+@dataclass
+class TrainingConfig(ConfigRoot):
+    optimizer: OptimizerConfig
+    seed: int = 0
+    output_dir: Path = Path("runs")
+```
+
+The config file supplies the required value and any leaves that differ from the
+defaults. Declared defaults form the base layer, and the file overrides the leaves
+it names: here `lr` is set explicitly while `seed` and `output_dir` stay at their
+declared values. See [defaults and precedence](schema-design.md#leaf-defaults-and-precedence).
+
+<!-- canonical:train.json -->
+```json
+{
+  "optimizer": {"name": "adamw", "lr": 0.001}
+}
+```
+
+The script loads the file into a typed object, reads coerced values, derives a
+run identifier, and saves the resolved config.
+
+<!-- canonical:run.py -->
+```python
+from __future__ import annotations
+
+from config import TrainingConfig
+
+
+def main() -> None:
+    config = TrainingConfig.load_json("train.json")
+
+    print(f"optimizer.name: {config.optimizer.name}")
+    print(f"optimizer.lr: {config.optimizer.lr}")
+    print(f"seed: {config.seed}")
+
+    run_id = config.config_hash()
+    print(f"run id: {run_id}")
+
+    resolved = config.save_json(config.output_dir / run_id / "resolved.json")
+    print(f"saved: {resolved}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Run it from the `quickstart/` directory:
+
+```console
+$ python run.py
+optimizer.name: adamw
+optimizer.lr: 0.001
+seed: 0
+run id: 344e28a35dd4
+saved: runs/344e28a35dd4/resolved.json
+```
+
+Every value arrived typed: the JSON number became a `float`, `output_dir` is a
+`Path`, and `optimizer.name` was checked against its `Literal` options. The saved
+`runs/344e28a35dd4/resolved.json` records the resolved config in full, defaults
+included:
+
+```json
+{
+  "optimizer": {
+    "name": "adamw",
+    "lr": 0.001
+  },
+  "seed": 0,
+  "output_dir": "runs"
+}
+```
+
+That is the whole loop: define a schema, write a file, load it typed, and save a
+resolved snapshot keyed by a stable hash. The rest of this page grows the same
+schema toward a realistic training run.
+
+
+## Grow the schema
+
+A real training config carries more sections. The `optimizer` section from the
+minimal example stays; `model` and `data` join it, each a bare-annotated section
+that builds from its own leaves. The required values are the bare-annotated
+fields, which the file must supply:
 
 - `model.architecture`
 - `model.hidden_widths`
 - `data.dataset_path`
 - `optimizer.name`
 
-Omitting one is reported at that dotted path, and required fields come before defaulted ones. See [implicit sections](schema-design.md#implicit-sections-and-leaf-level-requirements) for the full rules.
+Required-field issues carry these dotted paths, and required fields come before
+defaulted ones. See [implicit sections](schema-design.md#implicit-sections-and-leaf-level-requirements)
+for the full rules.
 
 ```python
 from __future__ import annotations
@@ -74,10 +195,9 @@ class TrainingConfig(ConfigRoot):
 
 Define schema classes at module level so their annotations resolve at load time.
 
-
-## Write `train.json`
-
-The file supplies every required value and any leaves that differ from the defaults. Omitted leaves (`dropout`, `num_workers`, `weight_decay`, `seed`, `device`, `output_dir`) fall back to their declared defaults.
+A file for this schema supplies every required value and any leaves that differ
+from the defaults. The declared defaults supply the remaining leaves (`dropout`,
+`num_workers`, `weight_decay`, `seed`, `device`, `output_dir`).
 
 ```json
 {
@@ -99,12 +219,16 @@ config.optimizer.lr          # 0.001
 config.device                # "cpu", from the default
 ```
 
-Every value has been coerced toward its annotation: the JSON array became a `tuple[int, ...]`, the string became a `Path`, and `optimizer.name` was checked against its `Literal` options. The full conversion rules live in [Types and coercion](types-and-coercion.md).
+Every value has been coerced toward its annotation: the JSON array became a
+`tuple[int, ...]`, the string became a `Path`, and `optimizer.name` was checked
+against its `Literal` options. The full conversion rules live in
+[Types and coercion](types-and-coercion.md).
 
 
 ## Save the resolved run and assign an identity
 
-Saving writes the resolved in-memory object, defaults included, so the output file is a complete record of the run:
+Saving writes the resolved in-memory object, defaults included, so the output
+file is a complete record of the run:
 
 ```python
 run_id = config.config_hash()          # "8e6ea26c7116"
@@ -112,12 +236,15 @@ run_dir = config.output_dir / run_id
 config.save_json(run_dir / "resolved.json")
 ```
 
-`config_hash` is a stable fingerprint of the resolved config: two processes holding equal configs produce the same hash, which makes it a natural run directory name. Details in [stable run identity](files-and-identity.md#stable-run-identity).
+`config_hash` is a stable fingerprint of the resolved config: two processes
+holding equal configs produce the same hash, which makes it a natural run
+directory name. Details in [stable run identity](files-and-identity.md#stable-run-identity).
 
 
 ## When loading fails
 
-confingo validates the whole tree in one pass and reports every problem at once, each tagged with its dotted path:
+confingo validates the whole tree in one pass and reports every problem at once,
+each tagged with its dotted path:
 
 ```
 confingo.ConfigError: config file train.json has 4 issues:
@@ -127,12 +254,14 @@ confingo.ConfigError: config file train.json has 4 issues:
   - optimizer.lr: expected float, got str
 ```
 
-[Validation and errors](validation-and-errors.md) covers the error model and custom validation hooks.
+[Validation and errors](validation-and-errors.md) covers the error model and
+custom validation hooks.
 
 
 ## Free-function equivalent
 
-Every `ConfigRoot` method has a free-function twin, so a plain dataclass root works the same way:
+Every `ConfigRoot` method has a free-function twin, so a plain dataclass root
+works the same way:
 
 ```python
 from confingo import config_hash, load_json, save_json
@@ -142,11 +271,13 @@ save_json(config, "resolved.json")
 config_hash(config)
 ```
 
-The [API reference](api-reference.md#configroot-method-map) maps each method to its function.
+The [API reference](api-reference.md#configroot-method-map) maps each method to
+its function.
 
 
 ## Next steps
 
+- [Recipes](recipes.md): copyable answers to common tasks.
 - [Schema design](schema-design.md): structuring larger config trees, factory defaults, partial files.
 - [Types and coercion](types-and-coercion.md): the accepted types and exact conversion rules.
 - [Validation and errors](validation-and-errors.md): the error model and custom invariants.

@@ -132,3 +132,13 @@ matches = "tests/schemas.py"
 
 [tool.pyrefly.sub-config.errors]
 implicit-any-type-argument = false
+
+# examples/quickstart/run.py imports its sibling config module by running from the
+# example directory (the documented `python run.py` invocation puts that directory
+# on sys.path), so the import resolves at run time rather than during a project
+# type check.
+[[tool.pyrefly.sub-config]]
+matches = "examples/quickstart/run.py"
+
+[tool.pyrefly.sub-config.errors]
+missing-import = false

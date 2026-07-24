@@ -140,8 +140,7 @@ class ConfigRoot:
     def from_file(cls, path: str | Path) -> Self:
         """Load a config file into an instance, choosing the loader by extension.
 
-        A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML,
-        which requires the ``yaml`` extra.
+        A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML.
 
         Args:
           path (str | Path): Path to the config file.
@@ -214,8 +213,7 @@ class ConfigRoot:
     def to_file(self, path: str | Path, *, indent: int = 2) -> Path:
         """Write this config to a file, choosing the writer by extension.
 
-        A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML,
-        which requires the ``yaml`` extra.
+        A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML.
 
         Args:
           path (str | Path): Destination file path. Parent directories are created as needed.

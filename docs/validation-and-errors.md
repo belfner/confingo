@@ -20,6 +20,27 @@ confingo.ConfigError: config file train.json has 4 issues:
 Paths use dots for fields, indexes for sequence elements, and keys for mapping entries: `stages.0.name`, `datasets.train.path`.
 
 
+## Read an error in three steps
+
+Each rendered report answers three questions in order:
+
+1. **Context** — the summary line names the source: `config file train.json` from a file loader, `config` from a direct `from_dict`, or `config schema` for an annotation problem.
+2. **Path** — the dotted path locates the value in the tree (`optimizer.lr`, `stages.0.name`), with `<root>` for a whole-object issue.
+3. **Message** — the text names what the value needs.
+
+Common messages and where their rule lives:
+
+| Message | Condition that produces it | Where the rule lives |
+| --- | --- | --- |
+| `unknown key (known keys: ...)` | an input key beyond the schema's fields | [Schema design](schema-design.md) |
+| `missing required value` | a required leaf awaiting a value | [implicit sections](schema-design.md#implicit-sections-and-leaf-level-requirements) |
+| `expected <type>, got <type>` | a value whose shape differs from the annotation | [Types and coercion](types-and-coercion.md) |
+| `expected one of 'cpu' \| 'cuda', got 'tpu'` (enums add `for enum <Name>`) | a value differing from every declared `Literal` or enum option | [enums and literals](types-and-coercion.md#enums-and-literals) |
+| `field is not configurable (init=False)` | a key supplied for a runtime field | [field options](schema-design.md#field-options) |
+| `ragged array: expected N items, got M` | an array input with rows of differing length | [Arrays and tensors](arrays-and-tensors.md) |
+| a custom message | a `__post_init__` or `__validate__` invariant | [dataclass invariants](#dataclass-invariants) |
+
+
 ## `ConfigError` and `ConfigIssue`
 
 `ConfigError` subclasses `ValueError`, so existing `except ValueError` handlers catch it. It carries:
@@ -40,7 +61,7 @@ except ConfigError as err:
 
 ## Two validation phases
 
-1. **Schema preflight.** Every annotation in the tree is checked against the [accepted boundary](types-and-coercion.md#accepted-schema-boundary), including fields the input omits. Schema problems raise immediately.
+1. **Schema preflight.** Every annotation in the tree is checked against the [accepted boundary](types-and-coercion.md#accepted-schema-boundary), including fields that will use defaults. Schema problems raise immediately.
 2. **Construction.** The input mapping is walked against the schema, coercing values and collecting every discoverable issue before raising.
 
 The context on the raised error tells you where the problem came from:
@@ -53,17 +74,17 @@ The context on the raised error tells you where the problem came from:
 ## Built-in issue sources
 
 - Unknown keys, with the sorted known-key list in the message.
-- A key supplied for an [`init=False`](schema-design.md#field-options) field: `field is not configurable (init=False)`, since runtime fields are populated in `__post_init__`, not loaded.
-- Missing required values: undefaulted fields absent from the input. Dataclass sections build implicitly, so a required value inside an omitted section is reported at its nested dotted path ([details](schema-design.md#implicit-sections-and-leaf-level-requirements)).
+- A key supplied for an [`init=False`](schema-design.md#field-options) field: `field is not configurable (init=False)`, since `__post_init__` populates runtime fields.
+- Missing required values: required fields awaiting a value from the input. Dataclass sections build implicitly, so a required value reached through an implicit build is reported at its nested dotted path ([details](schema-design.md#implicit-sections-and-leaf-level-requirements)).
 - A value other than a mapping supplied for a dataclass section or document root.
 - Type mismatches and tuple-arity mismatches from [coercion](types-and-coercion.md).
 - Enum and `Literal` values outside the declared options.
 - Unhashable elements supplied for set fields.
 - Non-finite floats anywhere in supplied data.
 - A contradictory field declaration, `field(hash=True, compare=False)`, reported at preflight: a field in the fingerprint must participate in equality.
-- An `init=False` field left unset by `__post_init__`: `init=False field was not set during __post_init__`.
+- An `init=False` field still awaiting a value after `__post_init__`: `init=False field was not set during __post_init__`.
 - A schema class that hand-writes `__eq__` or `__hash__`, since [confingo owns equality and hashing](schema-design.md#canonical-equality): `<Class> defines a custom __eq__` / `__hash__`. A `ConfigRoot` subclass reports this at class creation, both together when it defines both; a section reports it at its first schema touch.
-- A schema class declared with a `@dataclass` flag confingo cannot honor -- `init=False`, `unsafe_hash=True`, `eq=False`, or `order=True` -- each named in the message, with every violation on one class reported together at first schema processing. A `ConfigRoot` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, because the root installs identity hashing ahead of the decorator.
+- A schema class declared with a `@dataclass` flag that conflicts with confingo's ownership of equality and hashing -- `init=False`, `unsafe_hash=True`, `eq=False`, or `order=True` -- each named in the message, with every violation on one class reported together at first schema processing. A `ConfigRoot` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, because the root installs identity hashing ahead of the decorator.
 
 
 ## Dataclass invariants
@@ -73,7 +94,7 @@ Custom checks join the report through two hooks on any dataclass in the tree:
 - **`__post_init__`**: a raised `ValueError` or `TypeError` becomes one issue at the dataclass's path.
 - **`__validate__`**: returns an iterable of messages; each message becomes its own issue at that path, so one hook can report several independent problems.
 
-Per node the order is `__init__` (which runs `__post_init__` as its final step) → the [`init=False`](schema-design.md#field-options) completeness check → `__validate__`. The completeness check sits between them so `__post_init__` has populated the runtime fields first, and `__validate__` runs only on a fully populated instance; a node with an unset `init=False` field reports that issue and skips `__validate__`.
+Per node the order is `__init__` (which runs `__post_init__` as its final step) → the [`init=False`](schema-design.md#field-options) completeness check → `__validate__`. The completeness check sits between them so `__post_init__` has populated the runtime fields first, and `__validate__` runs only on a fully populated instance, so a node whose `init=False` field still awaits a value contributes that completeness issue in its place.
 
 ```python
 @dataclass
@@ -97,6 +118,14 @@ class TrainerConfig:
         if len(self.hidden_widths) == 0:
             messages.append("at least one hidden layer is required")
         return messages
+```
+
+Loading `{"lr": -1.0, "hidden_widths": []}` against `TrainerConfig` renders both `__validate__` messages at the node's path, `<root>` here since `TrainerConfig` is the root:
+
+```
+confingo.ConfigError: config has 2 issues:
+  - <root>: lr must be positive
+  - <root>: at least one hidden layer is required
 ```
 
 

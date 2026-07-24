@@ -7,10 +7,31 @@ This is the authoritative reference for the type boundary: which annotations a s
 Two kinds of problems come out of this page's rules. An input outside an accepted shape produces a collected issue at that value's path. An annotation outside the accepted set produces a schema error before construction begins.
 
 
+## Choose an annotation
+
+Start from the value a field holds and read down to the rules that govern it:
+
+| To configure | Annotation | Details |
+| --- | --- | --- |
+| a single value | `bool`, `int`, `float`, `str`, `Path`, `datetime`, `date`, `time` | [Scalars](#scalars) |
+| one of a fixed set | `Literal[...]`, or an `Enum` subclass | [Enums and literals](#enums-and-literals) |
+| a nullable value | `T \| None` | [Unions and optionals](#unions-and-optionals) |
+| a first-match choice of types | `X \| Y` in declaration order | [Unions and optionals](#unions-and-optionals) |
+| a nested section | a dataclass type | [Nested dataclasses](#nested-dataclasses); builds implicitly from its own leaves |
+| an ordered collection | `list[T]`, `tuple[T, ...]`, `tuple[X, Y]`, `Sequence[T]` | [Sequences and tuples](#sequences-and-tuples) |
+| a unique collection | `set[T]`, `frozenset[T]` | [Sequences and tuples](#sequences-and-tuples) |
+| a keyed collection | `dict[str, T]`, `Mapping[str, T]` | [Mappings](#mappings); keys are strings |
+| free-form data | `Any` | [`Any` and plain data](#any-and-plain-data) |
+| a numeric array | `np.ndarray`, `npt.NDArray[...]`, `torch.Tensor` | [Arrays and tensors](arrays-and-tensors.md); the backend is imported by the application |
+| a value with a default fallback | `field(default=...)`, `field(default_factory=...)` | [leaf defaults and precedence](schema-design.md#leaf-defaults-and-precedence) |
+
+The sections below are the authoritative rules for each row.
+
+
 ## How coercion works
 
 - `from_dict` moves each supplied value toward its field's annotation, collecting an issue when the value's shape is outside what the annotation accepts.
-- Defaults retain their authored values and skip coercion. See [defaults and precedence](schema-design.md#leaf-defaults-and-precedence).
+- Defaults are used exactly as authored. See [defaults and precedence](schema-design.md#leaf-defaults-and-precedence).
 - `to_dict` converts the built tree back to plain data: dicts, lists, strings, numbers, booleans, and `None`.
 
 
@@ -63,7 +84,7 @@ A mapping supplied for a dataclass-annotated field recursively constructs that s
 
 Dataclasses held in containers (`list[StageConfig]`, `dict[str, DatasetConfig]`) construct the same way, with the index or key in the path (`stages.0.name`).
 
-A dataclass field absent from the input builds implicitly from an empty mapping, so its required leaves are reported at their nested paths. See [implicit sections](schema-design.md#implicit-sections-and-leaf-level-requirements).
+A bare-annotated dataclass field defaults to an implicit build from an empty mapping, so its required leaves are reported at their nested paths. See [implicit sections](schema-design.md#implicit-sections-and-leaf-level-requirements).
 
 
 ## Sequences and tuples
@@ -85,7 +106,7 @@ A few rules apply across every row of the table:
 - Elements coerce individually, and element issues carry their index in the path (`hidden_widths.1`).
 - String and bytes inputs follow scalar handling: a `list[str]` field reports a bare `"abc"` as one type mismatch.
 - An unhashable element headed into a set becomes a collected issue alongside any sibling issues.
-- A container field absent from the input is a missing required value when it carries no default. An intentionally empty container is authored as `field(default_factory=list)`.
+- A container field uses its default when it has one, and a required container needs a supplied value. An intentionally empty container is authored as `field(default_factory=list)`.
 
 Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int, int]` for a fixed `(warmup_steps, total_steps)` schedule pair, and `metrics: set[str]` for tracked metrics.
 
@@ -96,7 +117,7 @@ Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int,
 
 - Every key is checked as a string at load time, which catches YAML documents whose keys parsed as numbers.
 - Split definitions like `datasets: dict[str, DatasetConfig]` construct each value against the annotated section type, with the key in the issue path (`datasets.train.path`).
-- A mapping field absent from the input is a missing required value when it carries no default; `field(default_factory=dict)` authors an intentionally empty mapping.
+- A mapping field uses its default when it has one, and a required mapping needs a supplied value; `field(default_factory=dict)` authors an intentionally empty mapping.
 
 
 ## Unions and optionals
@@ -119,42 +140,9 @@ Arrays and tensors follow the same rule under `Any`: a supplied array validates 
 
 ## Arrays and tensors
 
-NumPy arrays and PyTorch tensors are field types whenever the host application has already imported the backend. Detection reads `sys.modules` on each call and matches annotations and values against the loaded module's own classes, so `import confingo` keeps its stdlib-only core, and a numpy-only program keeps torch unloaded. The backend packages install with the application itself, on the application's own terms.
+NumPy arrays and PyTorch tensors are field types whenever the host application has already imported the backend; the integration reads that application-loaded backend, while confingo's base runtime stays the standard-library core plus PyYAML-backed YAML I/O. A bare annotation (`np.ndarray`, `torch.Tensor`) rebuilds the array with a value-stable inferred dtype; a concrete annotation (`npt.NDArray[np.float32]`, `Annotated[torch.Tensor, torch.float32]`) pins the dtype, and a fixed-arity shape tuple pins the dimensionality. Values serialize as plain JSON (a scalar for a 0-d value, nested lists otherwise) and rebuild against the annotation on the next load.
 
-The wire form is the array's validated `tolist()` result: a JSON scalar for a 0-d value, nested lists otherwise. The file carries values and nesting only; the annotation carries the dtype claim.
-
-| Annotation | Rebuilt dtype | Promise |
-| --- | --- | --- |
-| `np.ndarray`, `npt.NDArray[Any]` | inferred: `bool`, `int64` / `uint64` by value, `float64` | values |
-| `npt.NDArray[np.float32]` (any concrete `bool` / integer / float dtype up to 64 bits) | the annotated dtype | dtype + values |
-| `npt.NDArray[np.floating]` (also `integer`, `signedinteger`, `unsignedinteger`, `number`) | the family's target: `float64`, `int64` / `uint64` by value | family + values |
-| `np.ndarray[tuple[int, int], np.dtype[np.float64]]` | as the dtype rules | as above, and the fixed-arity shape tuple enforces exactly that dimensionality |
-| `torch.Tensor` | pinned: `bool` / `int64` / `float64` | values |
-| `Annotated[torch.Tensor, torch.float32]` (any supported `torch.dtype`, `bfloat16` included) | the annotated dtype | dtype + values |
-| `Annotated[torch.Tensor, torch.float32, tuple[int, int]]` | as the dtype rules | as above, and the fixed-arity all-`int` shape tuple enforces exactly that dimensionality |
-| `Annotated[torch.Tensor, tuple[int, int]]` | pinned: `bool` / `int64` / `float64` | values, and the shape tuple enforces exactly that dimensionality |
-
-Accepted input for an array field: a same-backend array or tensor, nested lists / tuples, or a single `bool` / `int` / `float` for a 0-d value. NumPy scalar leaves normalize to their exact Python equivalents. Strings, mappings, sets, and cross-backend objects are reported as type mismatches; a torch value headed into a numpy field converts explicitly at the call site via `tolist()`.
-
-Plain input is validated leaf by leaf before any backend call, with element issues at exact indexed paths (`weights.2.0: expected a number for array dtype float32, got str`). The checks cover leaf category (`bool` stays fully separate from numbers, exactly as scalar fields keep them), integral values for integer dtypes, dtype range bounds, finiteness, and rectangularity, where a ragged row reports the divergent index (`weights.1: ragged array: expected 3 items, got 2`).
-
-A supplied array or tensor that already satisfies its annotation is stored as-is, preserving device placement and gradient state until serialization. A supplied array needing a concrete dtype conversion produces a new converted object, with the same per-element range and finiteness checks.
-
-Dtype normalization is value-preserving by construction:
-
-- Bare `torch.Tensor` rebuilds with pinned dtypes (`bool`, `int64`, `float64`) independent of `torch.set_default_dtype`, so every serialized value reloads exactly and `config_hash` stays stable across processes. `Annotated[torch.Tensor, torch.float32]` is the spelling that pins a narrower dtype.
-- The broad `np.integer` / `np.number` families select their integer target by value: `int64` when every value fits, `uint64` for nonnegative values above the `int64` range, so a retained `uint64` array holding `2**63` survives a save/load cycle.
-- Small float dtypes (`float16`, `bfloat16`, `float32`) widen exactly into JSON numbers, since every value they represent is exactly a binary64 float.
-
-Serialization normalizes tensor execution state: values detach from any autograd graph and copy to the CPU, so device, `requires_grad`, and layout/stride details stay out of the file. Dense strided tensors serialize; sparse, quantized, nested, and meta forms are reported as issues, as are complex, object, structured, temporal, and string dtypes on the numpy side.
-
-Every element must be finite, matching the scalar float rule, and an array field holds at most 1,000,000 elements; both directions check the limit before materializing data.
-
-Round trips hold as canonical serialized equality: `to_dict(from_dict(cls, to_dict(config))) == to_dict(config)` for every supported input, and concrete-dtype annotations additionally guarantee dtype and bit-exact values. The `==` operator implements this contract on every schema class -- a `ConfigRoot` subclass carries [canonical equality](schema-design.md#canonical-equality) from class-creation time and every other schema dataclass receives it at first schema processing -- so `from_dict(cls, to_dict(config)) == config` reads literally, with array fields compared through the backends' vectorized operations. The `config_equal` free function exposes the same relation ahead of any engine call.
-
-Two shape details are visible in the encoding. A 0-d array serializes as a JSON scalar and rebuilds 0-d. Dimensions after the first zero-length axis have no list representation (`(0, 3)` serializes as `[]`), so zero-size arrays rebuild with the sizes the encoding retains; under a fixed-dimensionality annotation they pad with trailing zero-length axes to the annotated rank, and the padded form serializes identically.
-
-For consumers outside Python, the file stays ordinary JSON: nested arrays of numbers. A reader that parses every number as a double sees the usual precision limits for integers above 2**53; confingo's own round trip keeps full 64-bit integer exactness.
+The full contract -- backend activation, the annotation table, accepted inputs, dtype normalization, serialization state, finiteness and size limits, and array participation in round trips, equality, and hashing -- lives in [Arrays and tensors](arrays-and-tensors.md).
 
 
 ## Finite numbers and temporal exactness
@@ -177,7 +165,7 @@ The accepted annotation set is explicit and closed:
 | Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
 | Wrappers | `Annotated[T, ...]`, treated as `T`; on tensors, a `torch.dtype` entry pins the dtype and a fixed-arity all-`int` shape tuple such as `tuple[int, int]` enforces dimensionality, each usable alone or together; every other metadata entry passes through as ordinary annotation metadata |
 
-An `init=True` annotation outside this set produces a `ConfigError` during schema preflight, even when the offending field is omitted from the input and would have used its default. Rejected shapes include:
+An `init=True` annotation outside this set produces a `ConfigError` during schema preflight, even for a field that would have used its default. Rejected shapes include:
 
 - `Decimal`, `TypedDict`, `Iterable[T]`, and `NewType`
 - mappings with keys other than `str`, including `dict[Any, T]`
