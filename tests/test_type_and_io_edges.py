@@ -7,6 +7,7 @@ non-finite floats, atomic writes, and fingerprint stability across hash seeds.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -69,7 +70,7 @@ def test_newtype_annotation_rejected():
     assert any("unsupported field type" in i.message for i in info.value.issues)
 
 
-# --- init=False schemas are rejected -------------------------------------
+# --- init=False fields are runtime state, excluded from load and dump -----
 
 
 @dataclass
@@ -78,16 +79,21 @@ class Derived:
     computed: int = field(init=False, default=1)
 
 
-def test_init_false_rejected_on_load():
-    with pytest.raises(ConfigError) as info:
-        from_dict(Derived, {"x": 2})
-    assert any("init=False" in i.message for i in info.value.issues)
+def test_init_false_builds_and_applies_default():
+    built = from_dict(Derived, {"x": 2})
+    assert built.x == 2
+    assert built.computed == 1
 
 
-def test_init_false_rejected_on_dump():
+def test_init_false_omitted_from_dump():
+    dumped = json.loads(dumps_json(Derived(2)))
+    assert dumped == {"x": 2}
+
+
+def test_init_false_key_is_not_configurable():
     with pytest.raises(ConfigError) as info:
-        dumps_json(Derived(2))
-    assert "init=False" in str(info.value)
+        from_dict(Derived, {"x": 2, "computed": 9})
+    assert any("field is not configurable (init=False)" in i.message for i in info.value.issues)
 
 
 # --- unhashable set elements report an issue instead of crashing ---------

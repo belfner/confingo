@@ -14,9 +14,9 @@ Schema classes are ordinary `@dataclass` declarations. The root subclasses `Conf
 
 ## Canonical equality
 
-Two configs are `==` exactly when they serialize to the same canonical plain form, with `NotImplemented` for a different class. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
+Two configs are `==` exactly when their compared fields serialize to the same canonical plain form, with `NotImplemented` for a different class. A compared field is one that is `init=True` and `compare=True` (the defaults); a [`field(compare=False)`](#field-options) is carried by `to_dict` yet ignored here, and an `init=False` runtime field is outside equality entirely. Canonical equality works uniformly for every supported field type, [array-valued fields](types-and-coercion.md#arrays-and-tensors) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
 
-The comparison itself runs structurally: array and tensor pairs compare through the backends' vectorized equality wherever that is provably exact (same-kind dtypes, dense forms, elements present), so `==` on large arrays runs at native speed; a tensor meets a numpy array by converting through `detach().cpu().numpy()`; and pairs outside the provably-exact set (mixed integer/float dtypes, zero-size arrays) compare by their serialized forms, keeping exact value semantics everywhere. Runtime-only tensor state (device placement, `requires_grad`) compares equal, exactly as it serializes equal.
+The comparison itself runs structurally: array and tensor pairs compare through the backends' vectorized equality wherever that is provably exact (same-kind dtypes, dense forms, elements present), so `==` on large arrays runs at native speed; a tensor meets a numpy array by converting through `detach().cpu().numpy()`; and pairs outside the provably-exact set (mixed integer/float dtypes, zero-size arrays) compare by their canonical JSON form, the same encoding `config_hash` uses, so equality tracks the fingerprint exactly. A cross-kind pair therefore compares equal only when it serializes to the same plain form: an integer and a float array of the same value are distinct (`3` versus `3.0`), while same-kind arrays of any width and float dtypes carrying the same value are equal. Runtime-only tensor state (device placement, `requires_grad`) compares equal, exactly as it serializes equal.
 
 ```python
 from dataclasses import dataclass
@@ -157,11 +157,33 @@ Define schema classes at module scope. Annotations are resolved at load time fro
 A name that fails to resolve is reported as a schema error with the `config schema` context. See [validation phases](validation-and-errors.md#two-validation-phases).
 
 
-## Constructor shape and schema preflight
+## Field options
 
-Every field in the tree is constructor-settable (`init=True`, the dataclass default); frozen and ordinary dataclasses both work.
+`init` is the master switch. An `init=True` field (the dataclass default) is loaded from the config, exported by `to_dict`, and — subject to `compare` and `hash` below — weighed by equality and `config_hash`. An `init=False` field is runtime state: it is loaded from none of the config, populated by its default or in `__post_init__`, and excluded from export, equality, and the fingerprint. On an `init=True` field, `compare` and `hash` scope equality and the fingerprint:
 
-Before coercing any value, `from_dict` runs a recursive schema preflight over every annotation in the tree, including sections that the input omits and fields that will use defaults. An annotation outside the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) produces a `ConfigError` at load time, so schema mistakes surface on the very first load.
+| Field | Loaded | In `to_dict` | In equality | In `config_hash` |
+| --- | :---: | :---: | :---: | :---: |
+| `field()` (init=True default) | yes | yes | yes | yes |
+| `field(init=False)` | no | no | no | no |
+| `field(compare=False)` | yes | yes | no | no |
+| `field(hash=False)` | yes | yes | yes | no |
+| `field(hash=True, compare=False)` | reported as a contradiction |
+
+A `compare=False` field is still serialized (so it round-trips) yet ignored by equality, and therefore by the fingerprint too, since a field out of equality must stay out of the digest. A `hash=False` field stays in equality but leaves the fingerprint. Because `init=False` excludes a field from all three projections, its `compare` and `hash` flags are inert, and its annotation is exempt from the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) — it may hold any resolvable runtime object.
+
+```python
+@dataclass
+class Model:
+    layers: int
+    logger: logging.Logger = field(init=False)   # runtime state, any type
+
+    def __post_init__(self) -> None:
+        self.logger = logging.getLogger(f"model.{self.layers}")
+```
+
+`from_dict(Model, {"layers": 4})` builds the config, runs `__post_init__`, and then checks that every `init=False` field was populated; a field left unset is reported as `init=False field was not set during __post_init__`. Supplying an `init=False` field's key in the input is reported as `field is not configurable (init=False)`. On a frozen dataclass, `__post_init__` assigns runtime fields through `object.__setattr__`.
+
+Before coercing any value, `from_dict` runs a recursive schema preflight over every annotation in the tree, including sections that the input omits and fields that will use defaults. An annotation outside the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) on an `init=True` field produces a `ConfigError` at load time, so schema mistakes surface on the very first load.
 
 
 ## Schema-level invariants

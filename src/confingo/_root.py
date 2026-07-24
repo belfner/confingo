@@ -214,6 +214,10 @@ class ConfigRoot:
     def config_hash(self, *, length: int = 12) -> str:
         """Fingerprint this config with a stable digest over its canonical JSON form.
 
+        The digest ranges over the hashing fields (``init=True``, ``compare=True``,
+        effective hash enabled), so a ``compare=False`` or ``hash=False`` field is
+        carried by ``to_dict`` yet excluded from the digest.
+
         Args:
             length: Number of leading hex characters to return, by default 12.
 

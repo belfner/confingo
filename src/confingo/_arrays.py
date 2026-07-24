@@ -1295,14 +1295,16 @@ def _kinds_promote_exactly(kind_a: str, size_a: int, kind_b: str, size_b: int) -
         size_b: Item size in bytes of the right dtype.
 
     Returns:
-        True when comparison promotes without changing any representable
-        value: matching kinds widen within the kind, bool widens exactly into
-        every numeric kind, and signed/unsigned integers mix exactly while
-        the unsigned side stays below 64 bits (a 64-bit unsigned operand
-        against a signed one promotes to float64 and loses integer
-        precision).
+        True when comparison promotes without changing the plain form each value
+        serializes to: matching kinds widen within the kind, and signed/unsigned
+        integers mix exactly while the unsigned side stays below 64 bits (a
+        64-bit unsigned operand against a signed one promotes to float64 and
+        loses integer precision). A bool operand pairs natively only with another
+        bool: bool serializes to ``true`` / ``false`` while a numeric ``1`` / ``0``
+        serializes differently, so a bool-versus-numeric pair falls through to the
+        plain-form comparison, keeping equality aligned with the fingerprint.
     """
-    if kind_a in {kind_b, "b"} or kind_b == "b":
+    if kind_a == kind_b:
         return True
     if {kind_a, kind_b} == {"i", "u"}:
         unsigned_size = size_a if kind_a == "u" else size_b
@@ -1320,7 +1322,11 @@ def _numpy_pair_equal(np: Any, a: Any, b: Any) -> Any:
 
     Returns:
         ``NOT_COMPARABLE`` for unsupported kinds, zero-size operands, or an
-        inexactly promoting kind mix, else the ``np.array_equal`` result.
+        inexactly promoting kind mix, else whether the arrays serialize to the
+        same plain form: ``np.array_equal`` value equality, and for float kinds
+        an additional sign-bit match so ``0.0`` and ``-0.0`` (equal by value but
+        distinct in canonical JSON) compare unequal, keeping native equality
+        aligned with the fingerprint.
     """
     kind_a, kind_b = a.dtype.kind, b.dtype.kind
     if kind_a not in _SUPPORTED_KINDS or kind_b not in _SUPPORTED_KINDS:
@@ -1329,7 +1335,13 @@ def _numpy_pair_equal(np: Any, a: Any, b: Any) -> Any:
         return NOT_COMPARABLE
     if not _kinds_promote_exactly(kind_a, a.dtype.itemsize, kind_b, b.dtype.itemsize):
         return NOT_COMPARABLE
-    return bool(np.array_equal(a, b))
+    if not bool(np.array_equal(a, b)):
+        return False
+    if kind_a == "f" or kind_b == "f":
+        # Equal-but-oppositely-signed zeros serialize to distinct JSON tokens;
+        # value equality alone would conflate them.
+        return bool(np.array_equal(np.signbit(a), np.signbit(b)))
+    return True
 
 
 def _torch_kind(torch: Any, dtype: Any) -> str:
@@ -1361,7 +1373,9 @@ def _tensor_pair_equal(torch: Any, a: Any, b: Any) -> Any:
     Returns:
         ``NOT_COMPARABLE`` for unsupported dtypes or forms, zero-size
         operands, or an inexactly promoting kind mix, else whether shapes and
-        every element match; a cross-device pair compares on the CPU.
+        every element match; a cross-device pair compares on the CPU. For float
+        kinds a sign-bit match is required so ``0.0`` and ``-0.0`` (equal by
+        value but distinct in canonical JSON) compare unequal.
     """
     supported = _supported_torch_dtypes(torch)
     if a.dtype not in supported or b.dtype not in supported:
@@ -1381,7 +1395,12 @@ def _tensor_pair_equal(torch: Any, a: Any, b: Any) -> Any:
     left, right = a, b
     if left.device != right.device:
         left, right = left.detach().cpu(), right.detach().cpu()
-    return bool((left == right).all().item())
+    if not bool((left == right).all().item()):
+        return False
+    if _torch_kind(torch, a.dtype) == "f" or _torch_kind(torch, b.dtype) == "f":
+        # 0.0 and -0.0 are equal by value but serialize to distinct JSON tokens.
+        return bool((torch.signbit(left) == torch.signbit(right)).all().item())
+    return True
 
 
 def _tensor_as_numpy(torch: Any, value: Any) -> Any | None:

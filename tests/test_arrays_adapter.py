@@ -694,8 +694,12 @@ def test_native_equal_declines_inexact_and_degenerate_pairs():
         assert _arrays.native_equal(left, right) is _arrays.NOT_COMPARABLE
 
 
-def test_native_equal_bool_mixes_exactly_and_small_unsigned_mixes():
-    assert _arrays.native_equal(np.array([True]), np.array([1])) is True
+def test_native_equal_small_unsigned_mixes_and_bool_defers_to_plain_form():
+    # bool serializes to true/false and numeric to 1/0, so a bool-versus-numeric
+    # pair is not a native match; it defers to the token-aware plain-form path,
+    # keeping equality aligned with the fingerprint. bool/bool stays native.
+    assert _arrays.native_equal(np.array([True]), np.array([1])) is _arrays.NOT_COMPARABLE
+    assert _arrays.native_equal(np.array([True]), np.array([True])) is True
     assert _arrays.native_equal(np.array([1], dtype=np.uint8), np.array([1], dtype=np.int64)) is True
     assert _arrays.native_equal(torch.tensor([1], dtype=torch.uint8), torch.tensor([1], dtype=torch.int8)) is True
 

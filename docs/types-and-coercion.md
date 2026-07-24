@@ -173,18 +173,17 @@ The accepted annotation set is explicit and closed:
 | Scalars | `bool`, `int`, `float`, `str`, `Path`, `datetime`, `date`, `time`, `None` |
 | Enums / literals | `Enum` subclasses with primitive member values; `Literal` with primitive or `None` options |
 | Containers | `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `Mapping` (str keys for mappings), bare or parameterized |
-| Structure | dataclasses (all fields `init=True`), unions of accepted members, `Optional[T]`, `Any` |
+| Structure | dataclasses (each `init=True` field boundary-checked; an `init=False` field holds runtime state and is exempt), unions of accepted members, `Optional[T]`, `Any` |
 | Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
 | Wrappers | `Annotated[T, ...]`, treated as `T`; on tensors, a `torch.dtype` entry pins the dtype and a fixed-arity all-`int` shape tuple such as `tuple[int, int]` enforces dimensionality, each usable alone or together; every other metadata entry passes through as ordinary annotation metadata |
 
-Annotations outside this set produce a `ConfigError` during schema preflight, even when the offending field is omitted from the input and would have used its default. Rejected shapes include:
+An `init=True` annotation outside this set produces a `ConfigError` during schema preflight, even when the offending field is omitted from the input and would have used its default. Rejected shapes include:
 
 - `Decimal`, `TypedDict`, `Iterable[T]`, and `NewType`
 - mappings with keys other than `str`, including `dict[Any, T]`
 - enums with object values, and enum-backed `Literal` options
-- `init=False` fields anywhere in the tree
 
-The preflight runs before any value is coerced. See [validation phases](validation-and-errors.md#two-validation-phases).
+An [`init=False`](schema-design.md#field-options) field holds runtime state populated in `__post_init__` and is exempt from this boundary; its annotation need only resolve. The preflight runs before any value is coerced. See [validation phases](validation-and-errors.md#two-validation-phases).
 
 
 ## Working near the boundary

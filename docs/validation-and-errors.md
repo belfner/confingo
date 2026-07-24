@@ -53,12 +53,15 @@ The context on the raised error tells you where the problem came from:
 ## Built-in issue sources
 
 - Unknown keys, with the sorted known-key list in the message.
+- A key supplied for an [`init=False`](schema-design.md#field-options) field: `field is not configurable (init=False)`, since runtime fields are populated in `__post_init__`, not loaded.
 - Missing required values: undefaulted fields absent from the input. Dataclass sections build implicitly, so a required value inside an omitted section is reported at its nested dotted path ([details](schema-design.md#implicit-sections-and-leaf-level-requirements)).
 - A value other than a mapping supplied for a dataclass section or document root.
 - Type mismatches and tuple-arity mismatches from [coercion](types-and-coercion.md).
 - Enum and `Literal` values outside the declared options.
 - Unhashable elements supplied for set fields.
 - Non-finite floats anywhere in supplied data.
+- A contradictory field declaration, `field(hash=True, compare=False)`, reported at preflight: a field in the fingerprint must participate in equality.
+- An `init=False` field left unset by `__post_init__`: `init=False field was not set during __post_init__`.
 
 
 ## Dataclass invariants
@@ -67,6 +70,8 @@ Custom checks join the report through two hooks on any dataclass in the tree:
 
 - **`__post_init__`**: a raised `ValueError` or `TypeError` becomes one issue at the dataclass's path.
 - **`__validate__`**: returns an iterable of messages; each message becomes its own issue at that path, so one hook can report several independent problems.
+
+Per node the order is `__init__` (which runs `__post_init__` as its final step) → the [`init=False`](schema-design.md#field-options) completeness check → `__validate__`. The completeness check sits between them so `__post_init__` has populated the runtime fields first, and `__validate__` runs only on a fully populated instance; a node with an unset `init=False` field reports that issue and skips `__validate__`.
 
 ```python
 @dataclass

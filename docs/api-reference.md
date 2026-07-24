@@ -32,11 +32,11 @@ from confingo import dumps_yaml, load_yaml, save_yaml
 
 Learn more: [canonical equality](schema-design.md#canonical-equality).
 
-Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when they serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigRoot` subclass carries this from class-creation time, and a body-defined `__eq__` there is respected with standard Python hashing semantics; every other schema dataclass receives it at first schema processing, replacing the `__eq__` it carried.
+Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigRoot` subclass carries this from class-creation time, and a body-defined `__eq__` there is respected with standard Python hashing semantics; every other schema dataclass receives it at first schema processing, replacing the `__eq__` it carried.
 
 ### `config_equal(left, right) -> bool`
 
-Compares two config objects by canonical value equality, same-class rule included, ahead of any engine call and without touching the classes involved. Evaluates the canonical relation directly, independently of a custom root `__eq__` preserved by the class-body rule. Raises `TypeError` when `left` is anything other than a dataclass instance.
+Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and without touching the classes involved. Evaluates the canonical relation directly, independently of a custom root `__eq__` preserved by the class-body rule. Raises `TypeError` when `left` is anything other than a dataclass instance.
 
 
 ## Construction and conversion
@@ -53,7 +53,7 @@ Converts a config object to plain serializable data in field-declaration order. 
 
 ### `config_hash(config, *, length=12) -> str`
 
-SHA-256 fingerprint of the resolved config's canonical JSON: the digest's leading `length` hex characters (useful range 1-64; the full digest is 64). Stable across processes and hash seeds. Learn more: [stable run identity](files-and-identity.md#stable-run-identity).
+SHA-256 fingerprint of the config's canonical JSON over its hashing fields (`init=True`, `compare=True`, effective hash enabled), so a `compare=False` or `hash=False` field is carried by `to_dict` yet excluded from the digest: the digest's leading `length` hex characters (useful range 1-64; the full digest is 64). Stable across processes and hash seeds. Learn more: [stable run identity](files-and-identity.md#stable-run-identity).
 
 
 ## JSON functions

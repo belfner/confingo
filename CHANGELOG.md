@@ -9,8 +9,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Canonical equality on every schema dataclass: two configs are `==` exactly
-  when they serialize to the same plain form at every tree level, array
-  fields included. Array and tensor pairs compare through the backends'
+  when their compared fields (`init=True` and `compare=True`) serialize to the
+  same plain form at every tree level, array fields included. Array and tensor pairs compare through the backends'
   vectorized equality wherever that comparison is provably exact (with a
   tensor meeting a numpy array via `detach().cpu().numpy()`), and every
   other pair compares by its serialized form, so `==` on large arrays runs
@@ -40,6 +40,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   inbound and serialize as plain scalars and lists. Supported numpy scalars
   feed ordinary
   scalar fields as their exact Python equivalents.
+- Dataclass `field()` options, with `init` as the master switch. An
+  `init=False` field is runtime state: it is excluded from loading, export,
+  equality, and the `config_hash` fingerprint, its `compare` / `hash` flags are
+  inert, and its annotation is exempt from the supported-type boundary so it may
+  hold any resolvable runtime object. It is populated by its default or in
+  `__post_init__`, and every `init=False` field is checked for population after
+  construction (before `__validate__`), so one left unset is reported as
+  `init=False field was not set during __post_init__` rather than surfacing later
+  as an `AttributeError`. Supplying an `init=False` field's key in the input is
+  reported as `field is not configurable (init=False)`. On an `init=True` field,
+  `compare=False` drops the field from equality and therefore from the
+  fingerprint while `to_dict` still carries it, and `hash=False` drops it from
+  the fingerprint alone while equality keeps it. `field(hash=True, compare=False)`
+  is reported as a contradiction, since a field in the fingerprint must
+  participate in equality.
+- `config_hash` fingerprints the hashing fields (`init=True`, `compare=True`,
+  effective hash enabled) rather than the full `to_dict` output, so a
+  `compare=False` or `hash=False` field is serialized yet excluded from the
+  digest.
 
 ### Changed
 

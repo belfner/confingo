@@ -90,12 +90,12 @@ run_id = config.config_hash()          # "8e6ea26c7116"
 long_id = config.config_hash(length=32)
 ```
 
-The hash is the leading `length` hex characters of SHA-256 over the config's canonical compact JSON (sorted mapping keys, deterministic set ordering). `length` defaults to 12; the useful range is 1-64, and the full digest is 64.
+The hash is the leading `length` hex characters of SHA-256 over the canonical compact JSON (sorted mapping keys, deterministic set ordering) of the config's hashing fields — those that are `init=True`, `compare=True`, and hashed (the defaults). A [`field(compare=False)` or `field(hash=False)`](schema-design.md#field-options) is carried by `to_dict` yet left out of this input, and an `init=False` runtime field is out of it too. `length` defaults to 12; the useful range is 1-64, and the full digest is 64.
 
 Two properties make it useful as a run identity:
 
-- Equal resolved configs produce equal hashes across processes and `PYTHONHASHSEED` values, because the canonical JSON depends only on the resolved values.
-- Any nested field change changes that canonical input, so distinct configs get distinct digests up to the collision resistance of the chosen prefix length. Longer prefixes buy more resistance.
+- Equal resolved configs produce equal hashes across processes and `PYTHONHASHSEED` values, because the canonical JSON depends only on the resolved values. A `compare=False` field is out of both equality and the digest, so this holds through it. A `hash=False` field stays in equality but leaves the digest, so two configs differing only in a `hash=False` field are unequal yet share a digest.
+- A change to any hashing field changes that canonical input, so configs differing in a hashing field get distinct digests up to the collision resistance of the chosen prefix length. Longer prefixes buy more resistance; a `hash=False` field, excluded from the digest, lets two unequal configs share one.
 
 [Array and tensor fields](types-and-coercion.md#arrays-and-tensors) hash by their encoded values and nesting, exactly what the file records. State the encoding leaves out collides by design: two bare-annotated arrays holding the same values at different dtype widths hash equal, integer and float widths alike, as do tensors differing only in device, gradient state, or stride and storage arrangement, and zero-size arrays differing only in dimensions after the first zero-length axis. A concrete dtype annotation is schema, so it shapes the rebuilt value rather than the hash, the same way `tuple`-ness already works.
 

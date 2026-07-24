@@ -16,8 +16,18 @@ Composite types are nested dataclasses, ``list`` / ``tuple`` / ``set`` /
 ``frozenset`` / ``Sequence`` of a supported type, ``dict[str, X]`` / ``Mapping``
 with ``str`` keys, and unions of supported types. ``Enum`` members and ``Literal``
 arguments carry primitive values (``str`` / ``int`` / ``bool``) so they round-trip
-through plain data, and every field is constructor-settable (``init=True``). A
-field annotated with a type outside this set is reported as an issue.
+through plain data. An ``init=True`` field annotated with a type outside this set
+is reported as an issue; an ``init=False`` field holds runtime state populated in
+``__post_init__``, so its annotation is exempt from this boundary and may name any
+resolvable type.
+
+Field options:
+``init`` is the master switch. An ``init=False`` field is excluded from loading,
+export, equality, and the fingerprint, and is populated in ``__post_init__``
+(checked for completeness after construction). On an ``init=True`` field
+``compare=False`` drops the field from equality and the fingerprint, and
+``hash=False`` drops it from the fingerprint alone; ``hash=True`` with
+``compare=False`` is reported as a contradiction.
 
 Resolution order:
 Values are layered lowest to highest precedence:
@@ -48,6 +58,7 @@ deduplication, and confirming that a rerun used the same settings.
 from __future__ import annotations
 
 import datetime as dt
+import enum
 import hashlib
 import json
 import math
@@ -60,6 +71,7 @@ from collections.abc import (
 )
 from dataclasses import (
     MISSING,
+    Field,
     dataclass,
     fields,
     is_dataclass,
@@ -276,16 +288,124 @@ def _is_dataclass_type(hint: Any) -> bool:
     return isinstance(hint, type) and is_dataclass(hint)
 
 
-def _non_init_field_names(config_cls: type[Any]) -> list[str]:
-    """List a dataclass's ``init=False`` field names.
+@dataclass(frozen=True)
+class _ClassifiedField:
+    """One dataclass field labelled for every projection the engine reads.
+
+    Attributes:
+        definition: The underlying ``dataclasses.Field``.
+        has_default: Whether the field carries a default or default_factory.
+        loadable: Whether the field is built from config input (``field.init``).
+        exportable: Whether ``to_dict`` emits the field (``field.init``).
+        compared: Whether equality includes the field (``init and compare``).
+        hashed: Whether ``config_hash`` includes the field
+          (``init and compare and effective_hash``).
+        conflicts: Contradictory-flag messages for the field, empty when valid.
+    """
+
+    definition: Field[Any]
+    has_default: bool
+    loadable: bool
+    exportable: bool
+    compared: bool
+    hashed: bool
+    conflicts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _DataclassFields:
+    """A dataclass's fields grouped by projection, computed once and cached.
+
+    Attributes:
+        declared: Every field in declaration order.
+        loadable: Fields built from config input (``init=True``).
+        non_init: Fields excluded from construction (``init=False``), populated
+          in ``__post_init__`` and checked for completeness after construction.
+        exportable: Fields ``to_dict`` emits.
+        compared: Fields equality includes.
+        hashed: Fields ``config_hash`` includes.
+        by_name: Every declared field keyed by name.
+    """
+
+    declared: tuple[_ClassifiedField, ...]
+    loadable: tuple[_ClassifiedField, ...]
+    non_init: tuple[_ClassifiedField, ...]
+    exportable: tuple[_ClassifiedField, ...]
+    compared: tuple[_ClassifiedField, ...]
+    hashed: tuple[_ClassifiedField, ...]
+    by_name: Mapping[str, _ClassifiedField]
+
+
+_FIELD_CACHE: dict[type[Any], _DataclassFields] = {}
+"""Per-dataclass cache of field classifications, keyed by class identity."""
+
+
+def _classify_dataclass_fields(config_cls: type[Any]) -> _DataclassFields:
+    """Classify a dataclass's fields for every engine projection, with caching.
+
+    ``init`` is the master switch: an ``init=False`` field is excluded from
+    loading, export, equality, and the fingerprint, so its ``compare`` / ``hash``
+    flags are inert. On an ``init=True`` field ``compare`` scopes equality (and
+    therefore the fingerprint) and ``hash`` scopes the fingerprint, with the one
+    contradiction ``hash=True, compare=False`` recorded in ``conflicts``.
 
     Args:
-        config_cls: The dataclass to inspect.
+        config_cls: The dataclass to classify.
 
     Returns:
-        The names of fields declared ``field(init=False)``, in declaration order.
+        The grouped classification, cached by class identity.
     """
-    return [field.name for field in fields(config_cls) if not field.init]
+    cached = _FIELD_CACHE.get(config_cls)
+    if cached is not None:
+        return cached
+    declared: list[_ClassifiedField] = []
+    for field in fields(config_cls):
+        effective_hash = field.compare if field.hash is None else field.hash
+        conflicts: list[str] = []
+        if field.init and field.hash is True and field.compare is False:
+            conflicts.append(
+                "field(hash=True, compare=False) is contradictory: config_hash fields must participate in equality"
+            )
+        declared.append(
+            _ClassifiedField(
+                definition=field,
+                has_default=field.default is not MISSING or field.default_factory is not MISSING,
+                loadable=field.init,
+                exportable=field.init,
+                compared=field.init and field.compare,
+                hashed=field.init and field.compare and effective_hash,
+                conflicts=tuple(conflicts),
+            )
+        )
+    result = _DataclassFields(
+        declared=tuple(declared),
+        loadable=tuple(item for item in declared if item.loadable),
+        non_init=tuple(item for item in declared if not item.definition.init),
+        exportable=tuple(item for item in declared if item.exportable),
+        compared=tuple(item for item in declared if item.compared),
+        hashed=tuple(item for item in declared if item.hashed),
+        by_name={item.definition.name: item for item in declared},
+    )
+    _FIELD_CACHE[config_cls] = result
+    return result
+
+
+def _projected_fields(config_cls: type[Any], projection: _PlainProjection) -> tuple[_ClassifiedField, ...]:
+    """Select the classified fields a serialization projection emits.
+
+    Args:
+        config_cls: The dataclass whose fields to select.
+        projection: The serialization projection.
+
+    Returns:
+        The classified fields for the projection, in declaration order.
+    """
+    classification = _classify_dataclass_fields(config_cls)
+    if projection is _PlainProjection.EXPORT:
+        return classification.exportable
+    if projection is _PlainProjection.COMPARE:
+        return classification.compared
+    return classification.hashed
 
 
 def _validate_schema(config_cls: type[Any]) -> tuple[ConfigIssue, ...]:
@@ -326,10 +446,14 @@ def _validate_dataclass_schema(
         return
     seen = seen | {config_cls}
     hints = _resolved_hints(config_cls)
-    for field in fields(config_cls):
+    for classified in _classify_dataclass_fields(config_cls).declared:
+        field = classified.definition
         field_path = _join(path, field.name)
+        issues.extend(ConfigIssue(field_path, message) for message in classified.conflicts)
         if not field.init:
-            issues.append(ConfigIssue(field_path, "field is declared init=False, which is unsupported"))
+            # init=False fields are runtime state exempt from the supported-type
+            # boundary; their annotation need only resolve, checked by
+            # _resolved_hints above.
             continue
         _validate_hint_schema(hints[field.name], field_path, issues, seen)
 
@@ -480,11 +604,18 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
 
     An absent dataclass section builds implicitly from an empty mapping
     (recursively), so the section's own required leaves are reported at their
-    nested dotted paths. Every other field without a default is required when
-    absent, container fields included, which keeps a forgotten container distinct
-    from an intentionally empty one authored as
+    nested dotted paths. Every other ``init=True`` field without a default is
+    required when absent, container fields included, which keeps a forgotten
+    container distinct from an intentionally empty one authored as
     ``field(default_factory=list)``. Explicit defaults and factories take
     precedence and are used as authored.
+
+    An ``init=False`` field is runtime state: it is not built from the mapping
+    (supplying its key is reported as not configurable), and it is populated by
+    its default or in ``__post_init__``. After each node is constructed, every
+    ``init=False`` field is checked for population, so one left unset by
+    ``__post_init__`` is reported rather than surfacing later as an
+    ``AttributeError``.
 
     Args:
         config_cls: The root dataclass to build.
@@ -496,9 +627,11 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
         The constructed config object.
 
     Raises:
-        ConfigError: When any key is unknown, any required value is missing, any
-          value fails to coerce, or any node's ``__post_init__`` or ``__validate__``
-          rejects it. The exception lists every issue found in the whole tree.
+        ConfigError: When any key is unknown or not configurable, any required
+          value is missing, any value fails to coerce, an ``init=False`` field is
+          left unset by ``__post_init__``, or any node's ``__post_init__`` or
+          ``__validate__`` rejects it. The exception lists every issue found in
+          the whole tree.
     """
     schema_issues = _validate_schema(config_cls)
     if len(schema_issues) > 0:
@@ -535,24 +668,21 @@ def _build(
         return _reject(collector, path, f"expected a mapping for {config_cls.__name__}, got {_typename(data)}")
 
     hints = _resolved_hints(config_cls)
-    non_init = _non_init_field_names(config_cls)
-    if len(non_init) > 0:
-        for name in non_init:
-            collector.add(_join(path, name), "field is declared init=False, which is unsupported")
-        return _UNSET
-
-    init_fields = [field for field in fields(config_cls) if field.init]
-    known = {field.name for field in init_fields}
+    classification = _classify_dataclass_fields(config_cls)
+    loadable_names = {item.definition.name for item in classification.loadable}
     for key in data:
-        if key not in known:
-            collector.add(_join(path, str(key)), f"unknown key (known keys: {', '.join(sorted(known))})")
+        if key in classification.by_name and key not in loadable_names:
+            collector.add(_join(path, str(key)), "field is not configurable (init=False)")
+        elif key not in loadable_names:
+            collector.add(_join(path, str(key)), f"unknown key (known keys: {', '.join(sorted(loadable_names))})")
 
     kwargs: dict[str, Any] = {}
     node_failed = False
-    for field in init_fields:
+    for classified in classification.loadable:
+        field = classified.definition
         field_path = _join(path, field.name)
         if field.name not in data:
-            if field.default is MISSING and field.default_factory is MISSING:
+            if not classified.has_default:
                 hint = _strip_annotated(hints[field.name])
                 if _is_dataclass_type(hint):
                     # An absent dataclass section builds implicitly from an empty
@@ -586,6 +716,21 @@ def _build(
         instance = config_cls(**kwargs)
     except (TypeError, ValueError) as exc:
         return _reject(collector, path, str(exc))
+
+    # Every init=False field must be populated by its default or by
+    # __post_init__ (which runs inside the constructor above) before __validate__
+    # or user code reads it. object.__getattribute__ probes the real attribute,
+    # bypassing any __getattr__ fallback, for both ordinary and slots classes.
+    node_incomplete = False
+    for classified in classification.non_init:
+        name = classified.definition.name
+        try:
+            object.__getattribute__(instance, name)
+        except AttributeError:
+            collector.add(_join(path, name), "init=False field was not set during __post_init__")
+            node_incomplete = True
+    if node_incomplete:
+        return _UNSET
 
     validate = getattr(instance, "__validate__", None)
     if callable(validate):
@@ -955,6 +1100,44 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
 # ---------------------------------------------------------------------------
 
 
+class _PlainProjection(enum.Enum):
+    """Which dataclass fields a plain-data walk emits.
+
+    Attributes:
+        EXPORT: Every exported field (``init=True``); the ``to_dict`` view.
+        COMPARE: Every compared field (``init=True and compare``); equality's
+          serialized fallback.
+        HASH: Every hashed field (``init=True and compare and effective_hash``);
+          the ``config_hash`` fingerprint view.
+    """
+
+    EXPORT = enum.auto()
+    COMPARE = enum.auto()
+    HASH = enum.auto()
+
+
+def _project_plain(value: Any, projection: _PlainProjection) -> Any:
+    """Render a config value to plain data under one field projection.
+
+    Args:
+        value: The config object or nested value to convert.
+        projection: The field projection selecting which dataclass fields emit.
+
+    Returns:
+        The converted plain-data structure.
+
+    Raises:
+        ConfigError: When a value's type falls outside the supported set and has
+          no plain-data form, or holds a non-finite float; the exception lists
+          every issue found, each tagged with its dotted path.
+    """
+    collector = _IssueCollector()
+    result = _to_plain(value, "", collector, projection=projection)
+    if not collector.clean():
+        raise ConfigError(collector.issues, context="config")
+    return result
+
+
 def to_dict(value: Any) -> Any:
     """Convert a config object into plain JSON-safe Python data.
 
@@ -962,7 +1145,9 @@ def to_dict(value: Any) -> Any:
     their values, ``Path`` and ``datetime`` / ``date`` / ``time`` become strings,
     and tuples, sets, and frozensets become lists. Mapping keys pass through these
     same rules. Set and frozenset elements are ordered by their canonical JSON text
-    so the output is stable across runs.
+    so the output is stable across runs. Constructor fields (``init=True``) form the
+    output; ``init=False`` runtime fields are populated by the dataclass lifecycle
+    and carried outside serialization.
 
     The result round-trips: ``from_dict(cls, to_dict(config)) == config`` holds
     for every field whose annotation names a supported type, including bare
@@ -982,40 +1167,36 @@ def to_dict(value: Any) -> Any:
           no plain-data form, or holds a non-finite float; the exception lists
           every issue found, each tagged with its dotted path.
     """
-    collector = _IssueCollector()
-    result = _to_plain(value, "", collector)
-    if not collector.clean():
-        raise ConfigError(collector.issues, context="config")
-    return result
+    return _project_plain(value, _PlainProjection.EXPORT)
 
 
-def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
+def _to_plain(value: Any, path: str, collector: _IssueCollector, *, projection: _PlainProjection) -> Any:
     """Convert one value to plain data, recording issues with dotted paths.
 
     Args:
         value: The config object or nested value to convert.
         path: Dotted path of this value, empty at the root.
         collector: Destination for any issues found.
+        projection: The field projection carried through every recursive call, so
+          a dataclass node emits only the fields the projection selects.
 
     Returns:
         The converted plain-data structure, or the ``_UNSET`` sentinel when this
         value failed to serialize.
     """
     if is_dataclass(value) and not isinstance(value, type):
-        non_init = _non_init_field_names(type(value))
-        if len(non_init) > 0:
-            return _reject(collector, path, f"field {non_init[0]!r} is declared init=False, which is unsupported")
         node: dict[str, Any] = {}
         node_failed = False
-        for field in fields(value):
-            item = _to_plain(getattr(value, field.name), _join(path, field.name), collector)
+        for classified in _projected_fields(type(value), projection):
+            field_name = classified.definition.name
+            item = _to_plain(getattr(value, field_name), _join(path, field_name), collector, projection=projection)
             if item is _UNSET:
                 node_failed = True
                 continue
-            node[field.name] = item
+            node[field_name] = item
         return _UNSET if node_failed else node
     if isinstance(value, Enum):
-        return _to_plain(value.value, path, collector)
+        return _to_plain(value.value, path, collector, projection=projection)
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, (dt.date, dt.time)):
@@ -1035,8 +1216,8 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
         mapping_failed = False
         for key, item in value.items():
             item_path = _join(path, str(key))
-            plain_key = _to_plain(key, item_path, collector)
-            plain_item = _to_plain(item, item_path, collector)
+            plain_key = _to_plain(key, item_path, collector, projection=projection)
+            plain_item = _to_plain(item, item_path, collector, projection=projection)
             if plain_key is _UNSET or plain_item is _UNSET:
                 mapping_failed = True
                 continue
@@ -1051,7 +1232,7 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
     if isinstance(value, (set, frozenset)):
         # Set elements carry the set's own path: iteration order is unstable, so
         # an element index would name a different element on each run.
-        elements = [_to_plain(item, path, collector) for item in value]
+        elements = [_to_plain(item, path, collector, projection=projection) for item in value]
         if any(element is _UNSET for element in elements):
             return _UNSET
         # Sort by each element's canonical JSON text so the order is total and
@@ -1059,7 +1240,10 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
         # mutually orderable; equal sets must hash equal regardless of PYTHONHASHSEED.
         return sorted(elements, key=lambda item: json.dumps(item, sort_keys=True, default=str))
     if isinstance(value, (list, tuple)):
-        items = [_to_plain(item, _join(path, str(index)), collector) for index, item in enumerate(value)]
+        items = [
+            _to_plain(item, _join(path, str(index)), collector, projection=projection)
+            for index, item in enumerate(value)
+        ]
         if any(item is _UNSET for item in items):
             return _UNSET
         return items
@@ -1072,11 +1256,30 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector) -> Any:
     return _reject(collector, path, f"cannot serialize value of type {_typename(value)}")
 
 
+def _canonical_json(plain: Any) -> str:
+    """Encode plain projection data as confingo's canonical compact JSON.
+
+    This single encoding backs both ``config_hash`` and the equality serialized
+    fallback, so the two agree token for token: JSON keeps ``true`` / ``1`` /
+    ``1.0`` distinct where Python ``==`` would conflate them, and equal configs
+    therefore always fingerprint equally.
+
+    Args:
+        plain: Plain JSON-safe data from a plain projection.
+
+    Returns:
+        Compact JSON with sorted mapping keys.
+    """
+    return json.dumps(plain, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def config_hash(config: Any, *, length: int = 12) -> str:
     """Fingerprint a config with a stable digest over its canonical JSON form.
 
-    Mapping key order and set iteration order are normalized before hashing, so
-    the digest is stable across processes.
+    The digest ranges over the hashing fields (``init=True``, ``compare=True``,
+    effective hash enabled), so a ``compare=False`` or ``hash=False`` field is
+    carried by ``to_dict`` yet excluded here. Mapping key order and set iteration
+    order are normalized before hashing, so the digest is stable across processes.
 
     Args:
         config: The config object to fingerprint.
@@ -1085,5 +1288,5 @@ def config_hash(config: Any, *, length: int = 12) -> str:
     Returns:
         The truncated SHA-256 digest.
     """
-    payload = json.dumps(to_dict(config), sort_keys=True, separators=(",", ":"), default=str)
+    payload = _canonical_json(_project_plain(config, _PlainProjection.HASH))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:length]

@@ -381,10 +381,25 @@ def test_tensor_and_ndarray_under_any_compare_by_value():
     assert AnyHolder(value=np.array([1.0, 2.0])) != AnyHolder(value=torch.tensor([[1.0, 2.0]]))
 
 
-def test_cross_kind_pairs_keep_exact_value_semantics():
+def test_cross_kind_pairs_compare_by_canonical_plain_form():
     huge = 2**63 - 1
+    # Precision loss makes these serialize to different numbers -> unequal.
     assert AnyHolder(value=np.array([huge], dtype=np.int64)) != AnyHolder(value=np.array([float(huge)]))
-    assert AnyHolder(value=torch.tensor([3], dtype=torch.int64)) == AnyHolder(value=torch.tensor([3.0]))
+    # int and float serialize to distinct plain forms (3 vs 3.0), exactly how
+    # config_hash tokenizes them, so a cross-kind pair is unequal and the
+    # equal-configs -> equal-fingerprint invariant holds.
+    assert AnyHolder(value=torch.tensor([3], dtype=torch.int64)) != AnyHolder(value=torch.tensor([3.0]))
+
+
+def test_signed_zero_arrays_compare_by_canonical_plain_form():
+    # 0.0 and -0.0 are equal by value but serialize to distinct JSON tokens, so
+    # the native float fast path must treat them as unequal to match config_hash.
+    assert AnyHolder(value=np.array([0.0])) != AnyHolder(value=np.array([-0.0]))
+    assert AnyHolder(value=torch.tensor([0.0])) != AnyHolder(value=torch.tensor([-0.0]))
+    assert AnyHolder(value=np.array([0.0, 1.5])) != AnyHolder(value=np.array([-0.0, 1.5]))
+    # Cross-backend and same-sign pairs still resolve correctly.
+    assert AnyHolder(value=np.array([0.0])) != AnyHolder(value=torch.tensor([-0.0]))
+    assert AnyHolder(value=np.array([-0.0])) == AnyHolder(value=torch.tensor([-0.0]))
 
 
 def test_zero_size_arrays_keep_dimension_collapse_equality():

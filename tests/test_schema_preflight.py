@@ -1,8 +1,7 @@
 """Schema-level enforcement and value edges, settled ahead of any config data.
 
-Unsupported annotations, init=False sections, dict[Any, X], object-valued
-enums, and non-finite floats under open data are each reported for a field
-the input omits.
+Unsupported annotations, dict[Any, X], object-valued enums, and non-finite
+floats under open data are each reported for a field the input omits.
 """
 
 from __future__ import annotations
@@ -62,7 +61,7 @@ def test_newtype_rejected_when_omitted():
     assert any("unsupported field type" in i.message for i in info.value.issues)
 
 
-# --- nested init=False rejected even when the section is omitted ----------
+# --- nested init=False fields are runtime state, excluded from export -----
 
 
 @dataclass
@@ -75,10 +74,10 @@ class HoldsDerived:
     child: WithDerived = field(default_factory=WithDerived)
 
 
-def test_nested_init_false_rejected_when_omitted():
-    with pytest.raises(ConfigError) as info:
-        from_dict(HoldsDerived, {})
-    assert any("init=False" in i.message for i in info.value.issues)
+def test_nested_init_false_builds_and_is_excluded():
+    built = from_dict(HoldsDerived, {})
+    assert built.child.computed == 1
+    assert to_dict(built) == {"child": {}}
 
 
 # --- object-valued enums rejected; primitive enums accepted --------------

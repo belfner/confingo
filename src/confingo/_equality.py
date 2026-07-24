@@ -1,12 +1,14 @@
 """Canonical equality for config dataclasses.
 
-Two configs are canonically equal exactly when they serialize to the same
-plain form. The engine here evaluates that relation structurally: array and
-tensor fields compare through the backends' vectorized operations wherever
-that comparison is provably exact, dataclass sections and containers recurse,
-and every remaining value pair compares by its ``to_dict`` form, so ``==``
-runs at native speed on large arrays while
-``from_dict(cls, to_dict(config)) == config`` reads literally.
+Two configs are canonically equal exactly when their compared fields (``init=True``
+and ``compare=True``) serialize to the same plain form. The engine here evaluates
+that relation structurally: array and tensor fields compare through the backends'
+vectorized operations wherever that comparison is provably exact, dataclass
+sections and containers recurse over their compared fields, and every remaining
+value pair compares by its plain-data COMPARE projection, so ``==`` runs at native
+speed on large arrays while ``from_dict(cls, to_dict(config)) == config`` holds.
+A ``compare=False`` field is carried by ``to_dict`` yet ignored here; an
+``init=False`` runtime field is outside equality entirely.
 
 Ordinary ``@dataclass`` declarations are the schema surface. A ``ConfigRoot``
 subclass carries canonical ``__eq__`` from class-creation time (installed by
@@ -19,17 +21,20 @@ classes involved.
 
 from __future__ import annotations
 
-from dataclasses import (
-    fields,
-    is_dataclass,
-)
+import math
+from dataclasses import is_dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
 )
 
 from confingo import _arrays
-from confingo._core import to_dict
+from confingo._core import (
+    _canonical_json,
+    _classify_dataclass_fields,
+    _PlainProjection,
+    _project_plain,
+)
 
 
 if TYPE_CHECKING:
@@ -46,12 +51,15 @@ _CUSTOM_EQ_MARKER = "__confingo_custom_eq__"
 a root's hand-written equality survives schema processing.
 """
 
-_EXACT_PRIMITIVES = (bool, int, float, str)
-"""Builtin scalar types whose own ``==`` matches plain-form comparison exactly.
+_EXACT_PRIMITIVES = (bool, int, str)
+"""Builtin scalar types whose own ``==`` matches canonical-JSON comparison exactly.
 
 Membership is by exact type: subclasses such as ``np.float64`` (whose ``==``
 applies NumPy promotion) and enum members (whose ``==`` may be overridden)
-compare through their serialized forms instead.
+compare through their serialized forms instead. ``float`` is excluded because
+``0.0 == -0.0`` while their canonical JSON differs (``0.0`` versus ``-0.0``), so
+floats compare through the token-aware plain-form path to stay aligned with the
+fingerprint.
 """
 
 
@@ -60,12 +68,14 @@ def _values_equal(a: Any, b: Any) -> bool:
 
     Array pairs of the loaded backends compare through
     ``_arrays.native_equal`` where its vectorized path applies. Exact-type
-    builtin scalars compare directly, dataclass pairs of the same class,
-    sequence pairs, and str-keyed dict pairs recurse structurally, and
-    every other pair -- scalar subclasses, enum members, dicts with
-    canonicalizing keys -- compares by its ``to_dict`` form. Each branch
-    agrees with plain-form comparison on the supported value domain, so the
-    walk is an evaluation strategy for one equality relation.
+    builtin scalars compare directly, dataclass pairs of the same class recurse
+    over their compared fields (``init=True`` and ``compare=True``), sequence
+    pairs and str-keyed dict pairs recurse structurally, and every other pair --
+    scalar subclasses, enum members, sets, dicts with canonicalizing keys --
+    compares by its COMPARE-projection plain form, which drops ``compare=False``
+    fields from any dataclass reached that way. Each branch agrees with
+    plain-form comparison on the supported value domain, so the walk is an
+    evaluation strategy for one equality relation.
 
     Args:
         a: The left-hand value.
@@ -79,10 +89,23 @@ def _values_equal(a: Any, b: Any) -> bool:
         return bool(verdict)
     if a is None or b is None:
         return a is b
-    if type(a) in _EXACT_PRIMITIVES and type(b) in _EXACT_PRIMITIVES:
+    if type(a) is type(b) and type(a) in _EXACT_PRIMITIVES:
+        # Same exact bool / int / str type, whose ``==`` matches the canonical
+        # JSON tokens exactly. Cross-type pairs (``True`` vs ``1``) fall through
+        # to the token-aware plain-form comparison below, so equality never
+        # outruns the fingerprint.
+        return bool(a == b)
+    if type(a) is float and type(b) is float:
+        # ``==`` matches the canonical JSON of finite floats except for signed
+        # zero (``0.0`` and ``-0.0`` are equal but serialize to ``0.0`` / ``-0.0``),
+        # which the sign check separates. Non-finite floats have no plain form, so
+        # they compare by ``==`` here rather than raising in serialization.
+        if a == 0.0 and b == 0.0:
+            return math.copysign(1.0, a) == math.copysign(1.0, b)
         return bool(a == b)
     if is_dataclass(a) and not isinstance(a, type) and a.__class__ is b.__class__:
-        return all(_values_equal(getattr(a, f.name), getattr(b, f.name)) for f in fields(a))
+        compared = _classify_dataclass_fields(a.__class__).compared
+        return all(_values_equal(getattr(a, c.definition.name), getattr(b, c.definition.name)) for c in compared)
     if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
         if len(a) != len(b):
             return False
@@ -96,16 +119,18 @@ def _values_equal(a: Any, b: Any) -> bool:
         if a.keys() != b.keys():
             return False
         return all(_values_equal(item, b[key]) for key, item in a.items())
-    return bool(to_dict(a) == to_dict(b))
+    left = _canonical_json(_project_plain(a, _PlainProjection.COMPARE))
+    right = _canonical_json(_project_plain(b, _PlainProjection.COMPARE))
+    return left == right
 
 
 def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
     """Compare two config objects by canonical value equality.
 
-    Equality means the two objects serialize to the same canonical plain
-    form: every field compares through ``_values_equal``, which runs array
-    fields through the backends' vectorized comparisons and recurses through
-    sections and containers.
+    Equality ranges over the compared fields (``init=True`` and ``compare=True``):
+    each compares through ``_values_equal``, which runs array fields through the
+    backends' vectorized comparisons and recurses through sections and
+    containers. ``init=False`` and ``compare=False`` fields carry no weight.
 
     Args:
         self: The left-hand config object.
@@ -113,11 +138,12 @@ def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
 
     Returns:
         ``NotImplemented`` when ``other`` is a different class, else whether
-        every field pair is canonically equal.
+        every compared field pair is canonically equal.
     """
     if other.__class__ is not self.__class__:
         return NotImplemented
-    return all(_values_equal(getattr(self, f.name), getattr(other, f.name)) for f in fields(self))
+    compared = _classify_dataclass_fields(self.__class__).compared
+    return all(_values_equal(getattr(self, c.definition.name), getattr(other, c.definition.name)) for c in compared)
 
 
 def _install_canonical_eq(config_cls: type[Any]) -> None:
@@ -145,13 +171,13 @@ def _install_canonical_eq(config_cls: type[Any]) -> None:
 def config_equal(left: Any, right: Any) -> bool:
     """Compare two config objects by canonical value equality.
 
-    The two objects are equal exactly when they are the same class and
-    serialize to the same canonical plain form, array fields compared
-    through the backends' vectorized operations. Works on any config
-    dataclass instance, ahead of any other engine call and whether or not
-    the class subclasses ``ConfigRoot``, and touches no classes. The
-    canonical relation is evaluated directly, independently of a custom
-    root ``__eq__`` preserved by the class-body rule.
+    The two objects are equal exactly when they are the same class and their
+    compared fields (``init=True`` and ``compare=True``) serialize to the same
+    canonical plain form, array fields compared through the backends' vectorized
+    operations. Works on any config dataclass instance, ahead of any other
+    engine call and whether or not the class subclasses ``ConfigRoot``, and
+    touches no classes. The canonical relation is evaluated directly,
+    independently of a custom root ``__eq__`` preserved by the class-body rule.
 
     Args:
         left: A config dataclass instance.
