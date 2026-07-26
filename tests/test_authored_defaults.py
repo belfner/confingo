@@ -9,6 +9,7 @@ validation before reaching the object.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import (
     dataclass,
     field,
@@ -24,9 +25,12 @@ from typing import (
 import numpy as np
 import numpy.typing as npt
 import pytest
+import yaml
 
 from confingo import (
     ConfigError,
+    dumps_json,
+    dumps_yaml,
     from_dict,
     to_dict,
 )
@@ -226,10 +230,12 @@ def test_correct_defaults_keep_object_identity():
     assert built.mode is Mode.FAST
 
 
-def test_a_config_built_entirely_from_defaults_round_trips():
+def test_a_config_built_entirely_from_defaults_round_trips_through_every_format():
     built = from_dict(Correct, {})
     exported = to_dict(built)
     assert from_dict(Correct, exported) == built
+    assert from_dict(Correct, json.loads(dumps_json(built))) == built
+    assert from_dict(Correct, yaml.safe_load(dumps_yaml(built))) == built
 
 
 # --- factories run once, at the build that selects them -----------------------
@@ -305,7 +311,7 @@ def test_a_raising_factory_reports_at_the_field_path():
     assert _issues(RaisingFactory) == {"items": "default_factory raised ValueError: cannot read seeds file"}
 
 
-def test_factory_direct_and_input_issues_aggregate():
+def test_factory_and_input_issues_aggregate():
     reported = _issues(BadFactories, {"supplied": "nope"})
     assert reported["opt.lr"] == (
         "invalid default_factory value: expected a value already matching float, got str; "
@@ -347,6 +353,62 @@ class OuterRoot:
 
 def test_a_nested_direct_default_reports_at_its_full_schema_path():
     assert "middle.inner.lr" in _issues(OuterRoot)
+
+
+@dataclass
+class SiblingOfBadNested:
+    inner: InnerWithBadDefault = field(default_factory=InnerWithBadDefault)
+    own: Path = "runs"  # pyrefly: ignore[bad-assignment]
+
+
+def test_every_invalid_direct_default_in_the_tree_reports_in_one_pass():
+    # A nested class's own bad default is a value problem, not a structural one,
+    # so it leaves the enclosing class's default still judged.
+    reported = _issues(SiblingOfBadNested)
+    assert "already matching float, got int" in reported["inner.lr"]
+    assert "already matching Path, got str" in reported["own"]
+
+
+@dataclass
+class UnsupportedAnnotation:
+    amount: Decimal = Decimal("1.5")
+
+
+def test_an_unsupported_annotation_suppresses_its_own_default_issue():
+    # The default can only restate the annotation problem, so the boundary
+    # message stands alone.
+    reported = _issues(UnsupportedAnnotation)
+    assert "unsupported field type Decimal" in reported["amount"]
+    assert "invalid authored default" not in reported["amount"]
+
+
+# --- sections are held through a factory --------------------------------------
+
+
+@dataclass(frozen=True)
+class FrozenSection:
+    x: int = 1
+
+
+@dataclass
+class HoldsFrozenSection:
+    section: FrozenSection = field(default_factory=FrozenSection)
+
+
+def test_a_frozen_section_default_factory_builds():
+    built = from_dict(HoldsFrozenSection, {})
+    assert built.section == FrozenSection(x=1)
+
+
+def test_a_touched_section_directs_a_later_direct_default_to_the_factory():
+    # A config class is unhashable, which is what @dataclass reads as a mutable
+    # default, so the decorator names default_factory as the way to hold one.
+    from_dict(HoldsFrozenSection, {})
+    with pytest.raises(ValueError, match="use default_factory"):
+
+        @dataclass
+        class LaterDeclared:
+            section: FrozenSection = FrozenSection()
 
 
 # --- init=False keeps its exemption -------------------------------------------

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import types
 import typing
 from collections.abc import (
@@ -391,30 +392,38 @@ def _classify_dataclass_fields(config_cls: type[Any]) -> _DataclassFields:
 
 
 def _validate_schema(config_cls: type[Any]) -> tuple[ConfigIssue, ...]:
-    """Validate a dataclass's field annotations against the supported type set.
+    """Validate a dataclass's annotations and authored defaults against the supported set.
 
     This inspects the schema itself, independent of any config data, so an
     unsupported annotation is reported even when the field is omitted and falls
-    back to its default. Field default values are left untouched.
+    back to its default, and every authored ``field(default=...)`` is judged
+    whether or not the input supplies its field.
+
+    Annotation issues and default issues accumulate separately during the walk and
+    join at the end. Keeping them apart is what lets one class's bad default leave
+    an enclosing class's default still checked, while an unsupported annotation
+    still suppresses the default that would only restate it.
 
     Args:
       config_cls (type[Any]): The entry dataclass to validate.
 
     Returns:
-      tuple[ConfigIssue, ...]: The schema issues found, empty when the schema is fully supported.
+      tuple[ConfigIssue, ...]: The schema issues found, annotation issues first,
+        empty when the schema is fully supported.
     """
     cached = _SCHEMA_CACHE.get(config_cls)
     if cached is not None:
         return cached
     issues: list[ConfigIssue] = []
+    defaults: list[ConfigIssue] = []
     entry_message = _entry_type_message(config_cls)
     if entry_message is None:
-        _validate_dataclass_schema(config_cls, "", issues, set())
+        _validate_dataclass_schema(config_cls, "", issues, defaults, set())
     else:
         # Field classification reads dataclasses.fields, so a non-dataclass entry
         # is reported here rather than walked.
         issues.append(ConfigIssue("", entry_message))
-    result = tuple(issues)
+    result = (*issues, *defaults)
     _SCHEMA_CACHE[config_cls] = result
     return result
 
@@ -479,14 +488,33 @@ def unsupported_hint_message(hint: Any) -> str:
     )
 
 
+_FOREIGN_MODEL_MARKERS: tuple[str, ...] = ("__attrs_attrs__", "model_fields", "__pydantic_fields__")
+"""Attributes marking a class that already belongs to another schema system.
+
+Membership is read by name so neither library has to be installed for the check
+to run, and a class carrying one is left on the type-boundary message: its
+annotations are deliberate declarations to that system rather than a config
+schema missing its decorator.
+"""
+
+_CLASS_VAR_TEXT = re.compile(r"^\s*(?:\w+\s*\.\s*)*ClassVar\s*(?:\[|$)")
+"""Matches a ``ClassVar`` annotation written as source text, qualified or bare."""
+
+
 def _looks_like_undecorated_schema(hint: Any) -> bool:
     """Report whether a class declares schema-shaped annotations without being a dataclass.
 
     The signal is a class that carries its own non-``ClassVar`` annotations and no
     dataclass fields, which is what a section reads like when its declaration
-    skipped the decorator. Typing constructs that legitimately carry annotations
-    without being dataclasses -- ``TypedDict`` and ``NamedTuple`` -- are excluded,
-    since an author who reached for one of them chose it deliberately.
+    skipped the decorator. Classes whose annotations are deliberate declarations
+    to something else are excluded: ``TypedDict`` and ``NamedTuple``, protocols,
+    generic classes carrying type parameters, and models belonging to another
+    schema system.
+
+    Annotations are read as declared rather than resolved. Resolution evaluates
+    the annotation expressions of a class confingo has no other reason to touch,
+    which would run that class's code during preflight and let whatever it raises
+    escape the issue collector.
 
     Args:
       hint (Any): The resolved type hint that has no supported handling.
@@ -500,16 +528,29 @@ def _looks_like_undecorated_schema(hint: Any) -> bool:
         return False
     if issubclass(hint, tuple) and hasattr(hint, "_fields"):
         return False
-    own = hint.__dict__.get("__annotations__", {})
-    if len(own) == 0:
+    if getattr(hint, "_is_protocol", False) is True:
         return False
-    try:
-        resolved = get_type_hints(hint)
-    except (NameError, TypeError):
-        # Annotations that will not resolve still read as a schema declaration,
-        # and the decorator is the remedy that surfaces the resolution error.
-        return True
-    return any(not _is_class_var(resolved.get(name, Any)) for name in own)
+    if len(getattr(hint, "__parameters__", ())) > 0:
+        return False
+    if any(hasattr(hint, marker) for marker in _FOREIGN_MODEL_MARKERS):
+        return False
+    own = hint.__dict__.get("__annotations__", {})
+    return any(not _declares_class_var(annotation) for annotation in own.values())
+
+
+def _declares_class_var(annotation: Any) -> bool:
+    """Report whether one declared annotation names ``ClassVar``, unevaluated.
+
+    Args:
+      annotation (Any): An entry from a class's own ``__annotations__``, which is
+        a string under postponed evaluation and a type object otherwise.
+
+    Returns:
+      bool: True when the declaration is a ``ClassVar``.
+    """
+    if isinstance(annotation, str):
+        return _CLASS_VAR_TEXT.match(annotation) is not None
+    return _is_class_var(annotation)
 
 
 def _undecorated_node_message(config_cls: type[Any], hints: Mapping[str, Any]) -> str | None:
@@ -572,7 +613,11 @@ def _is_class_var(hint: Any) -> bool:
 
 
 def _validate_dataclass_schema(
-    config_cls: type[Any], path: str, issues: list[ConfigIssue], seen: set[type[Any]]
+    config_cls: type[Any],
+    path: str,
+    issues: list[ConfigIssue],
+    defaults: list[ConfigIssue],
+    seen: set[type[Any]],
 ) -> None:
     """Collect schema issues for one dataclass, recursing into nested dataclasses.
 
@@ -599,13 +644,13 @@ def _validate_dataclass_schema(
             # _resolved_hints above.
             continue
         before = len(issues)
-        _validate_hint_schema(hints[field.name], field_path, issues, seen)
+        _validate_hint_schema(hints[field.name], field_path, issues, defaults, seen)
         if len(issues) == before and field.default is not MISSING:
             # The annotation holds up, so the authored default can be judged
             # against it. The value already exists, so reading it runs no
             # user code on this cached path; a default_factory is left to the
             # one build that selects it.
-            _validate_direct_default(field.default, hints[field.name], field_path, issues)
+            _validate_direct_default(field.default, hints[field.name], field_path, defaults)
 
 
 def _validate_direct_default(value: Any, hint: Any, path: str, issues: list[ConfigIssue]) -> None:
@@ -630,7 +675,13 @@ def _validate_direct_default(value: Any, hint: Any, path: str, issues: list[Conf
     issues.extend(collector.issues)
 
 
-def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen: set[type[Any]]) -> None:
+def _validate_hint_schema(
+    hint: Any,
+    path: str,
+    issues: list[ConfigIssue],
+    defaults: list[ConfigIssue],
+    seen: set[type[Any]],
+) -> None:
     """Collect schema issues for one resolved type hint.
 
     Args:
@@ -663,7 +714,7 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
 
     if origin is typing.Union or origin is types.UnionType:
         for member in args:
-            _validate_hint_schema(member, path, issues, seen)
+            _validate_hint_schema(member, path, issues, defaults, seen)
         return
 
     if origin is not None:
@@ -676,17 +727,17 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
             if key_hint is not str:
                 message = f"unsupported dict key type {_hint_name(key_hint)}; only str keys are supported"
                 issues.append(ConfigIssue(path, message))
-            _validate_hint_schema(value_hint, path, issues, seen)
+            _validate_hint_schema(value_hint, path, issues, defaults, seen)
             return
         if origin in (set, frozenset) and any(_holds_config_section(arg) for arg in args):
             issues.append(ConfigIssue(path, _section_set_message(hint)))
         for element_hint in args:
             if element_hint is not Ellipsis:
-                _validate_hint_schema(element_hint, path, issues, seen)
+                _validate_hint_schema(element_hint, path, issues, defaults, seen)
         return
 
     if _is_dataclass_type(hint):
-        _validate_dataclass_schema(hint, path, issues, seen)
+        _validate_dataclass_schema(hint, path, issues, defaults, seen)
         return
 
     if isinstance(hint, type):

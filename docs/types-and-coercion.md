@@ -125,7 +125,17 @@ Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int,
 
 ## Unions and optionals
 
-Union members are tried in declaration order and the first member that coerces cleanly wins, so order unions deliberately: `int | str` sends `5` to `int` and `"5"` to `str`, while `OptimizerConfig | SchedulerConfig` tries `OptimizerConfig` first for every mapping. When every member fails, the field reports a single union mismatch issue.
+Union members are tried in declaration order and the first member that coerces cleanly wins, so order unions deliberately: `int | str` sends `5` to `int` and `"5"` to `str`, while `OptimizerConfig | SchedulerConfig` tries `OptimizerConfig` first for every mapping.
+
+When every member fails, the field reports a summary naming the whole union and the member that came closest, followed by that one member's own issues at their own paths:
+
+```text
+config has 2 issues:
+  - optimizer: expected AdamW | SGD; best match SGD failed with 1 issue
+  - optimizer.lr: expected float, got str
+```
+
+"Closest" is the member whose attempt collected the fewest issues, and an equal count goes to the first declared member. That tie is what two structurally identical variants produce when only their discriminator `Literal` differs and the file carries a typo: each fails once, so the first declared member supplies the detail while the summary still names the whole union.
 
 `T | None` is special-cased: `None` is accepted directly, and any other input coerces straight through `T`, preserving nested issue paths and running the section's construction hooks exactly once.
 

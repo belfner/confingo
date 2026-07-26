@@ -97,6 +97,15 @@ class _IssueCollector:
         """
         self.issues.append(ConfigIssue(path=path, message=message))
 
+    def extend(self, issues: Iterable[ConfigIssue]) -> None:
+        """Record issues a trial collector gathered, keeping their order and paths.
+
+        Args:
+          issues (Iterable[ConfigIssue]): The issues to adopt, already carrying the
+            paths they were reported under.
+        """
+        self.issues.extend(issues)
+
     def clean(self) -> bool:
         """Report whether the build has stayed issue-free so far.
 

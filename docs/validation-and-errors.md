@@ -142,7 +142,7 @@ confingo.ConfigError: config has 2 issues:
 Collection is exhaustive across siblings: every field, sequence element, and mapping entry is visited even after earlier ones fail. Two boundaries shape what appears in a single report:
 
 - A dataclass node whose fields have issues stays unconstructed for that load, so its `__post_init__` / `__validate__` hooks run on the next load, once the field issues are fixed. Fixing a config can therefore surface a second, deeper round of invariant messages.
-- A multi-member union tries each member privately and, when every member fails, reports one union mismatch for the field. A single-type optional (`T | None`) coerces straight through `T`, preserving detailed child paths and running hooks exactly once.
+- A multi-member union tries each member privately. When every member fails, the field reports a summary -- `expected AdamW | SGD; best match SGD failed with 1 issue` -- followed by that one member's own issues at their own paths. The closest member is the one whose attempt collected the fewest issues, with an equal count going to the first declared member. A single-type optional (`T | None`) coerces straight through `T`, preserving detailed child paths and running hooks exactly once.
 
 
 ## Handling errors in a training CLI

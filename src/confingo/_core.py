@@ -443,6 +443,11 @@ def _coerce_union(value: Any, hint: Any, args: tuple[Any, ...], path: str, colle
       path (str): Dotted path of this value.
       collector (_IssueCollector): Destination for any issues found.
 
+    A failed union reports the member that came closest -- the one whose trial
+    collected the fewest issues, declaration order breaking a tie -- so the report
+    carries one branch's detail rather than every branch's, and the detail names
+    the branch it came from.
+
     Returns:
       Any: The coerced value, or the ``_UNSET`` sentinel when no member matched.
     """
@@ -454,6 +459,7 @@ def _coerce_union(value: Any, hint: Any, args: tuple[Any, ...], path: str, colle
         # directly against it in a single pass: its own nested issues surface, and
         # its ``__post_init__`` / ``__validate__`` run exactly once.
         return _coerce(value, non_none[0], path, collector)
+    attempts: list[tuple[Any, _IssueCollector]] = []
     for candidate in non_none:
         # Probe each member with a throwaway collector so member-level failures
         # stay silent; the first clean conversion wins. Member order is precedence.
@@ -462,7 +468,18 @@ def _coerce_union(value: Any, hint: Any, args: tuple[Any, ...], path: str, colle
         result = _coerce(value, candidate, path, trial)
         if result is not _UNSET and trial.clean():
             return result
-    return _reject(collector, path, f"expected {_hint_name(hint)}, got {_typename(value)}")
+        attempts.append((candidate, trial))
+
+    failures = [attempt for attempt in attempts if not attempt[1].clean()]
+    if len(failures) == 0:
+        return _reject(collector, path, f"expected {_hint_name(hint)}, got {_typename(value)}")
+    # min is stable, so equal issue counts keep declaration order.
+    candidate, best = min(failures, key=lambda attempt: len(attempt[1].issues))
+    count = len(best.issues)
+    noun = "issue" if count == 1 else "issues"
+    collector.add(path, f"expected {_hint_name(hint)}; best match {_hint_name(candidate)} failed with {count} {noun}")
+    collector.extend(best.issues)
+    return _UNSET
 
 
 def _coerce_items(items: list[Any], element_hints: list[Any], path: str, collector: _IssueCollector) -> Any:

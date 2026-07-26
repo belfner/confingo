@@ -157,8 +157,10 @@ def _check_runtime_form(value: Any, hint: Any, path: str, collector: _IssueColle
         _check_container(value, plan.stripped, plan.origin, plan.args, path, collector, seen)
         return
     if kind is _HintKind.BARE_CONTAINER:
-        if not isinstance(value, plan.bare_origin):
-            collector.add(path, _mismatch(hint, value))
+        # Elements pass through under Any, but the container's own rules still
+        # apply: a bare mapping carries str keys the same way an annotated one
+        # does, so its plain form reloads through the same annotation.
+        _check_container(value, plan.stripped, plan.bare_origin, (), path, collector, seen)
         return
     _check_scalar(value, plan.stripped, path, collector)
 
@@ -184,7 +186,7 @@ def _check_array(value: Any, match: _arrays.AnnotationMatch, hint: Any, path: st
     trial = _IssueCollector(collector.backend)
     result = _arrays.coerce_array(value, match.spec, path, trial.add)
     if result is _arrays.FAILED:
-        collector.issues.extend(trial.issues)
+        collector.extend(trial.issues)
         return
     if result is not value:
         collector.add(path, _mismatch(hint, value))
@@ -226,6 +228,11 @@ def _check_section(
 ) -> None:
     """Check a nested config object default, recursing into its constructor fields.
 
+    The annotated class is required exactly, because that is the class the engine
+    builds and the class ``to_dict`` projects through. A subclass instance carries
+    fields the annotation does not know, which export and then fail to reload as
+    unknown keys. A union naming the subclass is the way to allow one.
+
     Args:
       value (Any): The authored section object.
       section_cls (type[Any] | None): The dataclass the annotation names.
@@ -235,14 +242,14 @@ def _check_section(
       seen (set[int]): Ids of the config objects on the current branch, so a
         section holding itself terminates.
     """
-    if section_cls is None or not isinstance(value, section_cls):
+    if section_cls is None or type(value) is not section_cls:
         collector.add(path, _mismatch(hint, value))
         return
     if id(value) in seen:
         return
     branch = seen | {id(value)}
-    hints = _resolved_hints(type(value))
-    for classified in _classify_dataclass_fields(type(value)).init_fields:
+    hints = _resolved_hints(section_cls)
+    for classified in _classify_dataclass_fields(section_cls).init_fields:
         name = classified.definition.name
         held = getattr(value, name, None)
         _check_runtime_form(held, hints[name], _join(path, name), collector, branch)

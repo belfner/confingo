@@ -59,6 +59,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   value alike. A `TypedDict`, a `NamedTuple`, and a class with no annotations of
   its own stay on the type-boundary message.
 
+### Fixed
+
+- A failed multi-member union reports which branch came closest and why. The
+  field carries a summary -- `optimizer: expected AdamW | SGD; best match SGD
+  failed with 1 issue` -- followed by that one member's own issues at their own
+  paths, in place of the single type-name mismatch it reported before. The
+  closest member is the one whose attempt collected the fewest issues, an equal
+  count going to the first declared member, so two discriminator variants that
+  each fail once on a typo report through the first. Selection is unchanged:
+  declaration order, first member that coerces cleanly, and `T | None` still
+  coerces straight through `T`. A successful load produces the same value; only
+  the issue list of a failed one changes.
+
 ### Added
 
 - A `ConfigNode` subclass reserves the eleven facade names (`from_dict`,

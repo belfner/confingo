@@ -16,8 +16,12 @@ from dataclasses import (
 from decimal import Decimal
 from typing import (
     Any,
+    ClassVar,
+    Generic,
     NamedTuple,
+    Protocol,
     TypedDict,
+    TypeVar,
 )
 
 import pytest
@@ -198,3 +202,103 @@ def test_boundary_and_decorator_issues_aggregate():
     reported = _messages(TwoProblems)
     assert reported["server"] == f"Forgot {DECORATOR_REMEDY}"
     assert reported["amount"] == f"unsupported field type Decimal; {BOUNDARY_REMEDY}"
+
+
+# --- classes whose annotations belong to something else -----------------------
+
+
+EVALUATED: list[str] = []
+
+
+def _mark() -> type:
+    """Record that an annotation expression was evaluated.
+
+    Returns:
+      type: A throwaway annotation type.
+    """
+    EVALUATED.append("mark")
+    return int
+
+
+class DataProtocol(Protocol):
+    host: str
+
+
+T = TypeVar("T")
+
+
+class Box(Generic[T]):
+    value: T
+
+
+class ForeignModel:
+    __attrs_attrs__: ClassVar[tuple[Any, ...]] = ()
+    host: str
+
+
+class Constants:
+    MAX: ClassVar[int] = 10
+
+
+class UnresolvableConstant:
+    MAX: ClassVar[Missing]  # noqa: F821  # pyrefly: ignore[unknown-name]  (deliberately unresolvable)
+
+
+class SideEffectAnnotation:
+    # Stored as the source text "_mark()"; evaluating it would append to EVALUATED.
+    # pyrefly: ignore[invalid-annotation]
+    value: _mark()
+
+
+@dataclass
+class HasProtocol:
+    server: DataProtocol = None  # pyrefly: ignore[bad-assignment]
+
+
+@dataclass
+class HasGeneric:
+    box: Box = None  # pyrefly: ignore[bad-assignment, implicit-any-type-argument]
+
+
+@dataclass
+class HasForeignModel:
+    model: ForeignModel = None  # pyrefly: ignore[bad-assignment]
+
+
+@dataclass
+class HasConstants:
+    limits: Constants = None  # pyrefly: ignore[bad-assignment]
+
+
+@dataclass
+class HasUnresolvableConstant:
+    limits: UnresolvableConstant = None  # pyrefly: ignore[bad-assignment]
+
+
+@dataclass
+class HasSideEffectAnnotation:
+    thing: SideEffectAnnotation = None  # pyrefly: ignore[bad-assignment]
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "path", "rendered"),
+    [
+        (HasProtocol, "server", "DataProtocol"),
+        (HasGeneric, "box", "Box"),
+        (HasForeignModel, "model", "ForeignModel"),
+        (HasConstants, "limits", "Constants"),
+        (HasUnresolvableConstant, "limits", "UnresolvableConstant"),
+    ],
+)
+def test_deliberate_declarations_stay_on_the_type_boundary(config_cls: type[Any], path: str, rendered: str):
+    # A protocol, a generic class carrying type parameters, a model belonging to
+    # another schema system, and class constants each declare annotations for a
+    # reason of their own, so the decorator remedy would be wrong advice.
+    assert _messages(config_cls)[path] == f"unsupported field type {rendered}; {BOUNDARY_REMEDY}"
+
+
+def test_preflight_does_not_evaluate_an_unsupported_class_annotation():
+    EVALUATED.clear()
+    reported = _messages(HasSideEffectAnnotation)
+    assert reported["thing"] == f"SideEffectAnnotation {DECORATOR_REMEDY}"
+    assert EVALUATED == []
