@@ -94,6 +94,7 @@ from confingo._schema import (
     _strip_annotated,
     _typename,
     _validate_schema,
+    unsupported_hint_message,
 )
 
 
@@ -377,7 +378,7 @@ def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any
         return _reject(collector, path, f"expected one of {_hint_name(plan.stripped)}, got {value!r}")
     if kind is _HintKind.BARE_CONTAINER:
         return _coerce_container(value, plan.stripped, plan.bare_origin, (), path, collector)
-    return _reject(collector, path, f"unsupported field type {_hint_name(plan.stripped)}")
+    return _reject(collector, path, unsupported_hint_message(plan.stripped))
 
 
 def _coerce_any(value: Any, path: str, collector: _IssueCollector) -> Any:
@@ -599,7 +600,7 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
             value = normalized
 
     if not isinstance(hint, type):
-        return _reject(collector, path, f"unsupported field type {_hint_name(hint)}")
+        return _reject(collector, path, unsupported_hint_message(hint))
 
     if issubclass(hint, Enum):
         return _coerce_enum(value, hint, path, collector)
@@ -635,7 +636,7 @@ def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector)
             return value
         return _coerce_iso(value, dt.time.fromisoformat, "time", path, collector)
 
-    return _reject(collector, path, f"unsupported field type {hint.__name__}")
+    return _reject(collector, path, unsupported_hint_message(hint))
 
 
 def _coerce_enum(value: Any, hint: type[Enum], path: str, collector: _IssueCollector) -> Any:

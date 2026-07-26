@@ -45,6 +45,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on unchanged, and a factory that raises reports as
   `items: default_factory raised ValueError: <message>`. Write defaults in the
   annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`.
+- The type-boundary message names the supported annotation categories and the
+  `init=False` remedy: `unsupported field type Decimal; choose a supported
+  annotation (bool, int, float, str, Path, date/time, Enum/Literal, dataclass,
+  container/union, array/tensor, or Any) and derive other runtime values in an
+  init=False field`. One builder produces it, so schema preflight and
+  construction word the boundary identically.
+- A class named as a field type that declares its own annotations without being
+  a dataclass reports the decorator remedy at that field's path, `server: Forgot
+  is not a dataclass, so it carries no config schema. Declare it with
+  @dataclass.`, matching what an entry class of the same shape already reported.
+  It reaches the field through a section, a container, a union, or a mapping
+  value alike. A `TypedDict`, a `NamedTuple`, and a class with no annotations of
+  its own stay on the type-boundary message.
 
 ### Added
 

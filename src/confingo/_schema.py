@@ -433,8 +433,83 @@ def _entry_type_message(config_cls: type[Any]) -> str | None:
     node_message = _node_message(config_cls)
     if node_message is not None:
         return node_message
+    return missing_dataclass_message(config_cls)
+
+
+def missing_dataclass_message(config_cls: Any) -> str:
+    """Build the rejection message for a class carrying no config schema.
+
+    Shared by the entry route and the nested-field route so a class named as a
+    section reads the same way wherever it turns up.
+
+    Args:
+      config_cls (Any): The class that carries no schema.
+
+    Returns:
+      str: The rejection message naming the class and the required remedy.
+    """
     label = getattr(config_cls, "__name__", _typename(config_cls))
     return f"{label} is not a dataclass, so it carries no config schema. Declare it with @dataclass."
+
+
+_SUPPORTED_ANNOTATIONS = (
+    "bool, int, float, str, Path, date/time, Enum/Literal, dataclass, container/union, array/tensor, or Any"
+)
+"""The supported annotation categories, named in every type-boundary message."""
+
+
+def unsupported_hint_message(hint: Any) -> str:
+    """Build the message for an annotation outside the supported type set.
+
+    A class that looks like a schema whose declaration skipped ``@dataclass``
+    routes to the decorator remedy instead, since naming the supported categories
+    would answer a question the author did not ask.
+
+    Args:
+      hint (Any): The resolved type hint that has no supported handling.
+
+    Returns:
+      str: Either the missing-decorator message or the type-boundary message.
+    """
+    if _looks_like_undecorated_schema(hint):
+        return missing_dataclass_message(hint)
+    return (
+        f"unsupported field type {_hint_name(hint)}; choose a supported annotation "
+        f"({_SUPPORTED_ANNOTATIONS}) and derive other runtime values in an init=False field"
+    )
+
+
+def _looks_like_undecorated_schema(hint: Any) -> bool:
+    """Report whether a class declares schema-shaped annotations without being a dataclass.
+
+    The signal is a class that carries its own non-``ClassVar`` annotations and no
+    dataclass fields, which is what a section reads like when its declaration
+    skipped the decorator. Typing constructs that legitimately carry annotations
+    without being dataclasses -- ``TypedDict`` and ``NamedTuple`` -- are excluded,
+    since an author who reached for one of them chose it deliberately.
+
+    Args:
+      hint (Any): The resolved type hint that has no supported handling.
+
+    Returns:
+      bool: True when the remedy is to decorate the class with ``@dataclass``.
+    """
+    if not isinstance(hint, type) or is_dataclass(hint):
+        return False
+    if typing.is_typeddict(hint):
+        return False
+    if issubclass(hint, tuple) and hasattr(hint, "_fields"):
+        return False
+    own = hint.__dict__.get("__annotations__", {})
+    if len(own) == 0:
+        return False
+    try:
+        resolved = get_type_hints(hint)
+    except (NameError, TypeError):
+        # Annotations that will not resolve still read as a schema declaration,
+        # and the decorator is the remedy that surfaces the resolution error.
+        return True
+    return any(not _is_class_var(resolved.get(name, Any)) for name in own)
 
 
 def _undecorated_node_message(config_cls: type[Any], hints: Mapping[str, Any]) -> str | None:
@@ -593,7 +668,7 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
 
     if origin is not None:
         if origin not in _CONTAINER_ORIGINS:
-            issues.append(ConfigIssue(path, f"unsupported field type {_hint_name(hint)}"))
+            issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
             return
         if origin in (dict, Mapping):
             key_hint = args[0] if len(args) == 2 else str
@@ -630,7 +705,7 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
         if hint in (bool, int, float, str) or issubclass(hint, (Path, dt.date, dt.time)):
             return
 
-    issues.append(ConfigIssue(path, f"unsupported field type {_hint_name(hint)}"))
+    issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
 
 
 def _holds_config_section(hint: Any) -> bool:
