@@ -36,10 +36,12 @@ Values are layered lowest to highest precedence:
 2. the mapping passed to ``from_dict`` (typically parsed from a config file).
 
 A field absent from the mapping falls back to its declared default, used as the
-author wrote it; defaults are trusted rather than re-coerced. A dataclass-typed
-field with no default builds implicitly from an empty mapping, recursively, so
-its own required values are reported at their nested dotted paths. Every other
-field with no default is required.
+author wrote it. Defaults are validated against their annotation and their plain
+form, then used exactly as authored, so a default already carries the runtime
+type the annotation names. A dataclass-typed field with no default builds
+implicitly from an empty mapping, recursively, so its own required values are
+reported at their nested dotted paths. Every other field with no default is
+required.
 
 Validation:
 ``from_dict`` walks the whole dataclass tree before raising, so one call reports
@@ -58,6 +60,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from dataclasses import MISSING
 from enum import Enum
 from pathlib import Path
 from typing import (
@@ -68,6 +71,10 @@ from typing import (
 )
 
 from confingo import _arrays
+from confingo._defaults import (
+    FACTORY_LABEL,
+    validate_authored_value,
+)
 from confingo._errors import (
     _UNSET,
     ConfigError,
@@ -76,6 +83,7 @@ from confingo._errors import (
 )
 from confingo._schema import (
     _SEQUENCE_BUILDERS,
+    _ClassifiedField,
     _classify_dataclass_fields,
     _classify_hint,
     _hint_name,
@@ -117,6 +125,13 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
     container distinct from an intentionally empty one authored as
     ``field(default_factory=list)``. Explicit defaults and factories take
     precedence and are used as authored.
+
+    Authored defaults are validated rather than coerced. A direct
+    ``field(default=...)`` value is checked during schema preflight, so a wrong
+    default is reported whether or not the input supplies the field. A selected
+    ``default_factory`` runs once here, and its one product is validated and
+    passed on unchanged. Both gates require the value to already carry the
+    annotation's runtime type and to have a plain serializable form.
 
     An ``init=False`` field is runtime state: it is not built from the mapping
     (supplying its key is reported as not configurable), and it is populated by
@@ -192,24 +207,13 @@ def _build(
         field = classified.definition
         field_path = _join(path, field.name)
         if field.name not in data:
-            if not classified.has_default:
-                hint = _strip_annotated(hints[field.name])
-                if _is_dataclass_type(hint):
-                    # An absent dataclass section builds implicitly from an empty
-                    # mapping, so its own required leaves surface at their nested
-                    # paths. The chain terminates self-referential schemas.
-                    if hint in implicit_chain:
-                        collector.add(field_path, "missing required value")
-                        node_failed = True
-                        continue
-                    built = _build(hint, {}, field_path, collector, (*implicit_chain, hint))
-                    if built is _UNSET:
-                        node_failed = True
-                        continue
-                    kwargs[field.name] = built
-                    continue
-                collector.add(field_path, "missing required value")
+            supplied = _absent_field_value(
+                classified, hints[field.name], field_path, collector, implicit_chain=implicit_chain
+            )
+            if supplied is _UNSET:
                 node_failed = True
+            elif supplied is not _KEEP_DECLARED:
+                kwargs[field.name] = supplied
             continue
         coerced = _coerce(data[field.name], hints[field.name], field_path, collector)
         if coerced is _UNSET:
@@ -247,6 +251,76 @@ def _build(
         for message in typing.cast("Iterable[Any]", validate()):
             collector.add(path, str(message))
     return instance
+
+
+_KEEP_DECLARED = object()
+"""Sentinel meaning a field is left out of ``kwargs`` so its declaration applies."""
+
+
+def _absent_field_value(
+    classified: _ClassifiedField,
+    hint: Any,
+    path: str,
+    collector: _IssueCollector,
+    *,
+    implicit_chain: tuple[type[Any], ...],
+) -> Any:
+    """Decide what an ``init=True`` field the input omitted contributes to ``kwargs``.
+
+    Args:
+      classified (_ClassifiedField): The omitted field's classification.
+      hint (Any): The field's resolved type hint.
+      path (str): Dotted path of the field.
+      collector (_IssueCollector): Destination for any issues found.
+      implicit_chain (tuple[type[Any], ...]): Dataclass types currently being built
+        implicitly on this branch, used to terminate self-referential schemas.
+
+    Returns:
+      Any: The value to pass in ``kwargs``, the ``_KEEP_DECLARED`` sentinel when
+        the field's own default applies, or the ``_UNSET`` sentinel when the field
+        failed.
+    """
+    field = classified.definition
+    if field.default_factory is not MISSING:
+        # The factory is selected, so it runs exactly once here and its one product
+        # is validated and passed on; leaving it out of kwargs would let the
+        # constructor call it a second time and store a value nothing checked.
+        return _selected_factory_value(field.default_factory, hint, path, collector)
+    if classified.has_default:
+        # A direct default is validated during schema preflight and applied by the
+        # generated __init__.
+        return _KEEP_DECLARED
+    stripped = _strip_annotated(hint)
+    if not _is_dataclass_type(stripped):
+        return _reject(collector, path, "missing required value")
+    # An absent dataclass section builds implicitly from an empty mapping, so its
+    # own required leaves surface at their nested paths. The chain terminates
+    # self-referential schemas.
+    if stripped in implicit_chain:
+        return _reject(collector, path, "missing required value")
+    return _build(stripped, {}, path, collector, (*implicit_chain, stripped))
+
+
+def _selected_factory_value(factory: Callable[[], Any], hint: Any, path: str, collector: _IssueCollector) -> Any:
+    """Run a selected ``default_factory`` once and validate the value it produced.
+
+    Args:
+      factory (Callable[[], Any]): The selected factory.
+      hint (Any): The resolved type hint the produced value must already carry.
+      path (str): Dotted path of the field.
+      collector (_IssueCollector): Destination for any issues found.
+
+    Returns:
+      Any: The produced object, unchanged, or the ``_UNSET`` sentinel when the
+        factory raised or its value failed validation.
+    """
+    try:
+        produced = factory()
+    except (TypeError, ValueError) as exc:
+        return _reject(collector, path, f"default_factory raised {type(exc).__name__}: {exc}")
+    if not validate_authored_value(produced, hint, path, collector, label=FACTORY_LABEL):
+        return _UNSET
+    return produced
 
 
 def _coerce(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any:

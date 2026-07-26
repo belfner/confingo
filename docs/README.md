@@ -59,7 +59,7 @@ Typical homes are ML training runs, experiment sweeps, and services that load co
 Schema:
 
 - [Sections build implicitly, hoisting required values to their dotted paths](schema-design.md#implicit-sections-and-leaf-level-requirements)
-- [Defaults are trusted as authored and used exactly as written](schema-design.md#leaf-defaults-and-precedence)
+- [Defaults are validated against their annotation, then used exactly as written](schema-design.md#leaf-defaults-and-precedence)
 
 Types:
 

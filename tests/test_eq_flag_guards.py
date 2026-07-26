@@ -412,10 +412,20 @@ def test_slots_completeness_check_fires_on_unset_init_false_field():
         from_dict(SlotsIncompleteRoot, {"v": 1})
 
 
+def test_slotted_plain_section_is_unhashable_after_first_touch():
+    from_dict(SlotsRoot, {"inner": {"lr": 0.5}})
+    assert SlotsInner.__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(SlotsInner(lr=0.5))
+
+
 def test_slots_with_weakref_slot_accepted():
     built = from_dict(SlotsWeakrefRoot, {"x": 5})
     assert built.x == 5
     assert SlotsWeakrefRoot(1) == SlotsWeakrefRoot(1)
+    assert SlotsWeakrefRoot.__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(built)
 
 
 # --- generated methods are not misflagged -------------------------------------

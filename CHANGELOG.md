@@ -17,6 +17,34 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same generic recursion either way, so an enclosing load produces identical
   values, exported data, digests, and issue paths. Update imports and base
   classes from `ConfigRoot` to `ConfigNode`.
+- **Breaking.** Config dataclasses are unhashable. From its first schema
+  processing a class carries `__hash__ = None`, so `hash(config)`, a config as a
+  mapping key, and a config in a set each raise `TypeError`;
+  `config_hash(config)` is the stable value-identity operation. This covers
+  frozen configs, where Python otherwise generates a field-tuple hash that
+  disagrees with canonical equality and raises on array fields. A `ConfigNode`
+  subclass holds the same contract from class creation through a `__hash__` that
+  raises `TypeError: unhashable type: 'RunConfig'; use config_hash(config) for
+  value identity`. Replace `hash(config)` and set or mapping membership with
+  `config_hash(config)`.
+- **Breaking.** Set annotations whose elements carry a config section --
+  directly, through a union, or inside an immutable `tuple` / `frozenset` shape
+  -- are rejected at schema preflight, naming the annotation as written and
+  pointing at a list or tuple for the collection plus `config_hash(section)` as
+  the value-identity key. Sets of hashable values are unaffected. Rewrite
+  `frozenset[Section]` as `list[Section]` or `tuple[Section, ...]`.
+- **Breaking.** Authored defaults are validated rather than trusted. A default
+  has to already carry the runtime type its annotation names and to have a plain
+  serializable form, so `output_dir: Path = "runs"` is reported as an authoring
+  error rather than promoted to `Path("runs")`, as are a list default for a tuple
+  field, an integral float for an `int` field, a mapping for a section, and a
+  value under `Any` with no plain form. A direct `field(default=...)` is checked
+  during schema preflight, whether or not the input supplies the field, so a
+  wrong default surfaces even where it is always overridden. A `default_factory`
+  runs once at the build that selects it; its one product is validated and passed
+  on unchanged, and a factory that raises reports as
+  `items: default_factory raised ValueError: <message>`. Write defaults in the
+  annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`.
 
 ### Added
 
@@ -53,19 +81,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   replacing the generated `__eq__` it carried. The new
   `config_equal(left, right)` free function exposes the same relation ahead of
   any engine call.
-- Config dataclasses are unhashable. From its first schema processing a class
-  carries `__hash__ = None`, so `hash(config)`, a config as a mapping key, and a
-  config in a set each raise `TypeError`; `config_hash(config)` is the stable
-  value-identity operation. This covers frozen configs, where Python otherwise
-  generates a field-tuple hash that disagrees with canonical equality and raises
-  on array fields. A `ConfigNode` subclass holds the same contract from class
-  creation through a `__hash__` that raises `TypeError: unhashable type:
-  'RunConfig'; use config_hash(config) for value identity`.
-- Set annotations whose elements carry a config section -- directly, through a
-  union, or inside an immutable `tuple` / `frozenset` shape -- are rejected at
-  schema preflight, naming the annotation as written and pointing at a list or
-  tuple for the collection plus `config_hash(section)` as the value-identity key.
-  Sets of hashable values are unaffected.
 - confingo owns equality and hashing on config dataclasses: a class that
   hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at
   class creation (both reported together when it defines both), a section at its

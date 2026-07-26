@@ -31,7 +31,7 @@ The sections below are the authoritative rules for each row.
 ## How coercion works
 
 - `from_dict` moves each supplied value toward its field's annotation, collecting an issue when the value's shape is outside what the annotation accepts.
-- Defaults are used exactly as authored. See [defaults and precedence](schema-design.md#leaf-defaults-and-precedence).
+- Defaults are validated against their annotation and their plain form, then used exactly as authored. Coercion applies to supplied values alone, so a default has to be written in the type its annotation names. See [defaults and precedence](schema-design.md#leaf-defaults-and-precedence).
 - `to_dict` converts the built tree back to plain data: dicts, lists, strings, numbers, booleans, and `None`.
 
 

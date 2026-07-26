@@ -93,7 +93,10 @@ def _issues(config_cls: type[Any]) -> list[tuple[str, str]]:
 
 
 def test_frozenset_of_sections_is_rejected_with_both_remedies():
-    assert _issues(DirectFrozenset) == [
+    with pytest.raises(ConfigError) as info:
+        from_dict(DirectFrozenset, {}, context="training.yaml")
+    assert info.value.context == "training.yaml"
+    assert [(issue.path, issue.message) for issue in info.value.issues] == [
         (
             "sections",
             "config sections are unhashable, so frozenset[Section] cannot be built; use a list or tuple for "
@@ -145,11 +148,19 @@ class ScalarSets:
 def test_scalar_sets_build_and_deduplicate():
     built = from_dict(
         ScalarSets,
-        {"tags": ["b", "a", "b"], "seeds": [2, 1, 2], "mixed": [1, "1"], "bare": ["x"], "opaque": [3]},
+        {
+            "tags": ["b", "a", "b"],
+            "seeds": [2, 1, 2],
+            "mixed": [1, "1"],
+            "bare": ["x", "x", "y"],
+            "opaque": [3, 3, 4],
+        },
     )
     assert built.tags == {"a", "b"}
     assert built.seeds == frozenset({1, 2})
     assert built.mixed == {1, "1"}
+    assert built.bare == {"x", "y"}
+    assert built.opaque == {3, 4}
 
 
 def test_scalar_sets_serialize_deterministically_and_round_trip():

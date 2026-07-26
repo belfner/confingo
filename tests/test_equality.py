@@ -134,8 +134,10 @@ class SlottedUntouched(ConfigNode):
 @pytest.mark.parametrize("node_cls", [MutableUntouched, FrozenUntouched, SlottedUntouched])
 def test_node_sentinel_survives_decoration_then_becomes_none_at_first_touch(node_cls: type[ConfigNode]):
     assert node_cls.__dict__["__hash__"] is _unhashable_config
-    with pytest.raises(TypeError, match=r"unhashable type: '\w+'; use config_hash\(config\) for value identity"):
+    expected = f"unhashable type: '{node_cls.__name__}'; use config_hash(config) for value identity"
+    with pytest.raises(TypeError) as info:
         hash(node_cls())
+    assert str(info.value) == expected
     node_cls.from_dict({})
     assert node_cls.__dict__["__hash__"] is None
     with pytest.raises(TypeError, match="unhashable type"):

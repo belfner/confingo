@@ -70,12 +70,18 @@ A file supplying `{"schedule": {"warmup": {"steps": 500}}, "stages": ["warmup", 
 
 Defaults form the base layer; the input mapping overrides whichever leaves it supplies.
 
-The two layers are treated differently. Supplied values travel through [coercion](types-and-coercion.md), while defaults are trusted as authored: a defaulted field receives exactly the object you wrote in the declaration, byte for byte. Author defaults that already have the annotated type (`Path("runs")` for a `Path` field, `0.1` for a `float` field) so both code paths produce the same shapes.
+The two layers are treated differently. Supplied values travel through [coercion](types-and-coercion.md), while defaults are validated and then used exactly as authored: a defaulted field receives the object you wrote in the declaration, byte for byte. Write defaults that already have the annotated type -- `Path("runs")` for a `Path` field, `0.1` for a `float` field -- so both layers produce the same shapes.
+
+Validation is what holds that rule up. A default has to arrive in the form coercion would otherwise have produced, and it has to have a plain serializable form, so a config built entirely from defaults writes back out and reloads unchanged. `output_dir: Path = "runs"` is reported as an authoring error rather than promoted to `Path("runs")`, and so are a list default for a tuple field, an integral float for an `int` field, and a mapping for a section. A direct `field(default=...)` is checked during schema preflight, whether or not the input supplies the field, so a wrong default surfaces even in a project that always overrides it:
+
+```text
+output_dir: invalid authored default: expected a value already matching Path, got str; defaults are validated as written
+```
 
 
 ## Authored factories and partial files
 
-An explicit `field(default_factory=...)` takes precedence over the implicit build and is used as authored, which makes it the tool for baseline sections whose fallback differs from the section's own defaults:
+An explicit `field(default_factory=...)` takes precedence over the implicit build and is used as authored, which makes it the tool for baseline sections whose fallback differs from the section's own defaults. The factory runs once, at the one build that selects it, and its product goes through the same validation a direct default does before it reaches the object:
 
 ```python
 from dataclasses import (

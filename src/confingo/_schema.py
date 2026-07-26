@@ -42,6 +42,7 @@ from confingo import _arrays
 from confingo._errors import (
     ConfigError,
     ConfigIssue,
+    _IssueCollector,
 )
 
 
@@ -522,7 +523,36 @@ def _validate_dataclass_schema(
             # boundary; their annotation need only resolve, checked by
             # _resolved_hints above.
             continue
+        before = len(issues)
         _validate_hint_schema(hints[field.name], field_path, issues, seen)
+        if len(issues) == before and field.default is not MISSING:
+            # The annotation holds up, so the authored default can be judged
+            # against it. The value already exists, so reading it runs no
+            # user code on this cached path; a default_factory is left to the
+            # one build that selects it.
+            _validate_direct_default(field.default, hints[field.name], field_path, issues)
+
+
+def _validate_direct_default(value: Any, hint: Any, path: str, issues: list[ConfigIssue]) -> None:
+    """Collect schema issues for one authored ``field(default=...)`` value.
+
+    The import is deferred because ``_defaults`` reads this module's hint
+    classification and the serialization walk, both of which sit above it.
+
+    Args:
+      value (Any): The authored default object.
+      hint (Any): The resolved type hint of the field carrying it.
+      path (str): Dotted schema path of the field.
+      issues (list[ConfigIssue]): Destination for any schema issues found.
+    """
+    from confingo._defaults import (  # noqa: PLC0415
+        DEFAULT_LABEL,
+        validate_authored_value,
+    )
+
+    collector = _IssueCollector()
+    validate_authored_value(value, hint, path, collector, label=DEFAULT_LABEL)
+    issues.extend(collector.issues)
 
 
 def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen: set[type[Any]]) -> None:
