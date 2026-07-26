@@ -17,7 +17,10 @@ from confingo import (
     from_dict,
     to_dict,
 )
-from confingo._equality import _canonical_eq
+from confingo._equality import (
+    _canonical_eq,
+    _unhashable_config,
+)
 
 
 # --- schema fixtures (module level so annotations resolve) --------------------
@@ -50,7 +53,6 @@ class SlottedRoot(ConfigNode):
 
 def test_root_subclass_carries_canonical_eq_from_class_creation():
     assert Tree.__dict__["__eq__"] is _canonical_eq
-    assert Tree.__hash__ is object.__hash__
 
 
 def test_root_equality_recurses_before_any_engine_call():
@@ -60,9 +62,8 @@ def test_root_equality_recurses_before_any_engine_call():
     assert left != Tree(section=Section(lr=1e-3), seed=1)
 
 
-def test_frozen_root_keeps_canonical_eq_and_identity_hash():
+def test_frozen_root_keeps_canonical_eq_without_a_generated_hash():
     assert FrozenRoot.__dict__["__eq__"] is _canonical_eq
-    assert FrozenRoot.__hash__ is object.__hash__
     assert FrozenRoot() == FrozenRoot()
     with pytest.raises(dataclasses.FrozenInstanceError):
         FrozenRoot().x = 2  # pyrefly: ignore[read-only]
@@ -87,9 +88,14 @@ def test_root_body_eq_is_rejected_at_class_creation():
             __hash__ = object.__hash__
 
 
-def test_identity_hash_keeps_equal_roots_distinct_in_sets():
-    pair = {Tree(), Tree()}
-    assert len(pair) == 2
+def test_equal_roots_cannot_enter_a_set():
+    with pytest.raises(TypeError, match="unhashable type"):
+        {Tree(), Tree()}
+
+
+def test_config_objects_are_rejected_as_mapping_keys():
+    with pytest.raises(TypeError, match="unhashable type"):
+        {Tree(): "value"}
 
 
 def test_foreign_types_get_not_implemented():
@@ -102,6 +108,38 @@ def test_foreign_types_get_not_implemented():
 def test_round_trip_equality_reads_literally():
     config = Tree(section=Section(name="sgd"), seed=7)
     assert from_dict(Tree, to_dict(config)) == config
+
+
+# --- the two-stage unhashable contract on nodes -------------------------------
+#
+# Each class below is touched by exactly one test, since the pre-touch stage is
+# observable only until the first engine call reaches the class.
+
+
+@dataclass
+class MutableUntouched(ConfigNode):
+    x: int = 1
+
+
+@dataclass(frozen=True)
+class FrozenUntouched(ConfigNode):
+    x: int = 1
+
+
+@dataclass(slots=True)
+class SlottedUntouched(ConfigNode):
+    x: int = 1
+
+
+@pytest.mark.parametrize("node_cls", [MutableUntouched, FrozenUntouched, SlottedUntouched])
+def test_node_sentinel_survives_decoration_then_becomes_none_at_first_touch(node_cls: type[ConfigNode]):
+    assert node_cls.__dict__["__hash__"] is _unhashable_config
+    with pytest.raises(TypeError, match=r"unhashable type: '\w+'; use config_hash\(config\) for value identity"):
+        hash(node_cls())
+    node_cls.from_dict({})
+    assert node_cls.__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(node_cls())
 
 
 # --- canonical-equality injection on plain dataclasses ------------------------
@@ -161,11 +199,11 @@ def test_plain_dataclass_gains_canonical_eq_at_first_schema_processing():
     assert PlainInjected(x=1) != PlainInjected(x=2)
 
 
-def test_injection_restores_identity_hash():
+def test_injection_disables_hashing():
     from_dict(PlainInjected, {})
-    assert PlainInjected.__hash__ is object.__hash__
-    pair = {PlainInjected(), PlainInjected()}
-    assert len(pair) == 2
+    assert PlainInjected.__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        {PlainInjected(), PlainInjected()}
 
 
 def test_plain_section_under_a_root_is_injected():
@@ -189,11 +227,14 @@ def test_eq_false_dataclass_is_rejected():
         from_dict(PlainEqFalse, {})
 
 
-def test_plain_frozen_gains_canonical_eq_and_identity_hash():
+def test_plain_frozen_gains_canonical_eq_and_loses_its_generated_hash():
+    assert PlainFrozen.__dict__["__hash__"] is not None
     from_dict(PlainFrozen, {})
     assert PlainFrozen.__dict__["__eq__"] is _canonical_eq
-    assert PlainFrozen.__dict__["__hash__"] is object.__hash__
+    assert PlainFrozen.__dict__["__hash__"] is None
     assert PlainFrozen(x=1) == PlainFrozen(x=1)
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(PlainFrozen(x=1))
 
 
 def test_canonical_eq_compares_serialized_container_forms():

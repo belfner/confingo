@@ -21,12 +21,14 @@ classes involved.
 confingo owns equality and hashing on config dataclasses: ``_install_canonical_eq``
 rejects a class that hand-writes ``__eq__`` or ``__hash__``, or that declares a
 ``@dataclass`` flag it cannot honor (``init=False``, ``unsafe_hash=True``,
-``eq=False``, ``order=True``), and reduces a generated ``__hash__`` -- the None of
-a mutable dataclass or the field-tuple hash of a frozen one -- to identity hashing
-so every config shares one value-equality plus identity-hash model. Provenance is
-told from a hand-written method by matching its code object against dataclass
-codegen on the current interpreter; a method fabricated to be byte-identical to
-that codegen is treated as generated.
+``eq=False``, ``order=True``), and sets ``__hash__`` to None so every config shares
+one value-equality plus unhashable model and ``config_hash`` is the single
+value-identity operation. A ``ConfigNode`` subclass carries the private
+``_unhashable_config`` sentinel between class creation and that first touch, so a
+node raises a remedy-naming ``TypeError`` for the whole window. Provenance is told
+from a hand-written method by matching its code object against dataclass codegen on
+the current interpreter; a method fabricated to be byte-identical to that codegen is
+treated as generated.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from dataclasses import (
 from typing import (
     TYPE_CHECKING,
     Any,
+    NoReturn,
 )
 
 from confingo import _arrays
@@ -157,6 +160,24 @@ def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
     return all(_values_equal(getattr(self, c.definition.name), getattr(other, c.definition.name)) for c in compared)
 
 
+def _unhashable_config(self: Any) -> NoReturn:
+    """Reject hashing a config object, naming the value-identity operation instead.
+
+    Planted on every ``ConfigNode`` subclass at class creation, where a non-None
+    ``__hash__`` is what makes ``@dataclass`` treat hashing as already decided and
+    leave it alone. That covers the window before confingo first processes the
+    class, after which ``__hash__`` becomes None and Python raises its own
+    ``TypeError``.
+
+    Args:
+      self (Any): The config object a hash was requested for.
+
+    Raises:
+      TypeError: Always, naming ``config_hash`` as the value-identity operation.
+    """
+    raise TypeError(f"unhashable type: {type(self).__name__!r}; use config_hash(config) for value identity")
+
+
 def custom_eq_message(name: str) -> str:
     """Build the rejection message for a config dataclass defining its own ``__eq__``.
 
@@ -182,8 +203,8 @@ def custom_hash_message(name: str) -> str:
       str: The rejection message naming the class and the required remedy.
     """
     return (
-        f"{name} defines a custom __hash__; confingo owns hashing and installs identity __hash__ on "
-        f"config dataclasses. Remove the __hash__ method so confingo owns hashing."
+        f"{name} defines a custom __hash__; confingo owns hashing and makes config dataclasses unhashable. "
+        f"Remove the __hash__ method and use config_hash(config) for value identity."
     )
 
 
@@ -320,13 +341,13 @@ def _custom_hash_owner(config_cls: type[Any]) -> type[Any] | None:
 
     Returns:
       type[Any] | None: The owning class when its ``__hash__`` is hand-written,
-        else None for ``object.__hash__``, an unhashable ``None``, or the
-        dataclass-generated frozen hash.
+        else None for ``object.__hash__``, an unhashable ``None``, confingo's own
+        ``_unhashable_config`` sentinel, or the dataclass-generated frozen hash.
     """
     return _custom_method_owner(
         config_cls,
         "__hash__",
-        owned=lambda method: method is None or method is object.__hash__,
+        owned=lambda method: method is None or method is object.__hash__ or method is _unhashable_config,
         names_of=lambda owner: [
             field.name for field in fields(owner) if (field.compare if field.hash is None else field.hash)
         ],
@@ -359,8 +380,8 @@ def _flag_conflicts(config_cls: type[Any]) -> list[str]:
         )
     if getattr(params, "unsafe_hash", False) is True:
         messages.append(
-            f"{name} is declared @dataclass(unsafe_hash=True); confingo owns hashing and installs identity "
-            f"__hash__. Use the default hashing."
+            f"{name} is declared @dataclass(unsafe_hash=True); confingo owns hashing and makes config "
+            f"dataclasses unhashable. Use the default hashing and config_hash(config) for value identity."
         )
     if params.eq is False:
         messages.append(
@@ -400,36 +421,36 @@ def _enforce_class_contract(config_cls: type[Any]) -> None:
         raise ConfigError(issues, context="config schema")
 
 
-def _normalize_hash(config_cls: type[Any]) -> None:
-    """Reduce a config dataclass's effective generated ``__hash__`` to identity hashing.
+def _disable_hash(config_cls: type[Any]) -> None:
+    """Make a config dataclass unhashable by setting its own ``__hash__`` to None.
 
-    A mutable dataclass sets ``__hash__`` to None and a frozen dataclass generates
-    a field-tuple hash; an undecorated dataclass subclass inherits one of those
-    from its base. Any of them is shadowed on ``config_cls`` with
-    ``object.__hash__`` -- resolved through the MRO so an inherited hash is
-    shadowed rather than the base mutated -- so every config shares one
-    value-equality plus identity-hash model and the frozen hash no longer raises
-    on array fields. A hand-written hash is rejected earlier, so only ``None`` and
-    generated hashes reach here.
+    Whatever the class arrives with -- ``object.__hash__``, the None of a mutable
+    dataclass, the field-tuple hash of a frozen one, the ``_unhashable_config``
+    sentinel a node carries from class creation, or any of those inherited by an
+    undecorated dataclass subclass -- ``config_cls`` gets its own ``None`` entry.
+    Writing it on the touched class shadows an inherited hash rather than mutating
+    the base, and after the write ``hash(config)`` raises Python's own
+    ``TypeError`` while ``config_hash`` carries value identity. A hand-written hash
+    is rejected earlier, so only confingo-owned and generated hashes reach here.
 
     Args:
       config_cls (type[Any]): The schema dataclass being processed.
     """
-    _owner, current = _resolve_owner(config_cls, "__hash__")
-    if current is object.__hash__:
+    if config_cls.__dict__.get("__hash__", _MISSING) is None:
         return
-    config_cls.__hash__ = object.__hash__  # type: ignore[method-assign]
+    config_cls.__hash__ = None  # type: ignore[method-assign]
 
 
 def _install_canonical_eq(config_cls: type[Any]) -> None:
-    """Install canonical equality and identity hashing on a schema dataclass.
+    """Install canonical equality and the unhashable contract on a schema dataclass.
 
     The class is first checked against confingo's ownership contract (no custom
     ``__eq__`` / ``__hash__``, no conflicting ``@dataclass`` flags); only then is
-    ``_canonical_eq`` installed in place of the generated ``__eq__`` and the
-    generated ``__hash__`` reduced to identity, so every config dataclass shares
-    one equality contract however it was declared. A ``ConfigNode`` subclass
-    already carries ``_canonical_eq`` from class-creation time.
+    ``_canonical_eq`` installed in place of the generated ``__eq__`` and
+    ``__hash__`` set to None, so every config dataclass shares one equality
+    contract however it was declared and ``config_hash`` is the one value-identity
+    operation. A ``ConfigNode`` subclass already carries ``_canonical_eq`` from
+    class-creation time, and its sentinel hash is replaced here.
 
     Args:
       config_cls (type[Any]): The schema dataclass being processed.
@@ -440,7 +461,7 @@ def _install_canonical_eq(config_cls: type[Any]) -> None:
     _enforce_class_contract(config_cls)
     if config_cls.__dict__.get("__eq__") is not _canonical_eq:
         config_cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
-    _normalize_hash(config_cls)
+    _disable_hash(config_cls)
 
 
 def config_equal(left: Any, right: Any) -> bool:

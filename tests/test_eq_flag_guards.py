@@ -3,7 +3,8 @@
 confingo owns equality and hashing on config dataclasses. A hand-written ``__eq__``
 or ``__hash__``, or a ``@dataclass`` flag confingo cannot honor, is rejected with a
 ``ConfigError`` -- roots at class creation for a body method, everything else at the
-first schema touch. A generated frozen ``__hash__`` is reduced to identity hashing.
+first schema touch. At that touch the class becomes unhashable, whatever ``__hash__``
+it arrived with.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from confingo import (
     from_dict,
     to_dict,
 )
+from confingo._equality import _unhashable_config
 
 
 # --- module-level fixtures (annotations resolve at module scope) --------------
@@ -271,6 +273,50 @@ def test_custom_hash_section_rejected_at_first_touch():
         from_dict(RootWithCustomHashSection, {})
 
 
+def test_custom_hash_message_names_config_hash():
+    with pytest.raises(ConfigError, match="use config_hash\\(config\\) for value identity"):
+        from_dict(RootWithCustomHashSection, {})
+
+
+# --- confingo's own hashes are told apart from hand-written ones ---------------
+
+
+@dataclass
+class SentinelBase(ConfigNode):
+    x: int = 0
+
+
+@dataclass
+class SentinelDerived(SentinelBase):
+    y: int = 0
+
+
+@dataclass
+class TouchedBase(ConfigNode):
+    x: int = 0
+
+
+def test_node_subclass_reads_an_inherited_sentinel_as_confingo_owned():
+    # The base's planted __hash__ resolves through the MRO while the subclass is
+    # being created, so the guard has to recognize it rather than report every
+    # derived node as hand-writing a hash.
+    assert SentinelDerived.__dict__["__hash__"] is _unhashable_config
+    built = from_dict(SentinelDerived, {"x": 1, "y": 2})
+    assert (built.x, built.y) == (1, 2)
+    assert SentinelDerived.__dict__["__hash__"] is None
+
+
+def test_node_subclass_declared_after_the_base_is_touched_is_accepted():
+    from_dict(TouchedBase, {})
+    assert TouchedBase.__dict__["__hash__"] is None
+
+    @dataclass
+    class LateDerived(TouchedBase):
+        pass
+
+    assert LateDerived.__dict__["__hash__"] is _unhashable_config
+
+
 # --- conflicting @dataclass flags ---------------------------------------------
 
 
@@ -324,12 +370,14 @@ def test_good_class_builds_repeatedly():
     assert config_equal(first, second)
 
 
-# --- frozen normalization -----------------------------------------------------
+# --- frozen sections are unhashable -------------------------------------------
 
 
-def test_frozen_section_hash_normalized_to_identity():
+def test_frozen_section_hash_disabled():
     built = from_dict(GoodRoot, {})
-    assert type(built.fs).__hash__ is object.__hash__
+    assert type(built.fs).__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(built.fs)
     assert to_dict(built) == {"fs": {"a": 0, "b": 1.5}, "plain": 3}
     assert config_equal(GoodRoot(), GoodRoot())
     assert config_hash(GoodRoot()) == config_hash(GoodRoot())
@@ -340,10 +388,12 @@ def test_two_equal_frozen_sections_compare_equal():
     assert FrozenSection(1, 2.0) != FrozenSection(2, 2.0)
 
 
-def test_frozen_section_with_array_is_identity_hashable_without_raising():
+def test_frozen_section_with_array_is_unhashable_rather_than_raising_on_the_array():
     built = from_dict(RootWithFrozenArray, {})
-    assert type(built.fa).__hash__ is object.__hash__
-    assert len({built.fa, built.fa}) == 1
+    assert type(built.fa).__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(built.fa)
+    assert config_hash(built.fa) == config_hash(built.fa)
 
 
 # --- slots --------------------------------------------------------------------
@@ -377,7 +427,7 @@ def test_generated_eq_is_installed_not_rejected():
     assert type(built.fs).__eq__.__qualname__ == "_canonical_eq"
 
 
-# --- inherited hash normalization on undecorated subclasses --------------------
+# --- inherited hashes shadowed on undecorated subclasses -----------------------
 
 
 @dataclass
@@ -408,17 +458,22 @@ class RootInheritsFrozenHash(ConfigNode):
     sec: InheritsFrozenHash = field(default_factory=InheritsFrozenHash)  # pyrefly: ignore[bad-assignment]
 
 
-def test_mutable_undecorated_subclass_gets_identity_hash():
+def test_mutable_undecorated_subclass_is_unhashable():
     built = from_dict(RootInheritsMutableHash, {})
-    assert type(built.sec).__dict__["__hash__"] is object.__hash__
-    assert hash(built.sec) == hash(built.sec)
+    assert type(built.sec).__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(built.sec)
     assert MutableHashBase.__dict__["__hash__"] is None
 
 
-def test_frozen_undecorated_subclass_gets_identity_hash():
+def test_frozen_undecorated_subclass_is_unhashable_and_leaves_its_base_alone():
     built = from_dict(RootInheritsFrozenHash, {})
-    assert type(built.sec).__dict__["__hash__"] is object.__hash__
-    assert hash(built.sec) == hash(built.sec)
+    assert type(built.sec).__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(built.sec)
+    # The untouched base keeps the hash @dataclass(frozen=True) generated for it.
+    assert FrozenHashBase.__dict__["__hash__"] is not None
+    assert hash(FrozenHashBase()) == hash(FrozenHashBase())
 
 
 # --- root flag interactions ---------------------------------------------------
@@ -455,6 +510,10 @@ def test_init_false_root_rejected_at_first_touch():
 
 
 def test_unsafe_hash_root_fails_at_class_creation():
+    # The node's planted __hash__ is what a frozen subclass needs to stay
+    # unhashable, and it is also what the decorator refuses to overwrite, so this
+    # one flag reports through the standard library rather than through confingo's
+    # preflight guard.
     with pytest.raises(TypeError, match="Cannot overwrite attribute __hash__"):
 
         @dataclass(unsafe_hash=True)

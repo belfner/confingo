@@ -36,14 +36,28 @@ class RunConfig(ConfigNode):
 
 Canonical equality reaches a schema class through two doors:
 
-- A `ConfigNode` subclass carries it from class-creation time: `ConfigNode.__init_subclass__` plants the canonical `__eq__` and identity `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own.
-- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the generated `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Ahead of that, a node already compares canonically through `ConfigNode` (recursing into its sections structurally), and `config_equal` covers any tree.
+- A `ConfigNode` subclass carries it from class-creation time: `ConfigNode.__init_subclass__` plants the canonical `__eq__` and a raising `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own.
+- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the generated `__eq__` it carried. Ahead of that, a node already compares canonically through `ConfigNode` (recursing into its sections structurally), and `config_equal` covers any tree.
 
 confingo owns equality and hashing on config dataclasses. A class that hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at class creation (both reported together when it defines both), a plain dataclass at its first schema touch -- because a hand-written definition would disagree with `config_equal` and `config_hash`. A `ConfigNode` subclass is also rejected when it inherits a hand-written `__eq__` or `__hash__` from a base, since the canonical methods land on the subclass ahead of the decorator and would otherwise resolve in place of the inherited definition; the message names the base that owns it. A plain dataclass that inherits a hand-written definition and generates its own through `@dataclass` keeps the generated one.
 
-The same guard rejects `@dataclass` flags that conflict with that ownership, reported at first schema processing once decoration has run: `init=False` (the class needs its generated `__init__` to build), `unsafe_hash=True` (it installs a field-tuple hash that disagrees with the fingerprint and raises on array fields), `eq=False`, and `order=True` (ordering compares the raw field tuple). A `ConfigNode` subclass declared `unsafe_hash=True` is the one flag caught earlier: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the node installs identity hashing ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported; the generated hash of a frozen class, or one inherited by an undecorated dataclass subclass, is reduced to identity so it shares the same model as every other config. Provenance is told from a hand-written method by matching its code object against dataclass codegen on the current interpreter; a method fabricated to be byte-identical to that codegen is treated as generated.
+The same guard rejects `@dataclass` flags that conflict with that ownership, reported at first schema processing once decoration has run: `init=False` (the class needs its generated `__init__` to build), `unsafe_hash=True` (it installs a field-tuple hash that disagrees with the fingerprint and raises on array fields), `eq=False`, and `order=True` (ordering compares the raw field tuple). A `ConfigNode` subclass declared `unsafe_hash=True` is the one flag caught earlier: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the node installs its own `__hash__` ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported. Provenance is told from a hand-written method by matching its code object against dataclass codegen on the current interpreter; a method fabricated to be byte-identical to that codegen is treated as generated.
 
-With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](#stable-run-identity) is the value-identity tool.
+
+## Config objects are unhashable
+
+`hash(config)`, a config used as a dictionary key, and a config placed in a set each raise `TypeError`. [`config_hash`](#stable-run-identity) is the value-identity operation: it is stable across processes, where a Python hash is randomized per process for `str` keys, and it ranges over the same fields as canonical equality.
+
+```python
+config = RunConfig.load_json("config.json")
+
+runs = {config_hash(config): config}          # keyed by value identity
+seen = {config_hash(section) for section in sections}
+```
+
+From its first schema processing a config class carries `__hash__ = None`, written on the class the engine touched so an untouched base keeps its own hash. That covers a frozen class, where `@dataclass(frozen=True)` otherwise generates a field-tuple hash that disagrees with canonical equality and raises on array fields. A `ConfigNode` subclass holds the same contract from class creation, through a `__hash__` that raises `TypeError: unhashable type: 'RunConfig'; use config_hash(config) for value identity`.
+
+A collection annotation that would need to hash a section is rejected at schema preflight, so `frozenset[OptimizerConfig]` reports at load time rather than failing during construction. Use `list[OptimizerConfig]` or `tuple[OptimizerConfig, ...]` for the collection, and `config_hash(section)` as the key when uniqueness matters.
 
 The `config_equal` free function compares two config objects by canonical value equality with the operator's same-class rule, ahead of any engine call and operating on the two instances alone. It evaluates the canonical relation directly, so it always gives the value-comparison answer.
 

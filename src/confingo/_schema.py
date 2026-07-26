@@ -81,7 +81,7 @@ def _resolved_hints(config_cls: type[Any]) -> dict[str, Any]:
     """Resolve a dataclass's annotations to runtime type objects, with caching.
 
     On the first resolution of a class, confingo installs canonical equality and
-    identity hashing on it; the cache entry is written only after that install
+    makes the class unhashable; the cache entry is written only after that install
     succeeds, so a class that violates the ownership contract is re-checked and
     re-rejected on every touch.
 
@@ -573,6 +573,8 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
                 issues.append(ConfigIssue(path, message))
             _validate_hint_schema(value_hint, path, issues, seen)
             return
+        if origin in (set, frozenset) and any(_holds_config_section(arg) for arg in args):
+            issues.append(ConfigIssue(path, _section_set_message(hint)))
         for element_hint in args:
             if element_hint is not Ellipsis:
                 _validate_hint_schema(element_hint, path, issues, seen)
@@ -599,6 +601,45 @@ def _validate_hint_schema(hint: Any, path: str, issues: list[ConfigIssue], seen:
             return
 
     issues.append(ConfigIssue(path, f"unsupported field type {_hint_name(hint)}"))
+
+
+def _holds_config_section(hint: Any) -> bool:
+    """Report whether a set element annotation puts a config section where a hash is needed.
+
+    A config dataclass is unhashable, so an element annotation that names one --
+    directly, as a union member, or inside the immutable ``tuple`` / ``frozenset``
+    shapes that can themselves sit in a set -- describes a collection that cannot
+    be built. The walk stops at the dataclass itself: reaching one is the whole
+    finding, so nothing recurses into its fields.
+
+    Args:
+      hint (Any): The resolved element type hint to inspect.
+
+    Returns:
+      bool: True when a config dataclass sits in a hash-bearing position.
+    """
+    hint = _strip_annotated(hint)
+    if _is_dataclass_type(hint):
+        return True
+    origin = get_origin(hint)
+    if origin is typing.Union or origin is types.UnionType or origin in (tuple, frozenset):
+        return any(_holds_config_section(arg) for arg in get_args(hint) if arg is not Ellipsis)
+    return False
+
+
+def _section_set_message(hint: Any) -> str:
+    """Build the rejection message for a set annotation holding config sections.
+
+    Args:
+      hint (Any): The resolved ``set`` / ``frozenset`` hint being rejected.
+
+    Returns:
+      str: The rejection message naming the annotation and both remedies.
+    """
+    return (
+        f"config sections are unhashable, so {_hint_name(hint)} cannot be built; use a list or tuple for "
+        f"the collection, and use config_hash(section) as the value-identity key when uniqueness matters"
+    )
 
 
 def _hint_name(hint: Any) -> str:

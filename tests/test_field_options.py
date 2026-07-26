@@ -436,19 +436,31 @@ def test_compare_false_recurses_into_sections():
 
 
 @dataclass
-class HoldsSectionSet:
-    sections: frozenset[Section] = field(default_factory=frozenset)
+class HoldsSectionTuple:
+    sections: tuple[Section, ...] = ()
 
 
-def test_compare_false_recurses_through_set_fallback():
-    # A dataclass reached through a set hits the serialized COMPARE-projection
-    # fallback, which must still drop the compare=False field. Building through
-    # from_dict processes Section (installing identity hashing) before the
-    # frozenset is constructed, so the test is self-contained.
-    left = from_dict(HoldsSectionSet, {"sections": [{"a": 1, "note": "p"}]})
-    right = from_dict(HoldsSectionSet, {"sections": [{"a": 1, "note": "q"}]})
+def test_compare_false_recurses_through_a_section_collection():
+    left = from_dict(HoldsSectionTuple, {"sections": [{"a": 1, "note": "p"}]})
+    right = from_dict(HoldsSectionTuple, {"sections": [{"a": 1, "note": "q"}]})
     assert config_equal(left, right)
     assert config_hash(left) == config_hash(right)
+
+
+@dataclass
+class HoldsAnyMapping:
+    mapping: Any = None
+
+
+def test_compare_false_drops_through_the_serialized_comparison_fallback():
+    # A dataclass reached inside a mapping with non-str keys compares by its
+    # COMPARE-projection plain form rather than by structural recursion, and that
+    # projection drops the compare=False field the EXPORT projection keeps.
+    left = HoldsAnyMapping(mapping={1: Section(a=1, note="p")})
+    right = HoldsAnyMapping(mapping={1: Section(a=1, note="q")})
+    assert config_equal(left, right)
+    assert config_hash(left) == config_hash(right)
+    assert to_dict(left) == {"mapping": {1: {"a": 1, "note": "p"}}}
 
 
 # --- hash=False (init=True) --------------------------------------------------
@@ -644,12 +656,16 @@ def test_config_equal_before_any_engine_call():
     assert UntouchedRoot(1, "p") == UntouchedRoot(1, "q")
 
 
-# --- Python hash stays identity-based ----------------------------------------
+# --- Python hashing is disabled, config_hash carries value identity -----------
 
 
-def test_python_hash_is_identity():
-    # Processing the schema installs canonical equality and identity hashing.
+def test_python_hash_is_disabled():
+    # Processing the schema installs canonical equality and makes the class
+    # unhashable, so value identity comes from config_hash instead.
     processed = from_dict(PlainRoot, {"a": 1, "note": "p"})
-    assert PlainRoot.__hash__ is object.__hash__
-    assert hash(processed) == object.__hash__(processed)
-    assert config_equal(processed, from_dict(PlainRoot, {"a": 1, "note": "q"}))
+    assert PlainRoot.__dict__["__hash__"] is None
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(processed)
+    other = from_dict(PlainRoot, {"a": 1, "note": "q"})
+    assert config_equal(processed, other)
+    assert config_hash(processed) == config_hash(other)

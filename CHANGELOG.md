@@ -47,13 +47,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tensor meeting a numpy array via `detach().cpu().numpy()`), and every
   other pair compares by its serialized form, so `==` on large arrays runs
   at native speed with exact value semantics. A `ConfigNode` subclass
-  carries the canonical `__eq__` and identity `__hash__` from class-creation
-  time, installed by `__init_subclass__` ahead of the `@dataclass`
-  decorator. Every other schema dataclass receives canonical
-  equality at its first schema processing, replacing the generated `__eq__` it
-  carried, with identity hashing restored where generating `__eq__` had
-  disabled it. The new `config_equal(left, right)` free function exposes the
-  same relation ahead of any engine call.
+  carries the canonical `__eq__` from class-creation time, installed by
+  `__init_subclass__` ahead of the `@dataclass` decorator. Every other schema
+  dataclass receives canonical equality at its first schema processing,
+  replacing the generated `__eq__` it carried. The new
+  `config_equal(left, right)` free function exposes the same relation ahead of
+  any engine call.
+- Config dataclasses are unhashable. From its first schema processing a class
+  carries `__hash__ = None`, so `hash(config)`, a config as a mapping key, and a
+  config in a set each raise `TypeError`; `config_hash(config)` is the stable
+  value-identity operation. This covers frozen configs, where Python otherwise
+  generates a field-tuple hash that disagrees with canonical equality and raises
+  on array fields. A `ConfigNode` subclass holds the same contract from class
+  creation through a `__hash__` that raises `TypeError: unhashable type:
+  'RunConfig'; use config_hash(config) for value identity`.
+- Set annotations whose elements carry a config section -- directly, through a
+  union, or inside an immutable `tuple` / `frozenset` shape -- are rejected at
+  schema preflight, naming the annotation as written and pointing at a list or
+  tuple for the collection plus `config_hash(section)` as the value-identity key.
+  Sets of hashable values are unaffected.
 - confingo owns equality and hashing on config dataclasses: a class that
   hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at
   class creation (both reported together when it defines both), a section at its
@@ -62,10 +74,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ConfigError` at first schema processing, every violation on one class reported
   together. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception:
   it fails at class creation with the standard-library `TypeError` for
-  overwriting `__hash__`, since the node installs identity hashing ahead of the
+  overwriting `__hash__`, since the node installs its own `__hash__` ahead of the
   decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported;
-  a frozen or inherited generated `__hash__` is reduced to identity hashing so
-  every config shares one value-equality plus identity-hash model.
+  a generated or inherited `__hash__` becomes `None` at first schema processing,
+  written on the touched class so an untouched base keeps its own.
 - NumPy array and PyTorch tensor fields, presence-detected: the backends
   install with the application, confingo's core stays stdlib-only, and
   `import confingo` loads neither. Supported annotations: bare `np.ndarray`,

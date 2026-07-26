@@ -108,6 +108,7 @@ A few rules apply across every row of the table:
 - Elements coerce individually, and element issues carry their index in the path (`hidden_widths.1`).
 - String and bytes inputs follow scalar handling: a `list[str]` field reports a bare `"abc"` as one type mismatch.
 - An unhashable element headed into a set becomes a collected issue alongside any sibling issues.
+- A `set[T]` / `frozenset[T]` whose element type carries a config section is reported at preflight, since [config objects are unhashable](equality-and-hashing.md#config-objects-are-unhashable). Hold sections in a `list` or `tuple`, and key them by `config_hash(section)` when uniqueness matters.
 - A container field uses its default when it has one, and a required container needs a supplied value. An intentionally empty container is authored as `field(default_factory=list)`.
 
 Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int, int]` for a fixed `(warmup_steps, total_steps)` schedule pair, and `metrics: set[str]` for tracked metrics.

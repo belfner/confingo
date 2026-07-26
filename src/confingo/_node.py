@@ -32,6 +32,7 @@ from confingo._equality import (
     _canonical_eq,
     _custom_eq_owner,
     _custom_hash_owner,
+    _unhashable_config,
     custom_eq_message,
     custom_hash_message,
 )
@@ -269,7 +270,7 @@ class ConfigNode:
     advertised surface unusable.
 
     Subclassing also installs canonical equality from class-creation time:
-    ``__init_subclass__`` plants the canonical ``__eq__`` and identity
+    ``__init_subclass__`` plants the canonical ``__eq__`` and a raising
     ``__hash__`` into the subclass ahead of the ``@dataclass`` decorator, which
     then keeps them in place of generating its own. A subclass whose body
     defines its own ``__eq__`` or ``__hash__`` is rejected here, as is one that
@@ -277,15 +278,21 @@ class ConfigNode:
     confingo owns equality and hashing on config dataclasses and the canonical
     methods would otherwise mask the inherited definition. A conflicting
     ``@dataclass`` flag is rejected later, at first schema processing, once
-    decoration has run. Because the identity ``__hash__`` lands ahead of the
+    decoration has run. Because a non-None ``__hash__`` lands ahead of the
     decorator, a subclass declared ``@dataclass(unsafe_hash=True)`` fails at
     class creation with the standard-library ``TypeError`` for overwriting
     ``__hash__``; a plain dataclass carrying that flag reports a ``ConfigError``
     instead.
+
+    Config objects are unhashable. The planted ``__hash__`` raises a
+    ``TypeError`` naming ``config_hash`` for the window between class creation
+    and first schema processing, which is also what holds a frozen subclass to
+    that contract; from first schema processing on, the class carries
+    ``__hash__ = None`` like every other config dataclass.
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Reserve the facade names and install canonical equality on each subclass.
+        """Reserve the facade names and install canonical equality and unhashability.
 
         Args:
           **kwargs (Any): Keyword arguments forwarded to ``super().__init_subclass__``.
@@ -313,7 +320,11 @@ class ConfigNode:
             )
         if cls.__dict__.get("__eq__") is None:
             cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
-            cls.__hash__ = object.__hash__  # type: ignore[method-assign]
+            # A non-None __hash__ is what dataclasses read as "hashing is already
+            # decided", so this sentinel is what keeps @dataclass(frozen=True)
+            # from generating a field-tuple hash over the canonical __eq__ landing
+            # beside it. First schema touch replaces it with None.
+            cls.__hash__ = _unhashable_config  # type: ignore[method-assign]
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], *, context: str = "config") -> Self:
