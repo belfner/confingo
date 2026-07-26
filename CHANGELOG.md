@@ -27,9 +27,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   raises `TypeError: unhashable type: 'RunConfig'; use config_hash(config) for
   value identity`. Replace `hash(config)` and set or mapping membership with
   `config_hash(config)`.
-- **Breaking.** Set annotations whose elements carry a config section --
-  directly, through a union, or inside an immutable `tuple` / `frozenset` shape
-  -- are rejected at schema preflight, naming the annotation as written and
+- **Breaking.** Set annotations whose elements carry a config section, whether
+  directly, through a union, or inside an immutable `tuple` / `frozenset` shape,
+  are rejected at schema preflight, naming the annotation as written and
   pointing at a list or tuple for the collection plus `config_hash(section)` as
   the value-identity key. Sets of hashable values are unaffected. Rewrite
   `frozenset[Section]` as `list[Section]` or `tuple[Section, ...]`.
@@ -44,7 +44,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runs once at the build that selects it; its one product is validated and passed
   on unchanged, and a factory that raises reports as
   `items: default_factory raised ValueError: <message>`. Write defaults in the
-  annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`.
+  annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`. The
+  annotated type is required exactly, so a subclass instance for a base-class
+  annotation and a `MappingProxyType` for a `dict[str, int]` annotation are both
+  reported: each exports a shape its own annotation cannot reload. A set element is
+  also put through the round trip: its plain form is rebuilt under the element's
+  own annotation, and the result has to be hashable, so a tuple written into a
+  bare `set` is reported because it reloads as a list.
 - The type-boundary message names the supported annotation categories and the
   `init=False` remedy: `unsupported field type Decimal; choose a supported
   annotation (bool, int, float, str, Path, date/time, Enum/Literal, dataclass,
@@ -54,23 +60,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A class named as a field type that declares its own annotations without being
   a dataclass reports the decorator remedy at that field's path, `server: Forgot
   is not a dataclass, so it carries no config schema. Declare it with
-  @dataclass.`, matching what an entry class of the same shape already reported.
+  @dataclass.`, the same message an entry class of that shape reports.
   It reaches the field through a section, a container, a union, or a mapping
   value alike. A `TypedDict`, a `NamedTuple`, and a class with no annotations of
   its own stay on the type-boundary message.
+- Documentation offers two routes through one set of pages. Essentials (getting
+  started, arrays and tensors, files and run identity, recipes) is the
+  task route, and getting started carries everything needed to build a real
+  config: choosing an annotation, sections and required leaves, writing defaults
+  and factories, fixed tuples and array fields, a discriminated union, computed
+  fields and `__validate__`, reading an error, and saving a resolved run.
+  Exact reference (schema design, types, validation, equality, API) is the
+  contract route, with each page leading on what an ordinary reader needs and
+  closing with the edge cases. Each route stands on its own.
 
 ### Fixed
 
+- Classifying a class named as a field type reads raw class namespaces along the
+  MRO, so naming a class as an annotation is the only thing that happens to it.
+  Preflight reads a metaclass `__getattr__` and a side-effecting annotation
+  expression as inert data, and everything such a class reports arrives through
+  the issue collector.
 - A failed multi-member union reports which branch came closest and why. The
-  field carries a summary -- `optimizer: expected AdamW | SGD; best match SGD
-  failed with 1 issue` -- followed by that one member's own issues at their own
-  paths, in place of the single type-name mismatch it reported before. The
-  closest member is the one whose attempt collected the fewest issues, an equal
-  count going to the first declared member, so two discriminator variants that
-  each fail once on a typo report through the first. Selection is unchanged:
-  declaration order, first member that coerces cleanly, and `T | None` still
-  coerces straight through `T`. A successful load produces the same value; only
-  the issue list of a failed one changes.
+  field carries a summary, `optimizer: expected AdamW | SGD; best match SGD
+  failed with 1 issue`, followed by that one member's own issues at their own
+  paths. The closest member is the one whose attempt collected the fewest
+  issues, an equal count going to the first declared member, so two discriminator
+  variants that each fail once on a typo report through the first. Selection
+  follows declaration order and takes the first member that coerces cleanly, and
+  `T | None` coerces straight through `T`.
 
 ### Added
 
@@ -91,8 +109,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stay outside the schema while the inherited fields load. `ClassVar`
   annotations raise no such error.
 - An entry class that is not a dataclass is reported as a schema issue carrying
-  the calling operation's context, in place of the standard library's bare
-  `TypeError` from `dataclasses.fields`.
+  the calling operation's context.
 
 - Canonical equality on every schema dataclass: two configs are `==` exactly
   when their compared fields (`init=True` and `compare=True`) serialize to the
@@ -103,14 +120,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   at native speed with exact value semantics. A `ConfigNode` subclass
   carries the canonical `__eq__` from class-creation time, installed by
   `__init_subclass__` ahead of the `@dataclass` decorator. Every other schema
-  dataclass receives canonical equality at its first schema processing,
-  replacing the generated `__eq__` it carried. The new
+  dataclass receives canonical equality at its first schema processing. The
   `config_equal(left, right)` free function exposes the same relation ahead of
   any engine call.
 - confingo owns equality and hashing on config dataclasses: a class that
-  hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at
-  class creation (both reported together when it defines both), a section at its
-  first schema touch -- and a `@dataclass` flag confingo cannot honor
+  hand-writes `__eq__` or `__hash__` is rejected, a `ConfigNode` subclass at
+  class creation (both reported together when it defines both) and a section at
+  its first schema touch. A `@dataclass` flag confingo cannot honor
   (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a
   `ConfigError` at first schema processing, every violation on one class reported
   together. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception:
@@ -171,8 +187,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   default builds from an empty mapping when the input omits it, recursively
   through nested sections, so a required value inside an omitted section is
   reported at its nested dotted path (`optimizer.name: missing required value`).
-  Every other undefaulted field stays required when absent -- scalars, unions,
-  `Any`, and containers -- keeping a forgotten container distinct from an
+  Every other undefaulted field stays required when absent (scalars, unions,
+  `Any`, and containers), keeping a forgotten container distinct from an
   intentionally empty one authored as `field(default_factory=list)`. A
   self-referential section terminates with a missing-value issue at the point of
   recursion. Explicit defaults and `default_factory` values take precedence and

@@ -302,3 +302,66 @@ def test_preflight_does_not_evaluate_an_unsupported_class_annotation():
     reported = _messages(HasSideEffectAnnotation)
     assert reported["thing"] == f"SideEffectAnnotation {DECORATOR_REMEDY}"
     assert EVALUATED == []
+
+
+class RaisingMeta(type):
+    """A metaclass whose attribute hook fails, to prove classification stays clear of it."""
+
+    def __getattr__(cls, name: str) -> Any:
+        """Fail on every dynamic attribute lookup.
+
+        Args:
+          name (str): The attribute being looked up.
+
+        Raises:
+          RuntimeError: Always.
+        """
+        raise RuntimeError(f"metaclass hook invoked for {name}")
+
+
+class HostileClass(metaclass=RaisingMeta):
+    host: str = "localhost"
+
+
+class HostileNoAnnotations(metaclass=RaisingMeta):
+    pass
+
+
+@dataclass
+class HasHostile:
+    server: HostileClass = None  # pyrefly: ignore[bad-assignment]
+
+
+@dataclass
+class HasHostileWithoutAnnotations:
+    thing: HostileNoAnnotations = None  # pyrefly: ignore[bad-assignment]
+
+
+def test_classifying_a_field_type_never_invokes_its_metaclass_hook():
+    # Naming a class as an annotation is the only thing the author did, so
+    # classifying it reads raw namespaces; an attribute lookup here would raise
+    # RuntimeError straight past the collector.
+    assert _messages(HasHostile)["server"] == f"HostileClass {DECORATOR_REMEDY}"
+    assert (
+        _messages(HasHostileWithoutAnnotations)["thing"]
+        == f"unsupported field type HostileNoAnnotations; {BOUNDARY_REMEDY}"
+    )
+
+
+class FieldsMarker:
+    _fields: ClassVar[tuple[Any, ...]] = ()
+
+
+class ForgotWithFieldsMarker(FieldsMarker):
+    host: str = "localhost"
+
+
+@dataclass
+class HasFieldsMarkerClass:
+    server: ForgotWithFieldsMarker = None  # pyrefly: ignore[bad-assignment]
+
+
+def test_a_plain_class_binding_fields_still_gets_the_decorator_remedy():
+    # _fields identifies a NamedTuple only alongside the tuple base; an ordinary
+    # class that happens to bind the name is still a forgotten schema.
+    assert _messages(HasFieldsMarkerClass)["server"] == f"ForgotWithFieldsMarker {DECORATOR_REMEDY}"

@@ -34,6 +34,8 @@ The sections below are the authoritative rules for each row.
 - Defaults are validated against their annotation and their plain form, then used exactly as authored. Coercion applies to supplied values alone, so a default has to be written in the type its annotation names. See [defaults and precedence](schema-design.md#leaf-defaults-and-precedence).
 - `to_dict` converts the built tree back to plain data: dicts, lists, strings, numbers, booleans, and `None`.
 
+The everyday conversions are the ones you would guess: a JSON string on a `Path` field becomes a `Path`, a JSON array on a `tuple[int, ...]` field becomes a tuple of ints, and a nested object on a section field becomes that section. The sections below give the exact rule for each annotation, including the cases where confingo deliberately declines a conversion another library might make. For array and tensor fields, [Arrays and tensors](arrays-and-tensors.md) is the authoritative page.
+
 
 ## Scalars
 
@@ -157,7 +159,7 @@ Arrays and tensors follow the same rule under `Any`: a supplied array validates 
 
 NumPy arrays and PyTorch tensors are field types whenever the host application has already imported the backend; the integration reads that application-loaded backend, while confingo's base runtime stays the standard-library core plus PyYAML-backed YAML I/O. A bare annotation (`np.ndarray`, `torch.Tensor`) rebuilds the array with a value-stable inferred dtype; a concrete annotation (`npt.NDArray[np.float32]`, `Annotated[torch.Tensor, torch.float32]`) pins the dtype, and a fixed-arity shape tuple pins the dimensionality. Values serialize as plain JSON (a scalar for a 0-d value, nested lists otherwise) and rebuild against the annotation on the next load.
 
-The full contract -- backend activation, the annotation table, accepted inputs, dtype normalization, serialization state, finiteness and size limits, and array participation in round trips, equality, and hashing -- lives in [Arrays and tensors](arrays-and-tensors.md).
+The full contract lives in [Arrays and tensors](arrays-and-tensors.md): backend activation, the annotation table, accepted inputs, dtype normalization, serialization state, finiteness and size limits, and how arrays take part in round trips, equality, and hashing.
 
 
 ## Finite numbers and temporal exactness
@@ -219,4 +221,4 @@ The stored field stays serializable and hashable, round trips through every form
 
 ---
 
-[Previous: Schema design](schema-design.md) | [Home](README.md) | [Next: Validation and errors](validation-and-errors.md)
+Exact reference: [Schema design](schema-design.md) | [Validation and errors](validation-and-errors.md) | [Equality and hashing](equality-and-hashing.md) | [API reference](api-reference.md) | [Documentation home](README.md)

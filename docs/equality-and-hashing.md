@@ -37,9 +37,9 @@ class RunConfig(ConfigNode):
 Canonical equality reaches a schema class through two doors:
 
 - A `ConfigNode` subclass carries it from class-creation time: `ConfigNode.__init_subclass__` plants the canonical `__eq__` and a raising `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own.
-- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the generated `__eq__` it carried. Ahead of that, a node already compares canonically through `ConfigNode` (recursing into its sections structurally), and `config_equal` covers any tree.
+- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing (the first `from_dict` or file load that touches the tree, including its schema preflight), replacing the generated `__eq__` it carried. Ahead of that, a node already compares canonically through `ConfigNode` (recursing into its sections structurally), and `config_equal` covers any tree.
 
-confingo owns equality and hashing on config dataclasses. A class that hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at class creation (both reported together when it defines both), a plain dataclass at its first schema touch -- because a hand-written definition would disagree with `config_equal` and `config_hash`. A `ConfigNode` subclass is also rejected when it inherits a hand-written `__eq__` or `__hash__` from a base, since the canonical methods land on the subclass ahead of the decorator and would otherwise resolve in place of the inherited definition; the message names the base that owns it. A plain dataclass that inherits a hand-written definition and generates its own through `@dataclass` keeps the generated one.
+confingo owns equality and hashing on config dataclasses. A class that hand-writes `__eq__` or `__hash__` is rejected, because a hand-written definition would disagree with `config_equal` and `config_hash`. A `ConfigNode` subclass is rejected at class creation, reporting both together when it defines both; a plain dataclass is rejected at its first schema touch. A `ConfigNode` subclass is also rejected when it inherits a hand-written `__eq__` or `__hash__` from a base, since the canonical methods land on the subclass ahead of the decorator and would otherwise resolve in place of the inherited definition; the message names the base that owns it. A plain dataclass that inherits a hand-written definition and generates its own through `@dataclass` keeps the generated one.
 
 The same guard rejects `@dataclass` flags that conflict with that ownership, reported at first schema processing once decoration has run: `init=False` (the class needs its generated `__init__` to build), `unsafe_hash=True` (it installs a field-tuple hash that disagrees with the fingerprint and raises on array fields), `eq=False`, and `order=True` (ordering compares the raw field tuple). A `ConfigNode` subclass declared `unsafe_hash=True` is the one flag caught earlier: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the node installs its own `__hash__` ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported. Provenance is told from a hand-written method by matching its code object against dataclass codegen on the current interpreter; a method fabricated to be byte-identical to that codegen is treated as generated.
 
@@ -82,7 +82,7 @@ run_id = config.config_hash()          # "8e6ea26c7116"
 long_id = config.config_hash(length=32)
 ```
 
-The hash is the leading `length` hex characters of SHA-256 over the canonical compact JSON (sorted mapping keys, deterministic set ordering) of the config's hashing fields — those that are `init=True`, `compare=True`, and hashed (the defaults). A [`field(compare=False)` or `field(hash=False)`](schema-design.md#field-options) still serializes through `to_dict` while the digest covers the hashing fields, and an `init=False` field holds runtime state. `length` defaults to 12; the useful range is 1-64, and the full digest is 64.
+The hash is the leading `length` hex characters of SHA-256 over the canonical compact JSON (sorted mapping keys, deterministic set ordering) of the config's hashing fields: those that are `init=True`, `compare=True`, and hashed (the defaults). A [`field(compare=False)` or `field(hash=False)`](schema-design.md#field-options) still serializes through `to_dict` while the digest covers the hashing fields, and an `init=False` field holds runtime state. `length` defaults to 12; the useful range is 1-64, and the full digest is 64.
 
 Two properties make it useful as a run identity:
 
@@ -119,4 +119,4 @@ for overrides in sweep:
 
 ---
 
-[Schema design](schema-design.md) | [Home](README.md) | [Files, formats, and run identity](files-and-identity.md)
+Exact reference: [Schema design](schema-design.md) | [Types and coercion](types-and-coercion.md) | [Validation and errors](validation-and-errors.md) | [API reference](api-reference.md) | [Documentation home](README.md)

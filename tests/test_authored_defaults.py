@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections import UserDict
+from collections.abc import Mapping  # noqa: TC003  (needed at runtime by get_type_hints)
 from dataclasses import (
     dataclass,
     field,
@@ -17,6 +19,7 @@ from dataclasses import (
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import (
     Any,
     Literal,
@@ -423,3 +426,165 @@ class RuntimeState:
 def test_init_false_defaults_keep_the_type_boundary_exemption():
     built = from_dict(RuntimeState, {})
     assert built.handle == Decimal("1.5")
+
+
+# --- set elements have to come back hashable ----------------------------------
+
+
+@dataclass
+class BareSetOfTuples:
+    items: frozenset = frozenset({(1, 2)})  # pyrefly: ignore[implicit-any-type-argument]
+
+
+@dataclass
+class AnySetOfTuples:
+    items: set[Any] = field(default_factory=lambda: {(1, 2)})
+
+
+@dataclass
+class HashableSets:
+    scalars: frozenset = frozenset({1, "a"})  # pyrefly: ignore[implicit-any-type-argument]
+    typed: set[tuple[int, int]] = field(default_factory=lambda: {(1, 2)})
+
+
+@pytest.mark.parametrize("config_cls", [BareSetOfTuples, AnySetOfTuples])
+def test_a_set_element_under_any_that_reloads_as_a_list_is_rejected(config_cls: type[Any]):
+    # Any hands back the plain form as written, and a tuple's plain form is a
+    # list, so the saved config could not rebuild its own set.
+    assert "must still be hashable after a load" in _issues(config_cls)["items"]
+
+
+def test_annotated_and_scalar_set_elements_round_trip_through_every_format():
+    built = from_dict(HashableSets, {})
+    assert from_dict(HashableSets, to_dict(built)) == built
+    assert from_dict(HashableSets, json.loads(dumps_json(built))) == built
+    assert from_dict(HashableSets, yaml.safe_load(dumps_yaml(built))) == built
+
+
+# --- mappings arrive as the dict construction builds --------------------------
+
+
+@dataclass
+class ProxyMapping:
+    values: dict[str, int] = field(default_factory=lambda: MappingProxyType({"a": 1}))  # pyrefly: ignore[bad-assignment]
+
+
+@dataclass
+class UserDictMapping:
+    values: Mapping[str, int] = field(default_factory=lambda: UserDict({"a": 1}))
+
+
+@pytest.mark.parametrize("config_cls", [ProxyMapping, UserDictMapping])
+def test_a_mapping_default_that_is_not_a_dict_is_rejected(config_cls: type[Any]):
+    assert "defaults are validated as written" in _issues(config_cls)["values"]
+
+
+@dataclass
+class UnionAnyFirst:
+    values: set[Any | tuple[int, int]] = field(default_factory=lambda: {(1, 2)})
+
+
+@dataclass
+class UnionListFirst:
+    values: set[list[int] | tuple[int, ...]] = field(  # pyrefly: ignore[bad-assignment]
+        default_factory=lambda: {(1, 2)}
+    )
+
+
+@dataclass
+class TupleAnyNested:
+    values: set[tuple[Any, ...]] = field(default_factory=lambda: {((1, 2),)})
+
+
+@pytest.mark.parametrize("config_cls", [UnionAnyFirst, UnionListFirst, TupleAnyNested])
+def test_a_set_element_that_reloads_unhashable_through_its_annotation_is_rejected(config_cls: type[Any]):
+    # Reaching the unhashable form takes union selection in the first two cases
+    # and a nested Any in the third, so reading the annotation alone would miss
+    # all of them. The element is put through the actual round trip instead.
+    assert "must still be hashable after a load" in _issues(config_cls)["values"]
+
+
+# --- validating a default runs none of the schema's own code ------------------
+
+
+SIDE_EFFECTS: list[str] = []
+
+
+class FirstEnum(Enum):
+    A = "a"
+
+    @classmethod
+    # pyrefly: ignore[missing-override-decorator]  (typing.override needs 3.12; the floor is 3.11)
+    def _missing_(cls, value: object) -> None:
+        """Record a lookup miss, so a validation pass that calls it is visible.
+
+        Args:
+          value (object): The value that matched no member.
+
+        Returns:
+          None: Always, leaving the miss unresolved.
+        """
+        SIDE_EFFECTS.append(f"missing:{value}")
+
+
+class SecondEnum(Enum):
+    B = "b"
+
+
+@dataclass
+class EnumUnionSet:
+    values: frozenset[FirstEnum | SecondEnum] = frozenset({SecondEnum.B})
+
+
+def _counted_factory() -> int:
+    """Produce a value and record that the factory ran.
+
+    Returns:
+      int: A fixed value.
+    """
+    SIDE_EFFECTS.append("factory")
+    return 7
+
+
+@dataclass
+class HookedSection:
+    value: int = field(default_factory=_counted_factory)
+
+    def __post_init__(self) -> None:
+        SIDE_EFFECTS.append("post_init")
+
+    def __validate__(self) -> list[str]:
+        """Record that the hook ran.
+
+        Returns:
+          list[str]: No problems.
+        """
+        SIDE_EFFECTS.append("validate")
+        return []
+
+
+@dataclass
+class UnionShiftsToSection:
+    values: set[list[HookedSection] | tuple[Any, ...]] = field(  # pyrefly: ignore[bad-assignment]
+        default_factory=lambda: {(1, 2)}
+    )
+
+
+def test_a_valid_enum_union_set_default_runs_no_user_code():
+    # The authored member belongs to the second enum, so a validation pass built
+    # on coercion would try the first enum against the exported "b" and call its
+    # _missing_ hook.
+    SIDE_EFFECTS.clear()
+    built = from_dict(EnumUnionSet, {})
+    assert built.values == frozenset({SecondEnum.B})
+    assert SIDE_EFFECTS == []
+
+
+def test_a_union_that_shifts_to_a_section_is_rejected_without_running_it():
+    # The authored tuple matches the tuple member, but its plain form is a list,
+    # which the list[HookedSection] member would claim on reload. The rejection
+    # is reached by reading the annotation, so the section's factory and hooks
+    # stay unentered.
+    SIDE_EFFECTS.clear()
+    assert "must still be hashable after a load" in _issues(UnionShiftsToSection)["values"]
+    assert SIDE_EFFECTS == []

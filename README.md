@@ -2,7 +2,7 @@
 
 A dataclass-driven configuration toolkit. Define your program's settings once as typed dataclasses, then load them from a config file, with everything validated and coerced against the schema on the way in.
 
-The dataclass declaration is the single source of truth: it serves at once as the schema, the type validator, and the default values.
+The dataclass declaration is the single source of truth: it serves at once as the schema, the type validator, and the default values. Defaults are validated against the same annotations supplied values are coerced toward, so every authored default that reaches the object has a plain serializable form. Config objects compare by value and are unhashable; `config_hash` is the stable value-identity operation.
 
 
 ## Installation
@@ -88,27 +88,21 @@ NumPy arrays and PyTorch tensors work as field types whenever your application a
 
 ## Documentation
 
-Full documentation lives in [docs/](docs/README.md):
+Full documentation lives in [docs/](docs/README.md), which offers two routes through one set of pages.
 
-Start:
+**Essentials** covers everything needed to write, load, save, and debug a config:
 
-- [Getting started](docs/getting-started.md): a runnable example, then a realistic training config.
-
-Recipes:
-
+- [Getting started](docs/getting-started.md): the linear introduction, from a runnable example to a realistic training config with defaults, sections, unions, and a run hash.
+- [Arrays and tensors](docs/arrays-and-tensors.md): NumPy and PyTorch fields, dtype and shape choices.
+- [Files, formats, and run identity](docs/files-and-identity.md): JSON, YAML, extension dispatch, atomic saves.
 - [Recipes](docs/recipes.md): copyable answers to common tasks.
 
-Concepts:
+**Exact reference** holds the precise rules, for lookup:
 
 - [Schema design](docs/schema-design.md): implicit sections, leaf-level requirements, defaults, `ConfigNode`.
 - [Types and coercion](docs/types-and-coercion.md): accepted annotations and exact conversion rules.
-- [Validation and errors](docs/validation-and-errors.md): the collect-all error model and custom invariants.
-- [Files, formats, and run identity](docs/files-and-identity.md): JSON, YAML, extension dispatch, atomic saves.
-- [Equality and hashing](docs/equality-and-hashing.md): canonical equality and stable run identity.
-- [Arrays and tensors](docs/arrays-and-tensors.md): NumPy and PyTorch fields.
-
-Reference:
-
+- [Validation and errors](docs/validation-and-errors.md): the collect-all error model and every issue source.
+- [Equality and hashing](docs/equality-and-hashing.md): canonical equality, unhashable config objects, stable run identity.
 - [API reference](docs/api-reference.md): signatures for every public name.
 
 

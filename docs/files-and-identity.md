@@ -2,7 +2,7 @@
 
 # Files, formats, and run identity
 
-This page owns the persistence story: the plain-data form produced by `to_dict`, JSON and optional YAML, extension dispatch, load-time document rules, atomic saves, and stable run identifiers.
+This page owns the persistence story: the plain-data form produced by `to_dict`, JSON and YAML, extension dispatch, load-time document rules, atomic saves, and stable run identifiers.
 
 
 ## The persistence pipeline
@@ -57,28 +57,11 @@ config.to_file(run_dir / "resolved.json")
 A path with a missing or unrecognized suffix raises `ConfigError` naming the supported extensions.
 
 
-## Document and read rules
-
-- Files are read as UTF-8; read failures and decode failures raise `ConfigError` with the file's context.
-- Malformed syntax (JSON or YAML) raises `ConfigError`.
-- A top-level mapping feeds `from_dict`.
-- A parsed null document (JSON `null`, YAML `null`, or an empty YAML file) feeds `{}`, so a schema whose fields all carry defaults loads as pure defaults and required values are reported at their nested dotted paths. An empty JSON file is malformed JSON and raises accordingly.
-- Any other top-level shape (a list, a scalar) raises `ConfigError` asking for a mapping document.
-
-
-## Atomic writes
-
-Every save funnels through one atomic writer:
-
-- Parent directories are created as needed.
-- Content goes to a uniquely named temporary sibling (exclusive creation), then renames over the destination, so readers see either the old file or the complete new one.
-- On overwrite the destination's existing file mode is preserved; new files get the current umask's default. Unrelated `.tmp` files in the directory are left in place, and the writer's own temporary is removed if the write fails.
-- Save functions return the destination `Path`.
-
-
 ## Resolved snapshots
 
 Saving serializes the object as currently held in memory: defaults filled in, plus any programmatic changes made after loading. Writing `runs/<run_id>/resolved.json` therefore records exactly what the run used, whichever partial file or code path produced it.
+
+Every authored default that reaches the built object has already passed its [annotation and plain-form checks](schema-design.md#leaf-defaults-and-precedence), so the defaulted part of a snapshot is serializable by construction. Values a `__post_init__` assigns afterwards, and values assigned programmatically after the load, are serialized on their own terms when the snapshot is written.
 
 A save called on a nested [config node](schema-design.md#config-nodes) writes that node's own subtree, so the document holds the section's fields and loads back through the section's class:
 
@@ -120,6 +103,30 @@ One config saved to JSON and to YAML loads back into equal dataclass trees: both
 Container identity is restored by the annotation on re-load. In the raw file, tuples and sets appear as arrays, and `Any`-held tuple or set values stay lists after a round trip. See [`Any` and plain data](types-and-coercion.md#any-and-plain-data).
 
 
+## Exact contracts
+
+How a document that is empty or null is read, and exactly what a save does to the
+destination file.
+
+
+## Document and read rules
+
+- Files are read as UTF-8; read failures and decode failures raise `ConfigError` with the file's context.
+- Malformed syntax (JSON or YAML) raises `ConfigError`.
+- A top-level mapping feeds `from_dict`.
+- A parsed null document (JSON `null`, YAML `null`, or an empty YAML file) feeds `{}`, so a schema whose fields all carry defaults loads as pure defaults and required values are reported at their nested dotted paths. An empty JSON file is malformed JSON and raises accordingly.
+- Any other top-level shape (a list, a scalar) raises `ConfigError` asking for a mapping document.
+
+
+## Atomic writes
+
+Every save funnels through one atomic writer:
+
+- Parent directories are created as needed.
+- Content goes to a uniquely named temporary sibling (exclusive creation), then renames over the destination, so readers see either the old file or the complete new one.
+- On overwrite the destination's existing file mode is preserved; new files get the current umask's default. Unrelated `.tmp` files in the directory are left in place, and the writer's own temporary is removed if the write fails.
+- Save functions return the destination `Path`.
+
 ---
 
-[Previous: Validation and errors](validation-and-errors.md) | [Home](README.md) | [Next: API reference](api-reference.md)
+Essentials: [Getting started](getting-started.md) | [Arrays and tensors](arrays-and-tensors.md) | [Recipes](recipes.md) | [Documentation home](README.md)

@@ -208,4 +208,4 @@ Building `ScheduleConfig` with `warmup_steps=100, total_steps=10` reports
 
 ---
 
-[Getting started](getting-started.md) | [Home](README.md) | [Validation and errors](validation-and-errors.md)
+Essentials: [Getting started](getting-started.md) | [Arrays and tensors](arrays-and-tensors.md) | [Files, formats, and run identity](files-and-identity.md) | [Documentation home](README.md)

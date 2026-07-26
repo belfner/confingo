@@ -174,3 +174,42 @@ def test_a_failed_union_inside_a_list_carries_the_element_index():
     assert reported[0] == ("items.1", "expected AdamW | SGD; best match AdamW failed with 1 issue")
     assert reported[1] == ("items.1.kind", "expected one of 'adamw', got 'nope'")
     assert reported[2] == ("seed", "expected int, got str")
+
+
+# --- structurally identical variants ------------------------------------------
+
+
+@dataclass
+class WarmupCosine:
+    schedule: Literal["cosine"] = "cosine"
+    warmup_steps: int = 500
+    total_steps: int = 10_000
+
+
+@dataclass
+class WarmupLinear:
+    schedule: Literal["linear"] = "linear"
+    warmup_steps: int = 500
+    total_steps: int = 10_000
+
+
+@dataclass
+class Scheduled:
+    schedule: WarmupCosine | WarmupLinear = field(default_factory=WarmupCosine)
+
+
+def test_identical_variants_differing_only_by_discriminator_report_through_the_first():
+    # Both members carry the same fields, so a typo in the discriminator fails
+    # each exactly once and nothing distinguishes them by issue count. The
+    # summary still names the whole union, so the reader sees both options.
+    reported = _issues({"schedule": {"schedule": "cosinus"}}, Scheduled)
+    assert reported == [
+        ("schedule", "expected WarmupCosine | WarmupLinear; best match WarmupCosine failed with 1 issue"),
+        ("schedule.schedule", "expected one of 'cosine', got 'cosinus'"),
+    ]
+
+
+def test_a_valid_second_identical_variant_still_selects_cleanly():
+    built = from_dict(Scheduled, {"schedule": {"schedule": "linear", "warmup_steps": 100}})
+    assert isinstance(built.schedule, WarmupLinear)
+    assert built.schedule.warmup_steps == 100

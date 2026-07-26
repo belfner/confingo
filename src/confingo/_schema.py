@@ -24,7 +24,6 @@ from dataclasses import (
     Field,
     dataclass,
     fields,
-    is_dataclass,
 )
 from enum import Enum
 from functools import lru_cache
@@ -138,13 +137,21 @@ def _strip_annotated(hint: Any) -> Any:
 def _is_dataclass_type(hint: Any) -> bool:
     """Report whether a type hint is a dataclass type.
 
+    Membership is read from the raw class namespaces along the MRO, where
+    ``dataclasses.is_dataclass`` reads it by attribute lookup. A class reaches
+    this check merely by being named as an annotation, and raw reads keep that
+    class's own code, including any ``__getattr__`` its metaclass defines, out of
+    the walk, so whatever it would raise stays inside the issue collector.
+
     Args:
       hint (Any): The resolved type hint to inspect.
 
     Returns:
       bool: True when the hint is a dataclass type rather than an instance.
     """
-    return isinstance(hint, type) and is_dataclass(hint)
+    if not isinstance(hint, type):
+        return False
+    return _declared_in_namespaces(_class_namespaces(hint), "__dataclass_fields__")
 
 
 class _HintKind(Enum):
@@ -213,7 +220,7 @@ def _classify_hint_uncached(hint: Any) -> _HintClass:
             return _HintClass(_HintKind.CONTAINER, stripped, origin, args)
         return _HintClass(_HintKind.UNSUPPORTED_GENERIC, stripped, origin, args)
     if isinstance(stripped, type):
-        if is_dataclass(stripped):
+        if _is_dataclass_type(stripped):
             return _HintClass(_HintKind.DATACLASS, stripped, None, (), dataclass_type=stripped)
         bare = _BARE_CONTAINERS.get(stripped)
         if bare is not None:
@@ -511,10 +518,13 @@ def _looks_like_undecorated_schema(hint: Any) -> bool:
     generic classes carrying type parameters, and models belonging to another
     schema system.
 
-    Annotations are read as declared rather than resolved. Resolution evaluates
-    the annotation expressions of a class confingo has no other reason to touch,
-    which would run that class's code during preflight and let whatever it raises
-    escape the issue collector.
+    Every fact is read from the raw class namespaces along the MRO, and
+    annotations are read as declared rather than resolved. Naming a class as a
+    field type is the only thing the author did, so classifying it runs none of
+    its code: resolution would evaluate its annotation expressions, and ordinary
+    attribute lookup would invoke whatever ``__getattr__`` or ``__getattribute__``
+    its metaclass defines. Either would let an arbitrary exception escape the
+    issue collector.
 
     Args:
       hint (Any): The resolved type hint that has no supported handling.
@@ -522,20 +532,71 @@ def _looks_like_undecorated_schema(hint: Any) -> bool:
     Returns:
       bool: True when the remedy is to decorate the class with ``@dataclass``.
     """
-    if not isinstance(hint, type) or is_dataclass(hint):
+    if not isinstance(hint, type):
         return False
     if typing.is_typeddict(hint):
         return False
-    if issubclass(hint, tuple) and hasattr(hint, "_fields"):
+    namespaces = _class_namespaces(hint)
+    if _declared_in_namespaces(namespaces, "__dataclass_fields__"):
         return False
-    if getattr(hint, "_is_protocol", False) is True:
+    if _is_named_tuple(hint, namespaces):
         return False
-    if len(getattr(hint, "__parameters__", ())) > 0:
+    if any(namespace.get("_is_protocol", False) is True for namespace in namespaces):
         return False
-    if any(hasattr(hint, marker) for marker in _FOREIGN_MODEL_MARKERS):
+    if any(len(namespace.get("__parameters__", ())) > 0 for namespace in namespaces):
         return False
-    own = hint.__dict__.get("__annotations__", {})
+    if any(_declared_in_namespaces(namespaces, marker) for marker in _FOREIGN_MODEL_MARKERS):
+        return False
+    own = namespaces[0].get("__annotations__", {})
     return any(not _declares_class_var(annotation) for annotation in own.values())
+
+
+def _is_named_tuple(hint: type[Any], namespaces: tuple[Mapping[str, Any], ...]) -> bool:
+    """Report whether a class is a ``NamedTuple``, read without attribute lookup.
+
+    ``_fields`` carries the role for a ``NamedTuple`` that ``__dataclass_fields__``
+    carries for a dataclass, but the name is ordinary and any class may bind it,
+    so the tuple base is required alongside it.
+
+    Args:
+      hint (type[Any]): The class to inspect.
+      namespaces (tuple[Mapping[str, Any], ...]): Its raw MRO namespaces.
+
+    Returns:
+      bool: True when the class is a ``NamedTuple`` subclass.
+    """
+    if not _declared_in_namespaces(namespaces, "_fields"):
+        return False
+    return tuple in type.__getattribute__(hint, "__mro__")
+
+
+def _class_namespaces(config_cls: type[Any]) -> tuple[Mapping[str, Any], ...]:
+    """Read a class's raw namespaces along its MRO, most derived first.
+
+    ``type.__getattribute__`` is used rather than ordinary attribute access so a
+    metaclass hook on the inspected class never runs.
+
+    Args:
+      config_cls (type[Any]): The class to inspect.
+
+    Returns:
+      tuple[Mapping[str, Any], ...]: One namespace per class in the MRO.
+    """
+    mro = type.__getattribute__(config_cls, "__mro__")
+    return tuple(type.__getattribute__(klass, "__dict__") for klass in mro)
+
+
+def _declared_in_namespaces(namespaces: tuple[Mapping[str, Any], ...], name: str) -> bool:
+    """Report whether any namespace along an MRO binds ``name``.
+
+    Args:
+      namespaces (tuple[Mapping[str, Any], ...]): Raw namespaces along the MRO.
+      name (str): The attribute name to look for.
+
+    Returns:
+      bool: True when some class in the MRO binds the name.
+    """
+    return any(name in namespace for namespace in namespaces)
 
 
 def _declares_class_var(annotation: Any) -> bool:

@@ -70,9 +70,9 @@ A file supplying `{"schedule": {"warmup": {"steps": 500}}, "stages": ["warmup", 
 
 Defaults form the base layer; the input mapping overrides whichever leaves it supplies.
 
-The two layers are treated differently. Supplied values travel through [coercion](types-and-coercion.md), while defaults are validated and then used exactly as authored: a defaulted field receives the object you wrote in the declaration, byte for byte. Write defaults that already have the annotated type -- `Path("runs")` for a `Path` field, `0.1` for a `float` field -- so both layers produce the same shapes.
+The two layers are treated differently. Supplied values travel through [coercion](types-and-coercion.md), while defaults are validated and then used exactly as authored: a defaulted field receives the object you wrote in the declaration, byte for byte. Write defaults that already have the annotated type (`Path("runs")` for a `Path` field, `0.1` for a `float` field), so both layers produce the same shapes.
 
-Validation is what holds that rule up. A default has to arrive in the form coercion would otherwise have produced, and it has to have a plain serializable form, so a config built entirely from defaults writes back out and reloads unchanged. `output_dir: Path = "runs"` is reported as an authoring error rather than promoted to `Path("runs")`, and so are a list default for a tuple field, an integral float for an `int` field, and a mapping for a section. A direct `field(default=...)` is checked during schema preflight, whether or not the input supplies the field, so a wrong default surfaces even in a project that always overrides it:
+Validation is what holds that rule up. A default has to arrive in the form coercion would otherwise have produced, and it has to have a plain serializable form, so a config whose values all come from defaults writes back out and reloads unchanged. A `__post_init__` that replaces an `init=True` value afterwards puts its own result into the snapshot, on that value's own terms. `output_dir: Path = "runs"` is reported as an authoring error rather than promoted to `Path("runs")`, and so are a list default for a tuple field, an integral float for an `int` field, and a mapping for a section. A direct `field(default=...)` is checked during schema preflight, whether or not the input supplies the field, so a wrong default surfaces even in a project that always overrides it:
 
 ```text
 output_dir: invalid authored default: expected a value already matching Path, got str; defaults are validated as written
@@ -105,6 +105,8 @@ class ExperimentConfig(ConfigNode):
     batch_size: int = 64
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=1e-3))
 ```
+
+A section-valued default is always written as a factory, frozen sections included. `@dataclass` reads a default whose class is unhashable as a mutable default and directs you to `default_factory`, and confingo [makes a config class unhashable](equality-and-hashing.md#config-objects-are-unhashable) at its first schema processing, so a direct `section: FrozenSection = FrozenSection()` in a class declared after that first load fails at decoration time. The factory form is correct regardless of declaration order.
 
 Partial files fall out of the leaf-level model everywhere: a minimal experiment file overrides two leaves and takes everything else from defaults, implicit or authored:
 
@@ -139,7 +141,7 @@ A name that fails to resolve is reported as a schema error with the `config sche
 
 ## Field options
 
-`init` is the master switch. An `init=True` field (the dataclass default) is loaded from the config, exported by `to_dict`, and — subject to `compare` and `hash` below — weighed by equality and `config_hash`. An `init=False` field is runtime state that its default or `__post_init__` populates; loading, export, equality, and the fingerprint all draw from the `init=True` fields. On an `init=True` field, `compare` and `hash` scope equality and the fingerprint:
+`init` is the master switch. An `init=True` field (the dataclass default) is loaded from the config, exported by `to_dict`, and, subject to `compare` and `hash` below, weighed by equality and `config_hash`. An `init=False` field is runtime state that its default or `__post_init__` populates; loading, export, equality, and the fingerprint all draw from the `init=True` fields. On an `init=True` field, `compare` and `hash` scope equality and the fingerprint:
 
 | Field | Loaded | In `to_dict` | In equality | In `config_hash` |
 | --- | :---: | :---: | :---: | :---: |
@@ -149,7 +151,7 @@ A name that fails to resolve is reported as a schema error with the `config sche
 | `field(hash=False)` | yes | yes | yes | no |
 | `field(hash=True, compare=False)` | reported as a contradiction |
 
-The three projections nest: export ranges over the `init=True` fields, equality over the `compare=True` fields within them, and the fingerprint over the hashing fields within that — the compared fields with `hash` left at its default or set `True`. So a `compare=False` field round-trips through export and falls outside equality and the fingerprint, and a `hash=False` field takes part in export and equality while the fingerprint ranges over the hashing fields. `init=False` scopes a field to runtime state across all three, so its `compare` and `hash` flags are inert, and its annotation is exempt from the [accepted boundary](types-and-coercion.md#accepted-schema-boundary) — it may hold any resolvable runtime object.
+The three projections nest: export ranges over the `init=True` fields, equality over the `compare=True` fields within them, and the fingerprint over the hashing fields within that, meaning the compared fields with `hash` left at its default or set `True`. So a `compare=False` field round-trips through export and falls outside equality and the fingerprint, and a `hash=False` field takes part in export and equality while the fingerprint ranges over the hashing fields. `init=False` scopes a field to runtime state across all three, so its `compare` and `hash` flags are inert, and its annotation is exempt from the [accepted boundary](types-and-coercion.md#accepted-schema-boundary), so it may hold any resolvable runtime object.
 
 ```python
 @dataclass
@@ -172,7 +174,7 @@ Two configs are `==` exactly when their compared fields serialize to the same ca
 
 A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives the same canonical `__eq__` at its first schema processing. confingo owns equality and hashing on config dataclasses, so a hand-written `__eq__` or `__hash__`, or a `@dataclass` flag that conflicts with that ownership (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`), is rejected; `frozen`, `slots`, and `weakref_slot` are supported. Config objects are [unhashable](equality-and-hashing.md#config-objects-are-unhashable), so [`config_hash`](equality-and-hashing.md#stable-run-identity) is the value-identity tool, and the `config_equal` free function exposes the same relation ahead of any engine call.
 
-The full account -- structural array and tensor comparison, the two installation doors, the ownership guard and its rejected-flag behavior, and `config_equal` -- lives in [Equality and hashing](equality-and-hashing.md#canonical-equality).
+The full account lives in [Equality and hashing](equality-and-hashing.md#canonical-equality): structural array and tensor comparison, the two installation doors, the ownership guard and its rejected-flag behavior, and `config_equal`.
 
 
 ## Schema-level invariants
@@ -200,4 +202,4 @@ class TrainerConfig:
 
 ---
 
-[Previous: Getting started](getting-started.md) | [Home](README.md) | [Next: Types and coercion](types-and-coercion.md)
+Exact reference: [Types and coercion](types-and-coercion.md) | [Validation and errors](validation-and-errors.md) | [Equality and hashing](equality-and-hashing.md) | [API reference](api-reference.md) | [Documentation home](README.md)

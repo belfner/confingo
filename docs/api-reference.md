@@ -2,7 +2,7 @@
 
 # API reference
 
-Compact reference for the public surface. Signatures are exact; behavior details live on the linked guide pages.
+Compact reference for the public surface. Signatures come first and are exact; the class contracts confingo installs on a schema class close the page. Behavior details live on the linked guide pages.
 
 
 ## Import surface
@@ -26,17 +26,6 @@ from confingo import dumps_yaml, load_yaml, save_yaml
 ```
 
 `confingo.__version__` carries the package version.
-
-
-## Schema declaration and equality
-
-Learn more: [canonical equality](schema-design.md#canonical-equality).
-
-Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations. A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. Config objects are unhashable and `config_hash` carries value identity: a class carries `__hash__ = None` from its first schema processing, and a `ConfigNode` subclass holds the same contract from class creation through a `__hash__` that raises `TypeError` naming `config_hash`. confingo owns equality and hashing: a class that hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at class creation, including one that inherits a hand-written definition from a base, and a plain dataclass at first schema touch -- and a conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigNode` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported.
-
-### `config_equal(left, right) -> bool`
-
-Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and operating on the two instances alone. Evaluates the canonical relation directly. Raises `TypeError` when `left` is anything other than a dataclass instance.
 
 
 ## Construction and conversion
@@ -129,6 +118,17 @@ Subclassing reserves the eleven method names below. A node declares none of them
 The method style suits a root class that owns its schema (`TrainingConfig.load_json(path)` reads naturally at call sites). The free functions suit plain dataclass roots and library code that receives the config class as a parameter. Both surfaces are equivalent and stay in sync by construction.
 
 
+## Class contracts
+
+What confingo installs on a schema class, and what it rejects. Learn more: [canonical equality](schema-design.md#canonical-equality).
+
+Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations. A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. Config objects are unhashable and `config_hash` carries value identity: a class carries `__hash__ = None` from its first schema processing, and a `ConfigNode` subclass holds the same contract from class creation through a `__hash__` that raises `TypeError` naming `config_hash`. confingo owns equality and hashing. A class that hand-writes `__eq__` or `__hash__` is rejected: a `ConfigNode` subclass at class creation, including one that inherits a hand-written definition from a base, and a plain dataclass at first schema touch. A conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigNode` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported.
+
+### `config_equal(left, right) -> bool`
+
+Compares two config objects by canonical value equality over their compared fields (`init=True` and `compare=True`), same-class rule included, ahead of any engine call and operating on the two instances alone. Evaluates the canonical relation directly. Requires `left` to be a dataclass instance, and raises `TypeError` for any other value.
+
+
 ---
 
-[Previous: Files, formats, and run identity](files-and-identity.md) | [Home](README.md)
+Exact reference: [Schema design](schema-design.md) | [Types and coercion](types-and-coercion.md) | [Validation and errors](validation-and-errors.md) | [Equality and hashing](equality-and-hashing.md) | [Documentation home](README.md)
