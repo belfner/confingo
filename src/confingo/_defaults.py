@@ -9,10 +9,14 @@ so ``output_dir: Path = "runs"`` is an authoring error rather than a silent
 promotion to ``Path("runs")``.
 
 Direct ``field(default=...)`` values are checked during data-independent schema
-preflight, where the value already exists and inspecting it runs no user code. A
-``default_factory`` is checked in ``_core`` at the one build that selects it,
-since calling a factory during preflight would run user code on a cached path and
-duplicate its side effects.
+preflight, where the value already exists. That check stays clear of the
+construction engine: coercion, enum lookup hooks, field factories,
+``__post_init__``, and ``__validate__`` belong to building a config and stay
+unentered. Projecting the value to its plain form reads it through its own
+accessors, so a mapping's ``items``, a property, and ``__str__`` answer for the
+values they describe. A ``default_factory`` is checked in ``_core`` at the one
+build that selects it, since calling a factory during preflight would run user
+code on a cached path and duplicate its side effects.
 """
 
 from __future__ import annotations
@@ -310,123 +314,14 @@ def _check_container(
     if isinstance(value, (set, frozenset)):
         # Set iteration order is unstable, so an element index would name a
         # different element on each run; elements carry the set's own path.
-        # Every element of a set shares one annotation, so whether the reload
-        # check can teach anything is decided once for the whole container.
+        # Whether the elements survive a load is settled by the annotation at
+        # schema preflight, so each element is judged on its runtime form alone.
         element_hint = args[0] if len(args) >= 1 else Any
-        check_reload = _may_rebuild_unhashable(element_hint)
         for item in value:
             _check_runtime_form(item, element_hint, path, collector, seen)
-            if check_reload:
-                _check_set_element_reloads(item, element_hint, path, collector)
         return
     for index, (item, element_hint) in enumerate(zip(value, element_hints, strict=True)):
         _check_runtime_form(item, element_hint, _join(path, str(index)), collector, seen)
-
-
-def _may_rebuild_unhashable(element_hint: Any) -> bool:
-    """Report whether an annotation can rebuild a value a set cannot hold.
-
-    A scalar annotation rebuilds a scalar, which is always hashable, so the whole
-    round trip below is decided by the annotation alone for the ordinary
-    ``set[str]`` and ``frozenset[int]`` cases. Containers and ``Any`` rebuild
-    whatever their plain form describes, and a config section is unhashable by
-    contract, so those carry the question to each element.
-
-    Deciding this from the annotation is also what keeps the reload check clear of
-    a section's constructor. ``set[Section]`` is rejected at preflight before any
-    default is inspected, and this predicate holds the boundary from the other
-    side, so the check stays a property of the annotation rather than of the order
-    two guards happen to run in.
-
-    Args:
-      element_hint (Any): The element type hint the container declares.
-
-    Returns:
-      bool: True when an element has to be put through the round trip.
-    """
-    plan = _classify_hint(element_hint)
-    kind = plan.kind
-    if kind in (_HintKind.ANY, _HintKind.CONTAINER, _HintKind.BARE_CONTAINER, _HintKind.DATACLASS):
-        return True
-    if kind is _HintKind.UNION:
-        return any(_may_rebuild_unhashable(member) for member in plan.args)
-    return False
-
-
-def _check_set_element_reloads(item: Any, element_hint: Any, path: str, collector: _IssueCollector) -> None:
-    """Check that a set element is still hashable after a save and load cycle.
-
-    The element is projected to the plain form a file would carry, and that form
-    is read against the element's annotation to decide whether every rebuild the
-    annotation admits stays hashable. Both halves matter: ``set[tuple[int, ...]]``
-    holds tuples that rebuild as tuples, while ``set[list[int] | tuple[int, ...]]``
-    holds a tuple whose exported list the earlier union member claims, and
-    ``set[tuple[Any, ...]]`` rebuilds an outer tuple around an ``Any`` that comes
-    back as a list.
-
-    Args:
-      item (Any): One authored set element.
-      element_hint (Any): The element type hint the container declares.
-      path (str): Dotted path of the container.
-      collector (_IssueCollector): Destination for any issues found.
-    """
-    trial = _IssueCollector(collector.backend)
-    plain = _to_plain(item, path, trial, projection=_PlainProjection.EXPORT)
-    if not trial.clean():
-        # The plain-form gate reports this element on its own.
-        return
-    if not _plain_rebuilds_hashable(plain, element_hint):
-        collector.add(
-            path,
-            f"a set element must still be hashable after a load, and {_typename(item)} reloads as "
-            f"{_typename(plain)}; annotate the element so it rebuilds, or hold the values in a list",
-        )
-
-
-def _plain_rebuilds_hashable(plain: Any, hint: Any) -> bool:
-    """Report whether rebuilding a plain form under ``hint`` yields a hashable value.
-
-    This reads the annotation and the plain data structurally rather than running
-    coercion over them. Coercion is the construction engine: it calls enum classes,
-    selects field factories, and runs ``__post_init__`` and ``__validate__``, so
-    using it to answer a validation question would execute the schema's own code
-    while merely inspecting a default. A union is answered by requiring every
-    member to rebuild hashable, which covers the case where projecting to plain
-    data moves the selection to a different member than the authored value matched.
-
-    Args:
-      plain (Any): The element's plain serializable form.
-      hint (Any): The element type hint the container declares.
-
-    Returns:
-      bool: True when every rebuild this annotation admits for this data is
-        hashable.
-    """
-    plan = _classify_hint(hint)
-    kind = plan.kind
-    if kind is _HintKind.ANY:
-        # Any hands the plain form back as written.
-        return not isinstance(plain, (list, dict))
-    if kind is _HintKind.UNION:
-        return all(_plain_rebuilds_hashable(plain, member) for member in plan.args)
-    if kind in (_HintKind.CONTAINER, _HintKind.BARE_CONTAINER):
-        origin = plan.origin if kind is _HintKind.CONTAINER else plan.bare_origin
-        if origin not in (tuple, frozenset):
-            # list, set, dict, Sequence, and Mapping all rebuild unhashable.
-            return False
-        args = plan.args if kind is _HintKind.CONTAINER else ()
-        members = [arg for arg in args if arg is not Ellipsis]
-        element_hints = members if len(members) > 0 else [Any]
-        items: list[Any] = list(plain) if isinstance(plain, (list, tuple)) else []
-        return all(
-            any(_plain_rebuilds_hashable(entry, element_hint) for element_hint in element_hints) for entry in items
-        )
-    if kind is _HintKind.DATACLASS:
-        # A config object is unhashable by contract.
-        return False
-    # Everything remaining is a scalar, which rebuilds hashable, apart from an
-    # array or tensor.
-    return not _arrays.inspect_annotation(hint).matched
 
 
 def _tuple_element_hints(

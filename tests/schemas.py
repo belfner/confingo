@@ -74,7 +74,6 @@ class Containers:
     tags: dict[str, int] = field(default_factory=dict)
     bare_tuple: tuple = ()
     bare_list: list = field(default_factory=list)
-    bare_set: set = field(default_factory=set)
     bare_dict: dict = field(default_factory=dict)
     anything: Any = None
 

@@ -432,26 +432,9 @@ def test_init_false_defaults_keep_the_type_boundary_exemption():
 
 
 @dataclass
-class BareSetOfTuples:
-    items: frozenset = frozenset({(1, 2)})  # pyrefly: ignore[implicit-any-type-argument]
-
-
-@dataclass
-class AnySetOfTuples:
-    items: set[Any] = field(default_factory=lambda: {(1, 2)})
-
-
-@dataclass
 class HashableSets:
-    scalars: frozenset = frozenset({1, "a"})  # pyrefly: ignore[implicit-any-type-argument]
+    scalars: frozenset[int | str] = frozenset({1, "a"})
     typed: set[tuple[int, int]] = field(default_factory=lambda: {(1, 2)})
-
-
-@pytest.mark.parametrize("config_cls", [BareSetOfTuples, AnySetOfTuples])
-def test_a_set_element_under_any_that_reloads_as_a_list_is_rejected(config_cls: type[Any]):
-    # Any hands back the plain form as written, and a tuple's plain form is a
-    # list, so the saved config could not rebuild its own set.
-    assert "must still be hashable after a load" in _issues(config_cls)["items"]
 
 
 def test_annotated_and_scalar_set_elements_round_trip_through_every_format():
@@ -477,31 +460,6 @@ class UserDictMapping:
 @pytest.mark.parametrize("config_cls", [ProxyMapping, UserDictMapping])
 def test_a_mapping_default_that_is_not_a_dict_is_rejected(config_cls: type[Any]):
     assert "defaults are validated as written" in _issues(config_cls)["values"]
-
-
-@dataclass
-class UnionAnyFirst:
-    values: set[Any | tuple[int, int]] = field(default_factory=lambda: {(1, 2)})
-
-
-@dataclass
-class UnionListFirst:
-    values: set[list[int] | tuple[int, ...]] = field(  # pyrefly: ignore[bad-assignment]
-        default_factory=lambda: {(1, 2)}
-    )
-
-
-@dataclass
-class TupleAnyNested:
-    values: set[tuple[Any, ...]] = field(default_factory=lambda: {((1, 2),)})
-
-
-@pytest.mark.parametrize("config_cls", [UnionAnyFirst, UnionListFirst, TupleAnyNested])
-def test_a_set_element_that_reloads_unhashable_through_its_annotation_is_rejected(config_cls: type[Any]):
-    # Reaching the unhashable form takes union selection in the first two cases
-    # and a nested Any in the third, so reading the annotation alone would miss
-    # all of them. The element is put through the actual round trip instead.
-    assert "must still be hashable after a load" in _issues(config_cls)["values"]
 
 
 # --- validating a default runs none of the schema's own code ------------------
@@ -580,11 +538,9 @@ def test_a_valid_enum_union_set_default_runs_no_user_code():
     assert SIDE_EFFECTS == []
 
 
-def test_a_union_that_shifts_to_a_section_is_rejected_without_running_it():
-    # The authored tuple matches the tuple member, but its plain form is a list,
-    # which the list[HookedSection] member would claim on reload. The rejection
-    # is reached by reading the annotation, so the section's factory and hooks
-    # stay unentered.
+def test_a_section_bearing_set_annotation_is_rejected_without_running_it():
+    # The annotation decides the rejection on its own, so the authored value is
+    # left untouched and the section's factory and hooks stay unentered.
     SIDE_EFFECTS.clear()
-    assert "must still be hashable after a load" in _issues(UnionShiftsToSection)["values"]
+    assert "cannot be built" in _issues(UnionShiftsToSection)["values"]
     assert SIDE_EFFECTS == []

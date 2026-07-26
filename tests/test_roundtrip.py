@@ -42,7 +42,6 @@ def test_containers_round_trip():
         tags={"a": 1, "b": 2},
         bare_tuple=(1, "two"),
         bare_list=[1, "two"],
-        bare_set={1, 2},
         bare_dict={"k": "v"},
         anything=[1, 2],
     )

@@ -101,16 +101,18 @@ Every sequence-container annotation accepts a sequence, a `set`, or a `frozenset
 | `tuple[T, ...]` | sequence/set, each item `T`-coercible | `tuple` | array |
 | `tuple[X, Y]` | sequence/set of exactly that arity | `tuple` | array |
 | `tuple[()]` / `typing.Tuple[()]` | empty sequence/set | `()` | `[]` |
-| `set[T]` / `frozenset[T]` | sequence/set of hashable `T`-coercible items | `set` / `frozenset` | array, deterministically ordered |
+| `set[T]` / `frozenset[T]` | sequence/set of `T`-coercible items, `T` a scalar or a tuple/frozenset whose arguments recursively satisfy the same rule | `set` / `frozenset` | array, deterministically ordered |
 | `Sequence[T]` | sequence/set of `T`-coercible items | `list` | array |
-| bare `list` / `tuple` / `set` / `frozenset` | sequence/set; elements pass through as `Any` | matching container | array |
+| bare `list` / `tuple` | sequence/set; elements pass through as `Any` | matching container | array |
 
 A few rules apply across every row of the table:
 
 - Elements coerce individually, and element issues carry their index in the path (`hidden_widths.1`).
 - String and bytes inputs follow scalar handling: a `list[str]` field reports a bare `"abc"` as one type mismatch.
-- An unhashable element headed into a set becomes a collected issue alongside any sibling issues.
-- A `set[T]` / `frozenset[T]` whose element type carries a config section is reported at preflight, since [config objects are unhashable](equality-and-hashing.md#config-objects-are-unhashable). Hold sections in a `list` or `tuple`, and key them by `config_hash(section)` when uniqueness matters.
+- A `str`, `int`, or temporal value handed straight to `from_dict` already satisfies its annotation, so a subclass instance is kept as supplied and reaches a set with its own hashing and equality. Building the set runs both, and a failure in either reports as `cannot build set[str]: unhashable type: 'NoHashStr'` alongside any sibling issues. A subclass whose hashing and equality both succeed builds normally, and a `float` or `Path` value is rebuilt through its own type. A `MemoryError` or `SystemError` travels to the caller, since it describes the interpreter rather than the config.
+- A `set[T]` / `frozenset[T]` element annotation is admitted when the plain data a file carries rebuilds hashable under it, which `T` settles on its own: a scalar, or a `tuple` / `frozenset` whose own arguments recursively satisfy that same rule. `set[str]`, `set[int | str]`, `set[Color]`, `set[tuple[str, int]]`, `set[frozenset[str]]`, and deeper shapes such as `set[tuple[tuple[int, str], frozenset[int]]]` all qualify. An `Enum` qualifies when it leaves hashing to the implementation it inherits. Anything else is reported at preflight naming the annotation as written, with a scalar element, a tuple of scalars, or a list as the remedy.
+- A `set[T]` / `frozenset[T]` whose element type carries a config section keeps a remedy of its own, since [config objects are unhashable](equality-and-hashing.md#config-objects-are-unhashable). Hold sections in a `list` or `tuple`, and key them by `config_hash(section)` when uniqueness matters.
+- A container annotation carries the type arguments the engine builds from: one element type for a sequence or set, a key and a value type for a mapping, and `...` only as the variadic marker of `tuple[T, ...]`. Anything else is reported at preflight naming the annotation as written.
 - A container field uses its default when it has one, and a required container needs a supplied value. An intentionally empty container is authored as `field(default_factory=list)`.
 
 Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int, int]` for a fixed `(warmup_steps, total_steps)` schedule pair, and `metrics: set[str]` for tracked metrics.
@@ -177,7 +179,7 @@ The accepted annotation set is explicit and closed:
 | --- | --- |
 | Scalars | `bool`, `int`, `float`, `str`, `Path`, `datetime`, `date`, `time`, `None` |
 | Enums / literals | `Enum` subclasses with primitive member values; `Literal` with primitive or `None` options |
-| Containers | `list`, `tuple`, `set`, `frozenset`, `dict`, `Sequence`, `Mapping` (str keys for mappings), bare or parameterized |
+| Containers | `list`, `tuple`, `dict`, `Sequence`, `Mapping` (str keys for mappings), bare or parameterized; `set` and `frozenset` parameterized with an element that [rebuilds hashable](#sequences-and-tuples) |
 | Structure | dataclasses (each `init=True` field boundary-checked; an `init=False` field holds runtime state and is exempt), unions of accepted members, `Optional[T]`, `Any` |
 | Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
 | Wrappers | `Annotated[T, ...]`, treated as `T`; on tensors, a `torch.dtype` entry pins the dtype and a fixed-arity all-`int` shape tuple such as `tuple[int, int]` enforces dimensionality, each usable alone or together; every other metadata entry passes through as ordinary annotation metadata |

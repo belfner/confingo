@@ -507,6 +507,52 @@ def _coerce_items(items: list[Any], element_hints: list[Any], path: str, collect
     return _UNSET if failed else coerced
 
 
+_RESOURCE_ERRORS = (MemoryError, SystemError)
+"""Exceptions describing the interpreter's own state rather than the config.
+
+These reach the caller unchanged, since an allocation failure or an interpreter
+defect would be named wrongly as invalid configuration. A ``RecursionError`` sits
+outside this set: hashing and comparing supplied values reach it through the depth
+of the values themselves, which is a property of the config being built.
+"""
+
+
+def _describe(exc: BaseException) -> str:
+    """Render an exception for a message without letting it fail again.
+
+    An exception raised by user code carries a ``__str__`` of its own, and that
+    call, the ``len`` of what it returns, and the rendering of what it returns
+    are each user code. The text is copied into an exact ``str`` so the last of
+    those cannot fail in the caller, the class name answers when either earlier
+    one does, and a fixed phrase answers when reading the class name raises too,
+    so reporting one failure stays one failure. A ``MemoryError`` or
+    ``SystemError`` from any of those calls travels on, as it does from building
+    a container, and so does a ``BaseException`` outside ``Exception``.
+
+    Args:
+      exc (BaseException): The caught exception.
+
+    Returns:
+      str: The exception's text, or its class name when rendering it fails.
+    """
+    try:
+        text = str(exc)
+        if len(text) > 0:
+            # str.__str__ copies the characters into an exact str, so a subclass
+            # carrying rendering hooks of its own cannot fail again downstream.
+            return str.__str__(text)
+    except _RESOURCE_ERRORS:
+        raise
+    except Exception:
+        pass
+    try:
+        return str.__str__(type(exc).__name__)
+    except _RESOURCE_ERRORS:
+        raise
+    except Exception:
+        return "an exception that could not be described"
+
+
 def _coerce_container(
     value: Any,
     hint: Any,
@@ -586,10 +632,16 @@ def _coerce_container(
     builder = _SEQUENCE_BUILDERS.get(origin, list)
     try:
         return builder(coerced_items)
-    except TypeError as exc:
-        # A set/frozenset of unhashable elements fails to build; report it as an
-        # issue rather than letting the raw TypeError escape the collector.
-        return _reject(collector, path, f"cannot build {_hint_name(hint)}: {exc}")
+    except _RESOURCE_ERRORS:
+        # The interpreter is reporting on itself rather than on the config, so
+        # this travels to the caller as the runtime failure it is.
+        raise
+    except Exception as exc:
+        # Building a set hashes each element, and coercion hands back a value that
+        # already satisfies its annotation, so an accepted subclass carrying its
+        # own hash reaches this point. Whatever that hash does arrives as an issue
+        # under the annotation as written.
+        return _reject(collector, path, f"cannot build {_hint_name(hint)}: {_describe(exc)}")
 
 
 def _coerce_scalar(value: Any, hint: Any, path: str, collector: _IssueCollector) -> Any:
@@ -669,11 +721,19 @@ def _coerce_enum(value: Any, hint: type[Enum], path: str, collector: _IssueColle
         The resolved enum member, or the ``_UNSET`` sentinel when no member matched.
     """
     try:
-        return hint(value)
+        resolved = hint(value)
     except ValueError:
-        pass
+        resolved = None
+    if type(resolved) is hint:
+        # Lookup goes through the enum class, so what it hands back is confirmed
+        # to belong to the annotation before it stands as the coerced value. The
+        # check reads the result's own type rather than asking the class, since
+        # the class's metaclass is the thing being confirmed.
+        return resolved
     if isinstance(value, str) and value in hint.__members__:
-        return hint[value]
+        member = hint[value]
+        if type(member) is hint:
+            return member
     options = ", ".join(repr(member.value) for member in hint)
     return _reject(collector, path, f"expected one of {options} for enum {hint.__name__}, got {value!r}")
 

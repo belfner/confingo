@@ -57,12 +57,11 @@ def test_literal_bool_int_distinction():
 
 
 def test_sequence_container_types():
-    cfg = from_dict(Containers, {"names": ["a", "b"], "frozen": [1, 2], "bare_set": [1, 2]})
+    cfg = from_dict(Containers, {"names": ["a", "b"], "frozen": [1, 2]})
     assert cfg.names == {"a", "b"}
     assert isinstance(cfg.names, set)
     assert cfg.frozen == frozenset({1, 2})
     assert isinstance(cfg.frozen, frozenset)
-    assert isinstance(cfg.bare_set, set)
 
 
 def test_fixed_tuple_arity_mismatch():

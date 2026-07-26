@@ -16,6 +16,7 @@ import re
 import types
 import typing
 from collections.abc import (
+    Iterable,
     Mapping,
     Sequence,
 )
@@ -465,7 +466,7 @@ def missing_dataclass_message(config_cls: Any) -> str:
       str: The rejection message naming the class and the required remedy.
     """
     label = getattr(config_cls, "__name__", _typename(config_cls))
-    return f"{label} is not a dataclass, so it carries no config schema. Declare it with @dataclass."
+    return f"{label} is not a dataclass, so it {_MISSING_DATACLASS_MARKER}. Declare it with @dataclass."
 
 
 _SUPPORTED_ANNOTATIONS = (
@@ -490,9 +491,16 @@ def unsupported_hint_message(hint: Any) -> str:
     if _looks_like_undecorated_schema(hint):
         return missing_dataclass_message(hint)
     return (
-        f"unsupported field type {_hint_name(hint)}; choose a supported annotation "
+        f"{_UNSUPPORTED_PREFIX}{_hint_name(hint)}; choose a supported annotation "
         f"({_SUPPORTED_ANNOTATIONS}) and derive other runtime values in an init=False field"
     )
+
+
+_UNSUPPORTED_PREFIX = "unsupported field type "
+"""Opening text of the type-boundary message, shared by its builder and its readers."""
+
+_MISSING_DATACLASS_MARKER = "carries no config schema"
+"""Text the missing-decorator message carries, shared by its builder and its readers."""
 
 
 _FOREIGN_MODEL_MARKERS: tuple[str, ...] = ("__attrs_attrs__", "model_fields", "__pydantic_fields__")
@@ -762,6 +770,10 @@ def _validate_hint_schema(
 
     origin = get_origin(hint)
     args = get_args(hint)
+    if origin is None and isinstance(hint, type) and hint in (set, frozenset):
+        # A bare set is set[Any]; routing it through the parameterized branch
+        # keeps one place deciding what a set element may name.
+        origin = hint
 
     if origin is Literal:
         # Exact type, not isinstance: an Enum member can subclass str/int yet fails
@@ -782,6 +794,10 @@ def _validate_hint_schema(
         if origin not in _CONTAINER_ORIGINS:
             issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
             return
+        malformed = _malformed_specialization(hint, origin, args)
+        if malformed is not None:
+            issues.append(ConfigIssue(path, malformed))
+            return
         if origin in (dict, Mapping):
             key_hint = args[0] if len(args) == 2 else str
             value_hint = args[1] if len(args) == 2 else Any
@@ -790,8 +806,14 @@ def _validate_hint_schema(
                 issues.append(ConfigIssue(path, message))
             _validate_hint_schema(value_hint, path, issues, defaults, seen)
             return
-        if origin in (set, frozenset) and any(_holds_config_section(arg) for arg in args):
-            issues.append(ConfigIssue(path, _section_set_message(hint)))
+        if origin in (set, frozenset):
+            # An argument-free set carries Any elements, the same as a bare one.
+            element_hints = args if len(args) > 0 else (Any,)
+            for element_hint in element_hints:
+                if element_hint is Ellipsis:
+                    continue
+                _validate_set_element(hint, element_hint, path, issues, defaults, seen)
+            return
         for element_hint in args:
             if element_hint is not Ellipsis:
                 _validate_hint_schema(element_hint, path, issues, defaults, seen)
@@ -820,14 +842,297 @@ def _validate_hint_schema(
     issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
 
 
+def _malformed_specialization(hint: Any, origin: Any, args: tuple[Any, ...]) -> str | None:
+    """Report how a container's type arguments depart from the form it builds from.
+
+    Construction reads one element type from a sequence or set annotation and a
+    key and value type from a mapping, and it reads ``...`` as the variadic marker
+    of ``tuple[T, ...]``. An annotation carrying more arguments than that, or
+    ``...`` anywhere else, describes something the engine has no reading for, and
+    Python accepts the spelling at runtime, so preflight names it.
+
+    Args:
+      hint (Any): The resolved container hint as written.
+      origin (Any): The container's unsubscripted origin type.
+      args (tuple[Any, ...]): The container's type arguments.
+
+    Returns:
+      str | None: The rejection message, or None when the arguments fit the form.
+    """
+    ellipsis_positions = [index for index, arg in enumerate(args) if arg is Ellipsis]
+    if origin is tuple:
+        if len(ellipsis_positions) > 0 and (len(args) != 2 or ellipsis_positions != [1]):
+            return (
+                f"{_hint_name(hint)} carries ... outside the variadic form; write tuple[T, ...] for a "
+                f"tuple of one repeated type, or name each position"
+            )
+        return None
+    if len(ellipsis_positions) > 0:
+        return (
+            f"{_hint_name(hint)} carries ..., which marks a variadic tuple; name the element type, or "
+            f"write tuple[T, ...] when a tuple of one repeated type is meant"
+        )
+    expected = 2 if origin in (dict, Mapping) else 1
+    if len(args) not in (0, expected):
+        written = "type arguments" if expected == 2 else "type argument"
+        return (
+            f"{_hint_name(hint)} carries {len(args)} type arguments; {_hint_name(origin)} builds from "
+            f"{expected} {written}"
+        )
+    return None
+
+
+def _validate_set_element(
+    hint: Any,
+    element_hint: Any,
+    path: str,
+    issues: list[ConfigIssue],
+    defaults: list[ConfigIssue],
+    seen: set[type[Any]],
+) -> None:
+    """Collect the schema issues one ``set`` / ``frozenset`` element annotation carries.
+
+    An annotation confingo has no construction semantics for is reported as the
+    unsupported type it is, since what it would rebuild is undefined. A supported
+    element that rebuilds a value a set cannot hold is reported against the
+    container as written. A section carries the ``config_hash`` remedy, and its
+    own schema is walked so defects inside it arrive in the same report.
+
+    Args:
+      hint (Any): The resolved ``set`` / ``frozenset`` hint being validated.
+      element_hint (Any): The element annotation to inspect.
+      path (str): Dotted schema path of the field carrying the container.
+      issues (list[ConfigIssue]): Destination for any schema issues found.
+      defaults (list[ConfigIssue]): Destination for authored-default issues.
+      seen (set[type[Any]]): Dataclasses already visited on this path.
+    """
+    # The element's own walk runs first, and its findings reach the report
+    # whatever else is decided, so a set element reports what the same annotation
+    # reports as an ordinary field.
+    element_issues: list[ConfigIssue] = []
+    _validate_hint_schema(element_hint, path, element_issues, defaults, seen)
+    issues.extend(element_issues)
+
+    kind = _rebuild_kind(element_hint)
+    if kind is _Rebuild.HASHABLE:
+        return
+    if _holds_config_section(element_hint):
+        # A section is unhashable whatever else its own schema reports, so the
+        # remedy belongs beside the defects inside it.
+        issues.append(ConfigIssue(path, _section_set_message(hint)))
+        return
+    if kind is _Rebuild.UNDECIDED:
+        # The only evidence was an annotation confingo cannot build from, and its
+        # own walk already reported that, so there is nothing further to claim.
+        return
+    issues.append(ConfigIssue(path, _unstable_set_element_message(hint, element_hint)))
+
+
+class _Rebuild(Enum):
+    """What a load rebuilds under one annotation, as far as the annotation says."""
+
+    HASHABLE = "hashable"
+    UNHASHABLE = "unhashable"
+    UNDECIDED = "undecided"
+
+
+def _hashable_stable(hint: Any) -> bool:
+    """Report whether plain data rebuilds hashable under an annotation.
+
+    Args:
+      hint (Any): The resolved element type hint to inspect.
+
+    Returns:
+      bool: True when plain data rebuilds hashable under this annotation.
+    """
+    return _rebuild_kind(hint) is _Rebuild.HASHABLE
+
+
+def _rebuild_kind(hint: Any) -> _Rebuild:
+    """Classify what a load rebuilds under an annotation.
+
+    A set holds its elements by hash, and a load rebuilds every element from the
+    plain form a file carries. Scalars rebuild as themselves, and ``tuple`` /
+    ``frozenset`` rebuild as immutable containers exactly when their own arguments
+    do, so the annotation settles it.
+
+    The third answer is what keeps a report honest. An annotation confingo has no
+    construction semantics for rebuilds something undecided, and a shape holding
+    one inherits that only when nothing else in it already settles the question: a
+    ``tuple`` holding a ``list`` rebuilds unhashable whatever sits beside the list.
+    So a container reports its own instability when that instability is
+    established on its own, and stays quiet when the only evidence was an
+    annotation whose meaning is undefined.
+
+    This covers the annotation, which is what a file round trip travels through.
+    A value handed straight to ``from_dict`` may already be an instance of a
+    supported type's subclass, and coercion returns such a value unchanged, so the
+    object entering the set can carry hashing and equality of its own. Building
+    the set is where that is answered, and it reports under the annotation as
+    written.
+
+    Args:
+      hint (Any): The resolved element type hint to inspect.
+
+    Returns:
+      _Rebuild: HASHABLE when every rebuild is hashable, UNHASHABLE when the
+        annotation establishes on its own that one is not, UNDECIDED when the
+        annotation carries no construction semantics to decide from.
+    """
+    if _arrays.inspect_annotation(hint).matched:
+        # An array rebuilds as an ordinary unhashable array.
+        return _Rebuild.UNHASHABLE
+    hint = _strip_annotated(hint)
+    if hint is Any:
+        # Any hands back whatever the plain form describes, including a list.
+        return _Rebuild.UNHASHABLE
+    if hint is type(None):
+        return _Rebuild.HASHABLE
+    origin = get_origin(hint)
+    args = get_args(hint)
+    if origin is Literal:
+        # Literal options are primitives, checked on their own above.
+        return _Rebuild.HASHABLE
+    if origin is typing.Union or origin is types.UnionType:
+        return _combine(_rebuild_kind(member) for member in args)
+    if origin is frozenset:
+        # A frozenset hashes its own members while it is built, so a member that
+        # rebuilds unhashable stops the frozenset from coming into existence
+        # rather than producing an unhashable one. Every frozenset a load does
+        # produce is hashable, and its members are judged on their own annotation
+        # as the set elements they are.
+        return _Rebuild.HASHABLE
+    if origin is tuple:
+        # A tuple holds whatever it is given, so a position that rebuilds
+        # unhashable produces a tuple that a set cannot hold.
+        return _combine(_rebuild_kind(arg) for arg in args if arg is not Ellipsis)
+    if origin is not None:
+        if origin in _CONTAINER_ORIGINS:
+            # list, dict, set, Sequence, and Mapping all rebuild unhashable.
+            return _Rebuild.UNHASHABLE
+        # Another generic origin carries no construction semantics at all.
+        return _Rebuild.UNDECIDED
+    if _is_dataclass_type(hint):
+        # A config object is unhashable by contract.
+        return _Rebuild.UNHASHABLE
+    if isinstance(hint, type):
+        if hint is frozenset:
+            # A bare frozenset builds a frozenset, which is hashable whenever it
+            # builds at all.
+            return _Rebuild.HASHABLE
+        if hint in _BARE_CONTAINERS:
+            # Every other bare container rebuilds a value a set cannot hold.
+            return _Rebuild.UNHASHABLE
+        if _is_supported_scalar(hint):
+            return _Rebuild.HASHABLE if _hash_is_inherited(hint) else _Rebuild.UNHASHABLE
+    return _Rebuild.UNDECIDED
+
+
+def _combine(kinds: Iterable[_Rebuild]) -> _Rebuild:
+    """Fold the answers for the parts of one shape into the answer for the shape.
+
+    One part that rebuilds unhashable settles the shape whatever sits beside it,
+    so it outranks a part whose meaning is undefined.
+
+    Args:
+      kinds (Iterable[_Rebuild]): One answer per part.
+
+    Returns:
+      _Rebuild: UNHASHABLE when any part is, UNDECIDED when any part is and none
+        is unhashable, HASHABLE when every part is.
+    """
+    undecided = False
+    for kind in kinds:
+        if kind is _Rebuild.UNHASHABLE:
+            return _Rebuild.UNHASHABLE
+        if kind is _Rebuild.UNDECIDED:
+            undecided = True
+    return _Rebuild.UNDECIDED if undecided else _Rebuild.HASHABLE
+
+
+def _is_supported_scalar(hint: type) -> bool:
+    """Report whether a class is one of the scalar types confingo builds.
+
+    Args:
+      hint (type): The class an element annotation names.
+
+    Returns:
+      bool: True when the class is a supported scalar leaf type.
+    """
+    if hint in (bool, int, float, str):
+        return True
+    return issubclass(hint, (Enum, Path, dt.date, dt.time))
+
+
+def _hash_is_inherited(hint: type) -> bool:
+    """Report whether a class leaves hashing to the implementation it inherits.
+
+    Coercion returns a member of the annotated class itself, so a set holds
+    whatever that class's ``__hash__`` describes. An enum may bind ``__hash__``
+    to None, which makes its own members unhashable, or replace it with a method
+    of its own. Reading the raw namespaces along the MRO answers this without
+    calling anything, so a hash that raises is settled here rather than escaping
+    a later construction.
+
+    Args:
+      hint (type): The scalar class an element annotation names.
+
+    Returns:
+      bool: True when the first ``__hash__`` along the MRO belongs to a class
+        whose hashing confingo relies on.
+    """
+    mro = type.__getattribute__(hint, "__mro__")
+    for klass in mro:
+        namespace = type.__getattribute__(klass, "__dict__")
+        if "__hash__" in namespace:
+            return klass in _DEPENDABLE_HASH_OWNERS
+    return True
+
+
+_DEPENDABLE_HASH_OWNERS: frozenset[Any] = frozenset(
+    klass
+    for base in (object, Enum, bool, int, float, str, Path, dt.datetime, dt.date, dt.time)
+    for klass in base.__mro__
+    if "__hash__" in vars(klass)
+)
+"""Classes whose ``__hash__`` a set element may rely on.
+
+Collected from the supported scalar types by walking each one's MRO, since the
+implementation a supported type hashes by often belongs to a base: ``Path``
+hashes by ``PurePath``, and ``IntEnum`` by ``int``. A scalar annotation reaching
+one of these first along its own MRO hashes by the implementation confingo builds
+its round trips against. A class binding ``__hash__`` itself describes hashing
+confingo would have to call to learn, so it is settled at preflight instead.
+"""
+
+
+def _unstable_set_element_message(hint: Any, element_hint: Any) -> str:
+    """Build the rejection message for a set element that rebuilds unhashable.
+
+    Args:
+      hint (Any): The resolved ``set`` / ``frozenset`` hint being rejected.
+      element_hint (Any): The element annotation that fails to rebuild hashable.
+
+    Returns:
+      str: The rejection message naming the annotation, the element, and the remedies.
+    """
+    return (
+        f"{_hint_name(hint)} cannot be built: a set element must rebuild hashable when a file is loaded, "
+        f"and {_hint_name(element_hint)} rebuilds a value a set cannot hold; use a scalar element, a tuple "
+        f"of scalars, or hold the values in a list"
+    )
+
+
 def _holds_config_section(hint: Any) -> bool:
-    """Report whether a set element annotation puts a config section where a hash is needed.
+    """Report whether a rejected set element names a config section.
 
     A config dataclass is unhashable, so an element annotation that names one --
     directly, as a union member, or inside the immutable ``tuple`` / ``frozenset``
-    shapes that can themselves sit in a set -- describes a collection that cannot
-    be built. The walk stops at the dataclass itself: reaching one is the whole
-    finding, so nothing recurses into its fields.
+    shapes that can themselves sit in a set -- has a remedy of its own worth
+    naming: ``config_hash`` is the value-identity operation. This selects that
+    message for an element ``_hashable_stable`` has already rejected. The walk
+    stops at the dataclass itself, so nothing recurses into its fields and a
+    self-referential schema terminates.
 
     Args:
       hint (Any): The resolved element type hint to inspect.

@@ -337,6 +337,20 @@ class HasHostileWithoutAnnotations:
     thing: HostileNoAnnotations = None  # pyrefly: ignore[bad-assignment]
 
 
+@dataclass
+class HostileClassUnderAny:
+    thing: Any = HostileClass
+
+
+def test_projecting_a_class_object_reports_it_instead_of_waking_its_metaclass():
+    # Any accepts the class object itself, so the plain-form gate is what judges
+    # it. Reading the raw namespaces to decide whether it is a config section
+    # keeps the metaclass hook dormant and leaves a ConfigError for the author.
+    assert _messages(HostileClassUnderAny)["thing"] == (
+        "invalid authored default: cannot serialize value of type RaisingMeta"
+    )
+
+
 def test_classifying_a_field_type_never_invokes_its_metaclass_hook():
     # Naming a class as an annotation is the only thing the author did, so
     # classifying it reads raw namespaces; an attribute lookup here would raise

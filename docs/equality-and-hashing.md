@@ -59,6 +59,8 @@ From its first schema processing a config class carries `__hash__ = None`, writt
 
 A collection annotation that would need to hash a section is rejected at schema preflight, so `frozenset[OptimizerConfig]` reports at load time rather than failing during construction. Use `list[OptimizerConfig]` or `tuple[OptimizerConfig, ...]` for the collection, and `config_hash(section)` as the key when uniqueness matters.
 
+The same preflight settles every other `set` and `frozenset` element from its annotation, since a load rebuilds each element from the plain form the file carries. An element annotation is admitted when it is a scalar, or a `tuple` / `frozenset` whose own arguments recursively satisfy that same rule, which is what keeps a saved config able to rebuild its own set.
+
 The `config_equal` free function compares two config objects by canonical value equality with the operator's same-class rule, ahead of any engine call and operating on the two instances alone. It evaluates the canonical relation directly, so it always gives the value-comparison answer.
 
 

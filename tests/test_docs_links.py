@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,11 +32,22 @@ _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$", re.MULTILINE)
 _FENCE = re.compile(r"^(?P<mark>```|~~~).*?^(?P=mark)", re.DOTALL | re.MULTILINE)
 """A fenced code block, whose closing marker matches the character it opened with."""
 
-_EMPHASIS_UNDERSCORE = re.compile(r"(?<![\w`])_+(\S(?:.*?\S)?)_+(?![\w`])")
+_EMPHASIS_UNDERSCORE = re.compile(r"(?<!\w)_+(\S(?:.*?\S)?)_+(?!\w)")
 """Underscores wrapping a run of text, which are emphasis markup around their content.
 
 An underscore inside a word (``snake_case``) or standing alone is literal text a
-viewer keeps in the anchor, so only the wrapping pair is removed.
+viewer keeps in the anchor, so only the wrapping pair is removed. Code spans are
+held aside before this runs, so the text it sees is markup a viewer resolves.
+"""
+
+_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
+"""A GFM code span, whose closing backtick run matches the length of its opening run.
+
+A delimiter is a complete run of one or more backticks, bounded on both sides
+so a run of three is never matched by a suffix of itself, and the closing run
+has the same length. A span opened with two therefore carries the literal
+underscores a viewer keeps in the anchor, while an unbalanced run stays literal
+text. See https://github.github.com/gfm/#code-spans.
 """
 
 _EXTERNAL = ("http://", "https://", "mailto:")
@@ -68,9 +81,18 @@ def _slug(heading: str) -> str:
       str: The base fragment for that heading, before any duplicate suffix.
     """
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    text = re.sub(r"`([^`]*)`", r"\1", text)
+    # Code spans are held aside while emphasis is resolved, so an underscore a
+    # viewer keeps as literal code text survives the emphasis pass.
+    spans: list[str] = []
+
+    def _hold(match: re.Match[str]) -> str:
+        spans.append(match.group(2))
+        return f"\x00{len(spans) - 1}\x00"
+
+    text = _CODE_SPAN.sub(_hold, text)
     text = re.sub(r"(\*\*|\*|~~)", "", text)
     text = _EMPHASIS_UNDERSCORE.sub(r"\1", text)
+    text = re.sub(r"\x00(\d+)\x00", lambda match: spans[int(match.group(1))], text)
     text = text.strip().lower()
     text = re.sub(r"[^\w\s-]", "", text)
     return re.sub(r"\s+", "-", text)
@@ -135,3 +157,39 @@ def test_every_markdown_fragment_names_a_heading():
             if fragment not in _anchors(destination):
                 broken.append(f"{path.relative_to(REPO_ROOT)} -> {target}")
     assert broken == []
+
+
+@pytest.mark.parametrize(
+    ("heading", "fragment"),
+    [
+        ("`_foo_`", "_foo_"),
+        ("``_foo_``", "_foo_"),
+        ("```_foo_``", "foo"),
+        ("_em_ and ``_code_``", "em-and-_code_"),
+        ("`a` then `b_c`", "a-then-b_c"),
+        ("_Helpful_", "helpful"),
+        ("snake_case", "snake_case"),
+        ("heading with an _ underscore", "heading-with-an-_-underscore"),
+        ("`from_dict(config_cls)`", "from_dictconfig_cls"),
+        ("_`foo`_", "foo"),
+        ("__bold__ text", "bold-text"),
+        ("a `b_c` and _d_", "a-b_c-and-d"),
+    ],
+    ids=[
+        "code-span-underscores",
+        "double-backtick-span",
+        "unbalanced-backtick-run",
+        "emphasis-beside-double-backtick",
+        "two-spans",
+        "emphasis",
+        "word-underscore",
+        "standalone-underscore",
+        "code-call",
+        "emphasis-around-code",
+        "strong",
+        "code-and-emphasis",
+    ],
+)
+def test_slug_keeps_literal_underscores_and_drops_emphasis(heading: str, fragment: str):
+    """A code span's underscores are literal text; emphasis markers are markup."""
+    assert _slug(heading) == fragment

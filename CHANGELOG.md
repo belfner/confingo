@@ -27,6 +27,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   raises `TypeError: unhashable type: 'RunConfig'; use config_hash(config) for
   value identity`. Replace `hash(config)` and set or mapping membership with
   `config_hash(config)`.
+- **Breaking.** A `set` or `frozenset` element annotation is admitted at schema
+  preflight when the plain form a file carries rebuilds hashable under it: a
+  scalar, or a `tuple` / `frozenset` whose own arguments
+  recursively satisfy that same rule. `set[str]`, `set[int | str]`,
+  `set[Color]`, `set[tuple[str, int]]`, `set[frozenset[str]]`, and deeper shapes
+  such as `set[tuple[tuple[int, str], frozenset[int]]]` all qualify. An `Enum`
+  qualifies when it leaves hashing to the implementation it inherits, so one that
+  binds `__hash__` itself is settled at preflight rather than while a set is
+  built. Anything else is reported naming the annotation as written, with a
+  scalar element, a tuple of scalars, or a list as the remedy: `set[Any]`, a bare
+  `set`, an argument-free `set[()]`, `set[list[int]]`, `set[int | list[int]]`,
+  `set[tuple[int, Any]]`, and an array element among them. Deciding this from the
+  annotation settles a saved config's ability to rebuild its own set, and it
+  leaves the authored value untouched. Rewrite `set[Any]` as `set[str]` or
+  whichever scalar the values carry, and hold anything else in a list.
 - **Breaking.** Set annotations whose elements carry a config section, whether
   directly, through a union, or inside an immutable `tuple` / `frozenset` shape,
   are rejected at schema preflight, naming the annotation as written and
@@ -47,10 +62,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`. The
   annotated type is required exactly, so a subclass instance for a base-class
   annotation and a `MappingProxyType` for a `dict[str, int]` annotation are both
-  reported: each exports a shape its own annotation cannot reload. A set element is
-  also put through the round trip: its plain form is rebuilt under the element's
-  own annotation, and the result has to be hashable, so a tuple written into a
-  bare `set` is reported because it reloads as a list.
+  reported: each exports a shape its own annotation cannot reload.
+- A container annotation whose type arguments depart from the form the engine
+  builds from is reported at schema preflight naming the annotation as written:
+  a sequence or set carries one element type, a mapping carries a key and a
+  value type, and `...` marks the variadic form of `tuple[T, ...]` alone. So
+  `set[int, str]`, `list[int, str]`, `dict[str, int, int]`, `set[...]`,
+  `tuple[...]`, and `tuple[int, ..., str]` each report rather than reaching
+  construction, where only the leading arguments were read.
 - The type-boundary message names the supported annotation categories and the
   `init=False` remedy: `unsupported field type Decimal; choose a supported
   annotation (bool, int, float, str, Path, date/time, Enum/Literal, dataclass,

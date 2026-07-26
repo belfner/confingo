@@ -18,7 +18,6 @@ from dataclasses import (
 )
 from typing import (
     TYPE_CHECKING,
-    Any,
     NewType,
 )
 
@@ -101,7 +100,7 @@ def test_init_false_key_is_not_configurable():
 
 @dataclass
 class SetHolder:
-    s: set[Any] = field(default_factory=set)
+    s: set[str] = field(default_factory=set)
     n: int = 0
 
 
@@ -109,9 +108,9 @@ def test_unhashable_set_element_collected():
     with pytest.raises(ConfigError) as info:
         from_dict(SetHolder, {"s": [{}], "n": "bad"})
     messages = [i.message for i in info.value.issues]
-    # No raw TypeError escaped, and the sibling issue is still collected.
-    assert any("cannot build" in m for m in messages)
-    assert any("expected int" in m for m in messages)
+    # A ConfigError carries the element issue, and the sibling issue is still collected.
+    assert any("expected str" in m for m in messages), messages
+    assert any("expected int" in m for m in messages), messages
 
 
 # --- Optional[nested] preserves nested collect-all detail ----------------

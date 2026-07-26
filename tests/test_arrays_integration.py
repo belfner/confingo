@@ -524,3 +524,18 @@ def test_config_hash_is_stable_across_processes():
         "print(config_hash(built))\n"
     )
     assert run_python(code) == run_python(code)
+
+
+def test_an_array_element_in_a_set_is_rejected_at_preflight():
+    """An array rebuilds as an ordinary unhashable array, so a set cannot hold one.
+
+    A conforming array subclass that defines its own ``__hash__`` can be put in a
+    Python set and would pass a value-level check, while the load that rebuilds it
+    produces a plain array. The annotation settles it before any value is read.
+    """
+    holder = schema_for(set[npt.NDArray[np.float64]])
+    with pytest.raises(ConfigError) as info:
+        from_dict(holder, {})
+    messages = [issue.message for issue in info.value.issues]
+    assert any("cannot be built" in message for message in messages), messages
+    assert any("hold the values in a list" in message for message in messages), messages

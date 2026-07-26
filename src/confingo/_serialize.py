@@ -15,7 +15,6 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from confingo._errors import (
 from confingo._schema import (
     _ClassifiedField,
     _classify_dataclass_fields,
+    _is_dataclass_type,
     _join,
     _typename,
 )
@@ -151,7 +151,9 @@ def _to_plain(value: Any, path: str, collector: _IssueCollector, *, projection: 
         if not math.isfinite(value):
             return _reject(collector, path, f"cannot serialize non-finite float {value!r}")
         return value
-    if is_dataclass(value) and not isinstance(value, type):
+    # Reading the raw namespaces keeps a hostile metaclass __getattr__ dormant,
+    # so a class object carried under Any is reported rather than left to raise.
+    if not isinstance(value, type) and _is_dataclass_type(value_type):
         node: dict[str, Any] = {}
         node_failed = False
         for classified in _projected_fields(type(value), projection):
