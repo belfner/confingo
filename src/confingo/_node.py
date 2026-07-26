@@ -1,19 +1,19 @@
-"""Base class exposing the marshal / unmarshal helpers as methods.
+"""Base class exposing the marshal / unmarshal helpers under one accessor.
 
 A config dataclass that subclasses ``ConfigNode`` gains the free-function
-helpers as methods: the ``from_*`` / ``load_*`` builders as classmethods and the
-``to_*`` / ``dumps_*`` / ``save_*`` / ``config_hash`` operations as instance
-methods, each delegating to the matching free function. Any dataclass in a
-config tree may subclass it, at any depth; a section that stays a plain
-dataclass is walked by introspection exactly as before, and the free functions
-cover it.
+helpers under ``cfg``: the ``from_*`` / ``load_*`` builders and ``validate``
+answer on the class and on a value alike, and the ``to_*`` / ``dumps_*`` /
+``save_*`` / ``hash`` operations read the value they are called on, each
+delegating to the matching free function. Any dataclass in a config tree may
+subclass it, at any depth; a section that stays a plain dataclass is walked by
+introspection exactly as before, and the free functions cover it.
 
-Each method is scoped to the node it is called on: ``node.to_dict()`` renders
-that node's subtree, ``node.config_hash()`` fingerprints that subtree, and
-``Node.from_dict(...)`` reports issue paths relative to that node. The engine
-reaches a nested node through the same generic recursion it uses for a plain
-dataclass, so subclassing changes the method surface without changing how the
-tree builds, serializes, or validates.
+Each operation is scoped to the node it is reached through:
+``node.cfg.to_dict()`` renders that node's subtree, ``node.cfg.hash()``
+fingerprints that subtree, and ``Node.cfg.from_dict(...)`` reports issue paths
+relative to that node. The engine reaches a nested node through the same generic
+recursion it uses for a plain dataclass, so subclassing adds the accessor while
+the tree builds, serializes, and validates the same way.
 """
 
 from __future__ import annotations
@@ -25,9 +25,13 @@ from dataclasses import (
 from typing import (
     TYPE_CHECKING,
     Any,
+    Generic,
+    TypeVar,
+    overload,
 )
 
 from confingo._core import from_dict as _from_dict
+from confingo._core import validate as _validate
 from confingo._equality import (
     _canonical_eq,
     _custom_eq_owner,
@@ -53,7 +57,6 @@ from confingo._yaml import save_yaml as _save_yaml
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
-    from typing import Self
 
 
 def facade_collision_message(class_name: str, attr_name: str, source: str) -> str:
@@ -255,19 +258,298 @@ def _inherited_field_owner(cls: type[Any], name: str) -> type[Any] | None:
     )
 
 
+_NodeT = TypeVar("_NodeT")
+
+
+class _ConfigFacade(Generic[_NodeT]):
+    """The operations a config class answers, bound to the class it was reached through.
+
+    Reached as ``Config.cfg``. The builders and ``validate`` read the class, so
+    a class is all they need. ``_ValueFacade`` extends this with the operations
+    that read a config object, and is what instance access hands out.
+    """
+
+    __slots__ = ("_instance", "_owner")
+
+    def __init__(self, owner: type[_NodeT], instance: _NodeT | None) -> None:
+        """Bind the facade to one class and, when reached from a value, that value.
+
+        Args:
+          owner (type[_NodeT]): The config class the facade was reached through.
+          instance (_NodeT | None): The config object it was reached through, or
+            None for class access.
+        """
+        self._owner = owner
+        self._instance = instance
+
+    def _value(self, operation: str) -> _NodeT:
+        """Return the config object this facade is bound to.
+
+        Args:
+          operation (str): The operation being called, named in the message.
+
+        Returns:
+          _NodeT: The bound config object.
+
+        Raises:
+          TypeError: When the facade was reached through the class, which carries
+            no value to operate on.
+        """
+        if self._instance is None:
+            raise TypeError(
+                f"{self._owner.__name__}.cfg.{operation}() reads a config object; "
+                f"call it on an instance, as config.cfg.{operation}()"
+            )
+        return self._instance
+
+    def from_dict(self, data: Mapping[str, Any], *, context: str = "config") -> _NodeT:
+        """Build an instance from a nested mapping, reporting every problem at once.
+
+        Issue paths are relative to this node, so a leaf that reports as
+        ``trainer.lr`` when built through the enclosing config reports as ``lr``
+        here.
+
+        Args:
+          data (Mapping[str, Any]): Nested mapping of config values, typically
+            parsed from a config file.
+          context (str = "config"): Description of the config source used in the
+            error summary.
+
+        Returns:
+          _NodeT: The constructed config object, typed as the class the facade
+            was reached through.
+
+        Raises:
+          ConfigError: When the mapping fails to build; the exception lists every
+            issue found.
+        """
+        return _from_dict(self._owner, data, context=context)
+
+    def load_json(self, path: str | Path) -> _NodeT:
+        """Load a JSON file into an instance.
+
+        Args:
+          path (str | Path): Path to the JSON file.
+
+        Returns:
+          _NodeT: The constructed config object, typed as the class the facade
+            was reached through.
+
+        Raises:
+          ConfigError: When the file is unreadable, malformed, non-mapping, or
+            fails validation.
+        """
+        return _load_json(self._owner, path)
+
+    def load_yaml(self, path: str | Path) -> _NodeT:
+        """Load a YAML file into an instance.
+
+        Args:
+          path (str | Path): Path to the YAML file.
+
+        Returns:
+          _NodeT: The constructed config object, typed as the class the facade
+            was reached through.
+
+        Raises:
+          ConfigError: When the file is unreadable, malformed, non-mapping, or
+            fails validation.
+        """
+        return _load_yaml(self._owner, path)
+
+    def from_file(self, path: str | Path) -> _NodeT:
+        """Load a config file into an instance, choosing the reader by extension.
+
+        A ``.json`` path reads JSON; a ``.yaml`` or ``.yml`` path reads YAML.
+
+        Args:
+          path (str | Path): Path to the config file.
+
+        Returns:
+          _NodeT: The constructed config object, typed as the class the facade
+            was reached through.
+
+        Raises:
+          ConfigError: When the extension names no supported format, or the file
+            is unreadable, malformed, non-mapping, or fails validation.
+        """
+        return _from_file(self._owner, path)
+
+    def validate(self, *, context: str = "config schema") -> None:
+        """Check this class's schema without building anything from it.
+
+        Walks the whole tree the class declares, recursing into nested sections
+        and into sections held in lists, tuples, sets, and dict values. No config
+        data is read and no ``default_factory`` is called.
+
+        Args:
+          context (str = "config schema"): Description of the schema used in the
+            error summary.
+
+        Raises:
+          ConfigError: When the schema carries any issue; the exception lists
+            every issue found in the whole tree.
+        """
+        _validate(self._owner, context=context)
+
+
+class _ValueFacade(_ConfigFacade[_NodeT]):
+    """Every config operation, bound to the config object it was reached through.
+
+    Reached as ``config.cfg``. It carries the class operations of
+    ``_ConfigFacade`` along with the operations that render, write, or
+    fingerprint the bound value.
+    """
+
+    __slots__ = ()
+
+    def to_dict(self) -> Any:
+        """Convert this node's subtree into plain JSON-safe Python data.
+
+        Returns:
+          Any: The converted plain-data structure.
+        """
+        return _to_dict(self._value("to_dict"))
+
+    def dumps_json(self, *, indent: int = 2) -> str:
+        """Render this node's subtree as JSON text.
+
+        Args:
+          indent (int = 2): Number of spaces per indentation level.
+
+        Returns:
+          str: The JSON document, ending with a newline.
+        """
+        return _dumps_json(self._value("dumps_json"), indent=indent)
+
+    def save_json(self, path: str | Path, *, indent: int = 2) -> Path:
+        """Write this node's subtree to a JSON file, replacing the target atomically.
+
+        The document holds this node's fields, so it loads back through this
+        node's class.
+
+        Args:
+          path (str | Path): Destination file path. Parent directories are created as needed.
+          indent (int = 2): Number of spaces per indentation level.
+
+        Returns:
+          Path: The path written.
+        """
+        return _save_json(self._value("save_json"), path, indent=indent)
+
+    def dumps_yaml(self, *, indent: int = 2, sort_keys: bool = False) -> str:
+        """Render this node's subtree as a YAML document.
+
+        Args:
+          indent (int = 2): Number of spaces per indentation level.
+          sort_keys (bool = False): Whether to sort mapping keys.
+
+        Returns:
+          str: The YAML document, ending with a newline.
+        """
+        return _dumps_yaml(self._value("dumps_yaml"), indent=indent, sort_keys=sort_keys)
+
+    def save_yaml(self, path: str | Path, *, indent: int = 2, sort_keys: bool = False) -> Path:
+        """Write this node's subtree to a YAML file, replacing the target atomically.
+
+        The document holds this node's fields, so it loads back through this
+        node's class.
+
+        Args:
+          path (str | Path): Destination file path. Parent directories are created as needed.
+          indent (int = 2): Number of spaces per indentation level.
+          sort_keys (bool = False): Whether to sort mapping keys.
+
+        Returns:
+          Path: The path written.
+        """
+        return _save_yaml(self._value("save_yaml"), path, indent=indent, sort_keys=sort_keys)
+
+    def to_file(self, path: str | Path, *, indent: int = 2) -> Path:
+        """Write this node's subtree to a file, choosing the writer by extension.
+
+        A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML.
+
+        Args:
+          path (str | Path): Destination file path. Parent directories are created as needed.
+          indent (int = 2): Number of spaces per indentation level.
+
+        Returns:
+          Path: The path written.
+
+        Raises:
+          ConfigError: When the extension names no supported format.
+        """
+        return _to_file(self._value("to_file"), path, indent=indent)
+
+    def hash(self, *, length: int = 12) -> str:
+        """Fingerprint this node's subtree with a stable digest over its canonical JSON form.
+
+        The digest ranges over the hashing fields (``init=True``, ``compare=True``,
+        effective hash enabled), so a ``compare=False`` or ``hash=False`` field is
+        carried by ``to_dict`` yet excluded from the digest. The digest covers
+        this node's subtree, so a nested node fingerprints its own section rather
+        than the enclosing config.
+
+        Args:
+          length (int = 12): Number of leading hex characters to return.
+
+        Returns:
+          str: The truncated SHA-256 digest.
+        """
+        return _config_hash(self._value("hash"), length=length)
+
+
+class _CfgAccessor:
+    """The descriptor that hands out a bound facade.
+
+    One reserved name carries every operation, so a config class is free to name
+    its own fields and methods anything else. Class access is typed as the class
+    operations alone and value access as every operation, so an operation that
+    reads a config object is offered where a config object exists.
+    """
+
+    @overload
+    def __get__(self, instance: None, owner: type[_NodeT]) -> _ConfigFacade[_NodeT]: ...
+
+    @overload
+    def __get__(self, instance: _NodeT, owner: type[_NodeT] | None = None) -> _ValueFacade[_NodeT]: ...
+
+    def __get__(self, instance: Any, owner: type[Any] | None = None) -> _ConfigFacade[Any]:
+        """Bind the facade to whichever of the class and the instance was used.
+
+        Class access carries the class it was reached through, and instance
+        access carries the instance's own type, so a builder answers with the
+        subclass the caller named rather than the base. One runtime type carries
+        every operation, so a value operation reached from the class raises the
+        naming ``TypeError`` that names the instance form.
+
+        Args:
+          instance (Any): The config object, or None for class access.
+          owner (type[Any] | None = None): The class the attribute was reached through.
+
+        Returns:
+          _ConfigFacade[Any]: The ``_ValueFacade`` bound to that class and instance.
+        """
+        if owner is None:
+            owner = type(instance)
+        return _ValueFacade(owner, instance)
+
+
 class ConfigNode:
     """Mixin adding marshal / unmarshal methods to a config dataclass.
 
     Subclass this on any config dataclass, at any depth in the tree, then
     decorate it with ``@dataclass`` as usual. The class carries its own schema,
-    so building and loading read as ``Config.load_json(path)`` rather than
+    so building and loading read as ``Config.cfg.load_json(path)`` rather than
     ``load_json(Config, path)``, and a nested section that subclasses it gains
-    the same methods over its own subtree.
+    the same operations over its own subtree.
 
-    Subclassing reserves the eleven facade method names: a field, class-body
-    binding, or base-supplied member of the same name is rejected at class
-    creation, since it would resolve ahead of the method and leave the node's
-    advertised surface unusable.
+    Subclassing reserves one name, ``cfg``, which carries every operation: a
+    field, class-body binding, or base-supplied member of that name is rejected
+    at class creation, since it would resolve ahead of the accessor and leave the
+    node's advertised surface unusable. Every other name a config class might
+    want, ``validate`` and ``to_dict`` among them, stays free.
 
     Subclassing also installs canonical equality from class-creation time:
     ``__init_subclass__`` plants the canonical ``__eq__`` and a raising
@@ -326,173 +608,12 @@ class ConfigNode:
             # beside it. First schema touch replaces it with None.
             cls.__hash__ = _unhashable_config  # type: ignore[method-assign]
 
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any], *, context: str = "config") -> Self:
-        """Build an instance from a nested mapping, reporting every problem at once.
+    cfg = _CfgAccessor()
+    """Every config operation, reached through one name.
 
-        Issue paths are relative to this node, so a leaf that reports as
-        ``trainer.lr`` when built through the enclosing config reports as ``lr``
-        here.
-
-        Args:
-          data (Mapping[str, Any]): Nested mapping of config values, typically parsed from a config file.
-          context (str = "config"): Description of the config source used in the
-            error summary, by default ``"config"``.
-
-        Returns:
-          Self: The constructed config object, typed as the calling subclass.
-
-        Raises:
-          ConfigError: When the mapping fails to build; the exception lists every
-            issue found.
-        """
-        return _from_dict(cls, data, context=context)
-
-    @classmethod
-    def load_json(cls, path: str | Path) -> Self:
-        """Load a JSON file into an instance.
-
-        Args:
-          path (str | Path): Path to the JSON file.
-
-        Returns:
-          Self: The constructed config object, typed as the calling subclass.
-
-        Raises:
-          ConfigError: When the file is unreadable, holds invalid JSON, holds a
-            non-object document, or fails validation.
-        """
-        return _load_json(cls, path)
-
-    @classmethod
-    def load_yaml(cls, path: str | Path) -> Self:
-        """Load a YAML file into an instance.
-
-        Args:
-          path (str | Path): Path to the YAML file.
-
-        Returns:
-          Self: The constructed config object, typed as the calling subclass.
-
-        Raises:
-          ConfigError: When the file is unreadable, holds invalid YAML, holds a
-            non-mapping document, or fails validation.
-        """
-        return _load_yaml(cls, path)
-
-    @classmethod
-    def from_file(cls, path: str | Path) -> Self:
-        """Load a config file into an instance, choosing the loader by extension.
-
-        A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML.
-
-        Args:
-          path (str | Path): Path to the config file.
-
-        Returns:
-          Self: The constructed config object, typed as the calling subclass.
-
-        Raises:
-          ConfigError: When the extension names no supported format, or the file
-            is unreadable, malformed, non-mapping, or fails validation.
-        """
-        return _from_file(cls, path)
-
-    def to_dict(self) -> Any:
-        """Convert this node's subtree into plain JSON-safe Python data.
-
-        Returns:
-          Any: The converted plain-data structure.
-        """
-        return _to_dict(self)
-
-    def dumps_json(self, *, indent: int = 2) -> str:
-        """Render this node's subtree as JSON text.
-
-        Args:
-          indent (int = 2): Number of spaces per indentation level, by default 2.
-
-        Returns:
-          str: The JSON document, ending with a newline.
-        """
-        return _dumps_json(self, indent=indent)
-
-    def save_json(self, path: str | Path, *, indent: int = 2) -> Path:
-        """Write this node's subtree to a JSON file, replacing the target atomically.
-
-        The document holds this node's fields, so it loads back through this
-        node's class.
-
-        Args:
-          path (str | Path): Destination file path. Parent directories are created as needed.
-          indent (int = 2): Number of spaces per indentation level, by default 2.
-
-        Returns:
-          Path: The path written.
-        """
-        return _save_json(self, path, indent=indent)
-
-    def dumps_yaml(self, *, indent: int = 2, sort_keys: bool = False) -> str:
-        """Render this node's subtree as a YAML document.
-
-        Args:
-          indent (int = 2): Number of spaces per indentation level, by default 2.
-          sort_keys (bool = False): Whether to sort mapping keys, by default False.
-
-        Returns:
-          str: The YAML document, ending with a newline.
-        """
-        return _dumps_yaml(self, indent=indent, sort_keys=sort_keys)
-
-    def save_yaml(self, path: str | Path, *, indent: int = 2, sort_keys: bool = False) -> Path:
-        """Write this node's subtree to a YAML file, replacing the target atomically.
-
-        The document holds this node's fields, so it loads back through this
-        node's class.
-
-        Args:
-          path (str | Path): Destination file path. Parent directories are created as needed.
-          indent (int = 2): Number of spaces per indentation level, by default 2.
-          sort_keys (bool = False): Whether to sort mapping keys, by default False.
-
-        Returns:
-          Path: The path written.
-        """
-        return _save_yaml(self, path, indent=indent, sort_keys=sort_keys)
-
-    def to_file(self, path: str | Path, *, indent: int = 2) -> Path:
-        """Write this node's subtree to a file, choosing the writer by extension.
-
-        A ``.json`` path writes JSON; a ``.yaml`` or ``.yml`` path writes YAML.
-
-        Args:
-          path (str | Path): Destination file path. Parent directories are created as needed.
-          indent (int = 2): Number of spaces per indentation level, by default 2.
-
-        Returns:
-          Path: The path written.
-
-        Raises:
-          ConfigError: When the extension names no supported format.
-        """
-        return _to_file(self, path, indent=indent)
-
-    def config_hash(self, *, length: int = 12) -> str:
-        """Fingerprint this node's subtree with a stable digest over its canonical JSON form.
-
-        The digest ranges over the hashing fields (``init=True``, ``compare=True``,
-        effective hash enabled), so a ``compare=False`` or ``hash=False`` field is
-        carried by ``to_dict`` yet excluded from the digest. The digest covers
-        this node's subtree, so a nested node fingerprints its own section rather
-        than the enclosing config.
-
-        Args:
-          length (int = 12): Number of leading hex characters to return, by default 12.
-
-        Returns:
-          str: The truncated SHA-256 digest.
-        """
-        return _config_hash(self, length=length)
+    ``Config.cfg`` carries the builders and the schema check; ``config.cfg``
+    carries those plus the operations that read a value.
+    """
 
 
 _FACADE_METHODS: dict[str, Any] = {
@@ -514,14 +635,12 @@ resolve ahead of the method and leave the node's advertised surface unusable, so
 each is rejected at class creation.
 """
 
-_FACADE_CLASSMETHOD_NAMES: frozenset[str] = frozenset(
-    name for name in _FACADE_NAMES if isinstance(vars(ConfigNode)[name], classmethod)
-)
+_FACADE_CLASSMETHOD_NAMES: frozenset[str] = frozenset(_FACADE_NAMES)
 """The subset of the facade reached through the class rather than an instance.
 
-Only these are exposed to metaclass data-descriptor precedence, since instance
-attribute lookup consults the instance's type and its MRO rather than the
-metaclass.
+The accessor answers on the class as well as on a value, so it is exposed to
+metaclass data-descriptor precedence, which instance attribute lookup would
+otherwise leave out by consulting the instance's type and its MRO alone.
 """
 
 

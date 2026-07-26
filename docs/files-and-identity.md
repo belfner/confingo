@@ -24,9 +24,9 @@ Both formats share the same plain-data model (mappings, sequences, strings, numb
 ## JSON
 
 ```python
-config.save_json("resolved.json")        # atomic write, returns Path
-text = config.dumps_json()               # indent=2, trailing newline
-config = TrainingConfig.load_json(path)  # ConfigError on any failure
+config.cfg.save_json("resolved.json")        # atomic write, returns Path
+text = config.cfg.dumps_json()               # indent=2, trailing newline
+config = TrainingConfig.cfg.load_json(path)  # ConfigError on any failure
 ```
 
 Output uses two-space indentation by default (`indent` parameter), escapes text to ASCII, keeps field-declaration order, and ends with a trailing newline.
@@ -37,8 +37,8 @@ Output uses two-space indentation by default (`indent` parameter), escapes text 
 YAML support ships with the base install, alongside the JSON loaders:
 
 ```python
-config = TrainingConfig.load_yaml("experiment.yaml")
-config.save_yaml("resolved.yaml")
+config = TrainingConfig.cfg.load_yaml("experiment.yaml")
+config.cfg.save_yaml("resolved.yaml")
 ```
 
 - Loading uses `safe_load` and saving uses `safe_dump`, restricted to the shared plain-data model.
@@ -50,8 +50,8 @@ config.save_yaml("resolved.yaml")
 `from_file` / `to_file` (and the matching `ConfigNode` methods) route by file suffix: `.json`, `.yaml`, and `.yml`, case-insensitive.
 
 ```python
-config = TrainingConfig.from_file("experiment.yaml")
-config.to_file(run_dir / "resolved.json")
+config = TrainingConfig.cfg.from_file("experiment.yaml")
+config.cfg.to_file(run_dir / "resolved.json")
 ```
 
 A path with a missing or unrecognized suffix raises `ConfigError` naming the supported extensions.
@@ -66,8 +66,8 @@ Every authored default that reaches the built object has already passed its [ann
 A save called on a nested [config node](schema-design.md#config-nodes) writes that node's own subtree, so the document holds the section's fields and loads back through the section's class:
 
 ```python
-config.optimizer.save_json(run_dir / "optimizer.json")
-optimizer = OptimizerConfig.load_json(run_dir / "optimizer.json")
+config.optimizer.cfg.save_json(run_dir / "optimizer.json")
+optimizer = OptimizerConfig.cfg.load_json(run_dir / "optimizer.json")
 ```
 
 Loading that same file through the enclosing class applies the enclosing schema, which reports the section's keys against it.
@@ -78,19 +78,19 @@ Loading that same file through the enclosing class applies the enclosing schema,
 `config_hash` fingerprints the resolved config: the leading `length` hex characters (12 by default, up to the full 64) of SHA-256 over the canonical compact JSON of the config's hashing fields. Equal resolved configs produce equal hashes across processes and `PYTHONHASHSEED` values, because the canonical JSON depends only on the resolved values, which makes the hash a natural run-directory name for sweeps:
 
 ```python
-run_id = config.config_hash()          # "8e6ea26c7116"
+run_id = config.cfg.hash()          # "8e6ea26c7116"
 
 for overrides in sweep:
-    config = ExperimentConfig.from_dict({**base, **overrides})
-    run_dir = Path("runs") / config.config_hash()
+    config = ExperimentConfig.cfg.from_dict({**base, **overrides})
+    run_dir = Path("runs") / config.cfg.hash()
     run_dir.mkdir(parents=True, exist_ok=True)
-    config.save_json(run_dir / "resolved.json")
+    config.cfg.save_json(run_dir / "resolved.json")
 ```
 
 Called on a nested [config node](schema-design.md#config-nodes), `config_hash` fingerprints that node's subtree, which gives a section its own identity for caching or naming:
 
 ```python
-optimizer_id = config.optimizer.config_hash()
+optimizer_id = config.optimizer.cfg.hash()
 ```
 
 The digest rules, the `compare` and `hash` field projections, the scope of a subtree digest, and array and tensor hashing live in [Equality and hashing](equality-and-hashing.md#stable-run-identity).

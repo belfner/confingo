@@ -119,10 +119,10 @@ class NormalizeConfig(ConfigNode):
 ```
 
 ```python
-config = NormalizeConfig.load_json("normalize.json")
+config = NormalizeConfig.cfg.load_json("normalize.json")
 config.channel_mean            # array([0.485, 0.456, 0.406]), dtype float64
-config.save_json("resolved.json")
-run_id = config.config_hash()
+config.cfg.save_json("resolved.json")
+run_id = config.cfg.hash()
 ```
 
 Two limits apply to every array field, in both directions. Every element must be

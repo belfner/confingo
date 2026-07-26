@@ -6,7 +6,10 @@ unmarshal config files back into validated dataclass trees.
 
 from __future__ import annotations
 
-from confingo._core import from_dict
+from confingo._core import (
+    from_dict,
+    validate,
+)
 from confingo._equality import config_equal
 from confingo._errors import (
     ConfigError,
@@ -53,4 +56,5 @@ __all__ = [
     "save_yaml",
     "to_dict",
     "to_file",
+    "validate",
 ]

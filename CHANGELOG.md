@@ -111,15 +111,34 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- A `ConfigNode` subclass reserves the eleven facade names (`from_dict`,
-  `load_json`, `load_yaml`, `from_file`, `to_dict`, `dumps_json`, `save_json`,
-  `dumps_yaml`, `save_yaml`, `to_file`, `config_hash`). A node declares none of
-  them: any annotation or class-body binding under one of these names is
-  rejected at class creation, as is one supplied by a base ahead of `ConfigNode`
-  in the MRO, inherited as a field, or supplied as a metaclass data descriptor,
-  with every collision on the class reported together. Declarations are read
-  rather than resolved, so a descriptor under a reserved name is never run. The
-  same names carry no restriction on a plain dataclass.
+- `validate(config_cls, *, context="config schema")` checks a dataclass type's
+  schema without reading any config data, and `Config.cfg.validate()` does the
+  same through a node, taking the same `context` keyword. It
+  walks the whole declared tree, recursing into nested sections and into
+  sections held in lists, tuples, sets, and dict values, and raises
+  `ConfigError` listing every unsupported annotation and every authored default
+  that does not already carry its annotation's runtime type. No
+  `default_factory` runs. It is the check `from_dict` performs before it builds,
+  so a class that validates raises no schema issue at load time.
+- **Breaking.** `ConfigNode` carries its operations under one accessor, `cfg`.
+  `Config.cfg.load_json(path)`, `config.cfg.to_dict()`, and `config.cfg.hash()`
+  replace `Config.load_json`, `config.to_dict`, and `config.config_hash`. The
+  builders and `validate` answer on the class as well as on a value, and an
+  operation that reads a value names the instance form when it is reached from
+  the class. One reserved name leaves a config class free to declare a field or
+  method called `validate`, `to_dict`, `from_dict`, or anything else. The free
+  functions are unchanged, `config_hash(config)` among them. Rewrite
+  `Config.method(...)` as `Config.cfg.method(...)` and `config.config_hash()` as
+  `config.cfg.hash()`. The receiver decides which operations are offered:
+  `Config.cfg` carries the builders and `validate`, and `config.cfg` carries
+  those plus the operations that read a value, a split a type checker sees.
+- A `ConfigNode` subclass reserves the accessor name `cfg`. A node declares
+  nothing under it: an annotation or class-body binding named `cfg` is rejected
+  at class creation, as is one supplied by a base ahead of `ConfigNode` in the
+  MRO, inherited as a field, or supplied as a metaclass data descriptor.
+  Declarations are read rather than resolved, so a descriptor under the reserved
+  name is never run. `cfg` carries no restriction on a plain dataclass, and
+  every other name is free on a node.
 - A `ConfigNode` subclass that inherits a hand-written `__eq__` or `__hash__`
   from a base is rejected at class creation, naming the base that owns it, since
   the canonical methods land on the subclass ahead of the decorator.
@@ -217,8 +236,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   PyTorch array paths share one validation and indexed issue-reporting kernel,
   scalar coercion routes through a shared ISO temporal parser, and equality and
   hashing ownership resolves through one method-contract helper. Every docstring
-  follows the project's Google style. The public API (`from confingo import ...`)
-  and observable behavior are preserved.
+  follows the project's Google style. The free functions keep their names,
+  signatures, and behavior across the split.
 ## [0.2.0] - 2026-07-22
 
 ### Added

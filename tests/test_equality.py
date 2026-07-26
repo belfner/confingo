@@ -138,7 +138,7 @@ def test_node_sentinel_survives_decoration_then_becomes_none_at_first_touch(node
     with pytest.raises(TypeError) as info:
         hash(node_cls())
     assert str(info.value) == expected
-    node_cls.from_dict({})
+    node_cls.cfg.from_dict({})
     assert node_cls.__dict__["__hash__"] is None
     with pytest.raises(TypeError, match="unhashable type"):
         hash(node_cls())

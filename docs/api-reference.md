@@ -21,6 +21,7 @@ from confingo import (
     save_json,
     to_dict,
     to_file,
+    validate,
 )
 from confingo import dumps_yaml, load_yaml, save_yaml
 ```
@@ -35,6 +36,10 @@ Learn more: [Schema design](schema-design.md), [Types and coercion](types-and-co
 ### `from_dict(config_cls, data, *, context="config") -> T`
 
 Builds `config_cls` (a dataclass type) from a mapping, coercing each value toward its annotation and collecting every issue before raising `ConfigError`. `context` names the source in error messages.
+
+### `validate(config_cls, *, context="config schema") -> None`
+
+Checks a dataclass type's schema without reading any config data. Walks the whole declared tree, recursing into nested sections and into sections held in lists, tuples, sets, and dict values, and raises `ConfigError` listing every unsupported annotation and every authored default that does not already carry its annotation's runtime type. No `default_factory` runs. This is the same check `from_dict` performs before it builds, so a class that validates here raises no schema issue at load time.
 
 ### `to_dict(value) -> Any`
 
@@ -96,26 +101,31 @@ Frozen dataclass; one problem at one dotted path. `str(issue)` renders `path: me
 
 The receiver defines the operation scope: a method called on a nested node builds, exports, fingerprints, or writes that node's own subtree, and issue paths are relative to it.
 
-Subclassing reserves the eleven method names below. A node declares none of them: any annotation or class-body binding under one of these names is rejected at class creation with a `config schema` error, as is one supplied by a base ahead of `ConfigNode` in the MRO, inherited as a field, or supplied as a metaclass data descriptor. The same names carry no restriction on a plain dataclass.
+The receiver also decides which operations are offered. `Config.cfg` carries the builders and `validate`, which read the class. `config.cfg` carries those plus the operations that render, write, or fingerprint a value. A type checker sees the same split, so an operation that reads a config object is offered where a config object exists; reached from the class at run time it raises a `TypeError` naming the instance form.
+
+Subclassing reserves one name, `cfg`, which carries the operations below. A node declares nothing under it: an annotation or class-body binding named `cfg` is rejected at class creation with a `config schema` error, as is one supplied by a base ahead of `ConfigNode` in the MRO, inherited as a field, or supplied as a metaclass data descriptor. `cfg` carries no restriction on a plain dataclass.
 
 | Method | Free function |
 | --- | --- |
-| `Config.from_dict(data, *, context="config")` | `from_dict(Config, data, *, context="config")` |
-| `Config.load_json(path)` | `load_json(Config, path)` |
-| `Config.load_yaml(path)` | `load_yaml(Config, path)` |
-| `Config.from_file(path)` | `from_file(Config, path)` |
-| `config.to_dict()` | `to_dict(config)` |
-| `config.dumps_json(*, indent=2)` | `dumps_json(config, *, indent=2)` |
-| `config.save_json(path, *, indent=2)` | `save_json(config, path, *, indent=2)` |
-| `config.dumps_yaml(*, indent=2, sort_keys=False)` | `dumps_yaml(config, *, indent=2, sort_keys=False)` |
-| `config.save_yaml(path, *, indent=2, sort_keys=False)` | `save_yaml(config, path, *, indent=2, sort_keys=False)` |
-| `config.to_file(path, *, indent=2)` | `to_file(config, path, *, indent=2)` |
-| `config.config_hash(*, length=12)` | `config_hash(config, *, length=12)` |
+| `Config.cfg.from_dict(data, *, context="config")` | `from_dict(Config, data, *, context="config")` |
+| `Config.cfg.load_json(path)` | `load_json(Config, path)` |
+| `Config.cfg.load_yaml(path)` | `load_yaml(Config, path)` |
+| `Config.cfg.from_file(path)` | `from_file(Config, path)` |
+| `Config.cfg.validate(*, context="config schema")` | `validate(Config, *, context="config schema")` |
+| `config.cfg.to_dict()` | `to_dict(config)` |
+| `config.cfg.dumps_json(*, indent=2)` | `dumps_json(config, *, indent=2)` |
+| `config.cfg.save_json(path, *, indent=2)` | `save_json(config, path, *, indent=2)` |
+| `config.cfg.dumps_yaml(*, indent=2, sort_keys=False)` | `dumps_yaml(config, *, indent=2, sort_keys=False)` |
+| `config.cfg.save_yaml(path, *, indent=2, sort_keys=False)` | `save_yaml(config, path, *, indent=2, sort_keys=False)` |
+| `config.cfg.to_file(path, *, indent=2)` | `to_file(config, path, *, indent=2)` |
+| `config.cfg.hash(*, length=12)` | `config_hash(config, *, length=12)` |
 
 
 ## Choosing a surface
 
-The method style suits a root class that owns its schema (`TrainingConfig.load_json(path)` reads naturally at call sites). The free functions suit plain dataclass roots and library code that receives the config class as a parameter. Both surfaces are equivalent and stay in sync by construction.
+The method style suits a root class that owns its schema (`TrainingConfig.cfg.load_json(path)` reads naturally at call sites). The free functions suit plain dataclass roots and library code that receives the config class as a parameter. Both surfaces are equivalent and stay in sync by construction.
+
+A helper written over any node class takes the class itself, `def build(config_cls: type[NodeT]) -> NodeT`, and reaches the builder through `config_cls.cfg.from_dict(...)` or `from_dict(config_cls, ...)`. Both routes carry the caller's own class into the return type, so the helper answers with the subclass it was handed. Helpers written over a node value keep the value operations, whose results (`str` from `hash`, `Path` from `save_json`, plain data from `to_dict`) stand on their own.
 
 
 ## Class contracts

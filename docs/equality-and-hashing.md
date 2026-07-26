@@ -49,7 +49,7 @@ The same guard rejects `@dataclass` flags that conflict with that ownership, rep
 `hash(config)`, a config used as a dictionary key, and a config placed in a set each raise `TypeError`. [`config_hash`](#stable-run-identity) is the value-identity operation: it is stable across processes, where a Python hash is randomized per process for `str` keys, and it ranges over the same fields as canonical equality.
 
 ```python
-config = RunConfig.load_json("config.json")
+config = RunConfig.cfg.load_json("config.json")
 
 runs = {config_hash(config): config}          # keyed by value identity
 seen = {config_hash(section) for section in sections}
@@ -80,8 +80,8 @@ lands. The full table lives in [field options](schema-design.md#field-options):
 `config_hash` fingerprints the resolved config:
 
 ```python
-run_id = config.config_hash()          # "8e6ea26c7116"
-long_id = config.config_hash(length=32)
+run_id = config.cfg.hash()          # "8e6ea26c7116"
+long_id = config.cfg.hash(length=32)
 ```
 
 The hash is the leading `length` hex characters of SHA-256 over the canonical compact JSON (sorted mapping keys, deterministic set ordering) of the config's hashing fields: those that are `init=True`, `compare=True`, and hashed (the defaults). A [`field(compare=False)` or `field(hash=False)`](schema-design.md#field-options) still serializes through `to_dict` while the digest covers the hashing fields, and an `init=False` field holds runtime state. `length` defaults to 12; the useful range is 1-64, and the full digest is 64.
@@ -98,13 +98,13 @@ Two properties make it useful as a run identity:
 `config_hash` covers exactly the object it is called on, so a nested [config node](schema-design.md#config-nodes) fingerprints its own section:
 
 ```python
-run_id = config.config_hash()              # covers the whole config
-optimizer_id = config.optimizer.config_hash()   # covers the optimizer section
+run_id = config.cfg.hash()              # covers the whole config
+optimizer_id = config.optimizer.cfg.hash()   # covers the optimizer section
 ```
 
 Three consequences follow from the digest being a content fingerprint:
 
-- Each dataclass level applies its own field projection, so an enclosing field declared `hash=False` keeps that whole section out of the enclosing digest while the section's own `config_hash()` still tracks its fields. Two configs differing only inside such a section share an enclosing digest and carry distinct section digests.
+- Each dataclass level applies its own field projection, so an enclosing field declared `hash=False` keeps that whole section out of the enclosing digest while the section's own `section.cfg.hash()` still tracks its fields. Two configs differing only inside such a section share an enclosing digest and carry distinct section digests.
 - The canonical JSON records values and structure, so two classes whose hashing fields encode identically produce the same digest. A section digest identifies content rather than the class that held it.
 - Prefix collision resistance is governed by `length` at every level, so a short section digest carries the same trade-off a short run id does.
 
@@ -112,10 +112,10 @@ That makes the hash a natural run-directory name for sweeps:
 
 ```python
 for overrides in sweep:
-    config = ExperimentConfig.from_dict({**base, **overrides})
-    run_dir = Path("runs") / config.config_hash()
+    config = ExperimentConfig.cfg.from_dict({**base, **overrides})
+    run_dir = Path("runs") / config.cfg.hash()
     run_dir.mkdir(parents=True, exist_ok=True)
-    config.save_json(run_dir / "resolved.json")
+    config.cfg.save_json(run_dir / "resolved.json")
 ```
 
 

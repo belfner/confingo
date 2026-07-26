@@ -85,19 +85,19 @@ from config import TrainingConfig
 
 
 def main() -> None:
-    config = TrainingConfig.load_json("train.json")
+    config = TrainingConfig.cfg.load_json("train.json")
 
     print(f"optimizer.name: {config.optimizer.name}")
     print(f"optimizer.lr: {config.optimizer.lr}")
     print(f"seed: {config.seed}")
 
     # OptimizerConfig is a ConfigNode too, so it fingerprints its own section.
-    print(f"optimizer id: {config.optimizer.config_hash()}")
+    print(f"optimizer id: {config.optimizer.cfg.hash()}")
 
-    run_id = config.config_hash()
+    run_id = config.cfg.hash()
     print(f"run id: {run_id}")
 
-    resolved = config.save_json(config.output_dir / run_id / "resolved.json")
+    resolved = config.cfg.save_json(config.output_dir / run_id / "resolved.json")
     print(f"saved: {resolved}")
 
 
@@ -241,7 +241,7 @@ conversion rules.
 ## Load and use typed values
 
 ```python
-config = TrainingConfig.load_json("train.json")
+config = TrainingConfig.cfg.load_json("train.json")
 
 config.model.hidden_widths   # (256, 128), a tuple per the annotation
 config.data.dataset_path     # Path("data/cifar10")
@@ -406,9 +406,9 @@ Saving writes the resolved in-memory object, defaults included, so the output
 file is a complete record of the run:
 
 ```python
-run_id = config.config_hash()          # "8e6ea26c7116"
+run_id = config.cfg.hash()          # "8e6ea26c7116"
 run_dir = config.output_dir / run_id
-config.save_json(run_dir / "resolved.json")
+config.cfg.save_json(run_dir / "resolved.json")
 ```
 
 `config_hash` is a stable fingerprint of the resolved config: two processes
@@ -450,17 +450,17 @@ built-in issue source, and custom validation hooks.
 over its own subtree:
 
 ```python
-config.optimizer.to_dict()      # {'name': 'adamw', 'lr': 0.001, 'weight_decay': 0.01}
-config.optimizer.config_hash()  # "41263e6f3612"
-config.optimizer.save_json("optimizer.json")
-OptimizerConfig.load_json("optimizer.json")
+config.optimizer.cfg.to_dict()      # {'name': 'adamw', 'lr': 0.001, 'weight_decay': 0.01}
+config.optimizer.cfg.hash()  # "41263e6f3612"
+config.optimizer.cfg.save_json("optimizer.json")
+OptimizerConfig.cfg.load_json("optimizer.json")
 ```
 
 Issue paths follow the same scope. Building the section on its own reports its
 leaves relative to it:
 
 ```python
-OptimizerConfig.from_dict({"lr": "fast"})
+OptimizerConfig.cfg.from_dict({"lr": "fast"})
 # config has 2 issues:
 #   - name: missing required value
 #   - lr: expected float, got str

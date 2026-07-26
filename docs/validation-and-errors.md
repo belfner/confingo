@@ -40,7 +40,7 @@ confingo.ConfigError: config file train.json has 4 issues:
 
 Paths use dots for fields, indexes for sequence elements, and keys for mapping entries: `stages.0.name`, `datasets.train.path`.
 
-Paths are relative to the object the operation was entered on, and `<root>` names that object. Loading through the whole config reports a leaf as `optimizer.lr`; loading the same section through `OptimizerConfig.from_dict(...)` reports it as `lr`, since the mapping supplied to that call is the document the path locates values in. Pass `context="optimizer override"` to label which source a subtree load was reading.
+Paths are relative to the object the operation was entered on, and `<root>` names that object. Loading through the whole config reports a leaf as `optimizer.lr`; loading the same section through `OptimizerConfig.cfg.from_dict(...)` reports it as `lr`, since the mapping supplied to that call is the document the path locates values in. Pass `context="optimizer override"` to label which source a subtree load was reading.
 
 
 ## Handling errors in a training CLI
@@ -50,7 +50,7 @@ Catch `ConfigError` at startup and fail fast, before allocating accelerators:
 ```python
 def main() -> int:
     try:
-        config = TrainingConfig.from_file(sys.argv[1])
+        config = TrainingConfig.cfg.from_file(sys.argv[1])
     except ConfigError as err:
         print(err, file=sys.stderr)
         return 2
@@ -120,7 +120,7 @@ Each `ConfigIssue` is a frozen dataclass with `.path` and `.message`. `str(issue
 
 ```python
 try:
-    config = TrainingConfig.load_json(path)
+    config = TrainingConfig.cfg.load_json(path)
 except ConfigError as err:
     for issue in err.issues:
         print(issue.path, "->", issue.message)
@@ -156,7 +156,7 @@ The context on the raised error tells you where the problem came from:
 - An `init=False` field still awaiting a value after `__post_init__`: `init=False field was not set during __post_init__`.
 - A schema class that hand-writes `__eq__` or `__hash__`, since [confingo owns equality and hashing](schema-design.md#canonical-equality): `<Class> defines a custom __eq__` / `__hash__`. A `ConfigNode` subclass reports this at class creation, both together when it defines both, and reports the same way when it inherits a hand-written definition from a base, naming the base that owns it; a plain dataclass reports it at its first schema touch.
 - A schema class declared with a `@dataclass` flag that conflicts with confingo's ownership of equality and hashing (`init=False`, `unsafe_hash=True`, `eq=False`, or `order=True`), each named in the message, with every violation on one class reported together at first schema processing. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, because the node installs its own `__hash__` ahead of the decorator.
-- A `ConfigNode` subclass that declares or inherits one of the eleven reserved method names: `<Class>.<name> is declared as a field, which shadows the ConfigNode method of the same name`. Reported at class creation, with every collision on one class together. The message names where the shadowing member comes from, so a class-body binding reads `is bound in the class body`, an inherited field reads `is inherited as a field from <Base>`, a base member reads `is supplied by base <Base>`, and a metaclass descriptor reads `is supplied as a data descriptor by metaclass <Meta>`.
+- A `ConfigNode` subclass that declares or inherits the reserved name `cfg`: `<Class>.cfg is declared as a field, which shadows the ConfigNode method of the same name`. Reported at class creation. The message names where the shadowing member comes from, so a class-body binding reads `is bound in the class body`, an inherited field reads `is inherited as a field from <Base>`, a base member reads `is supplied by base <Base>`, and a metaclass descriptor reads `is supplied as a data descriptor by metaclass <Meta>`.
 - A `ConfigNode` subclass that declares annotations without carrying `@dataclass`: its own names stay outside the schema and only the inherited fields load, so the class is reported at its schema path with the remedy to decorate it. `ClassVar` annotations raise no such error, since they are not fields in the first place.
 - A class that is not a dataclass, reported instead of the bare `TypeError` the standard library would raise: `<Class> is not a dataclass, so it carries no config schema. Declare it with @dataclass.` An entry class reports at the root, carrying the calling operation's context, so a file load still reports against the file it was reading. A class named as a field type reports at that field's path, and reaches it through a section, a container, a union, or a mapping value alike. The route is chosen by the class declaring its own annotations without carrying dataclass fields, which is what a forgotten decorator looks like; a `TypedDict`, a `NamedTuple`, and a class with no annotations of its own each stay on the type-boundary message below.
 - An annotation outside the supported type set, at the field carrying it: `unsupported field type Decimal; choose a supported annotation (bool, int, float, str, Path, date/time, Enum/Literal, dataclass, container/union, array/tensor, or Any) and derive other runtime values in an init=False field`. One builder produces this wherever the boundary is reached, so preflight and construction word it identically. The [`init=False`](schema-design.md#field-options) remedy is the supported way to hold a runtime object such as an open connection or a compiled model beside the configured values.

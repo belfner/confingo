@@ -61,7 +61,7 @@ def test_facade_name_as_method_override_is_rejected(name: str):
 
 def test_facade_name_inherited_as_a_field_is_rejected():
     """A reserved name inherited as a field from a plain base is rejected."""
-    base = make_dataclass("PlainBaseWithToDict", [("to_dict", str, field(default="x"))])
+    base = make_dataclass("PlainBaseWithToDict", [("cfg", str, field(default="x"))])
     with pytest.raises(ConfigError) as error:
         type("InheritsShadow", (base, ConfigNode), {})
     assert "is inherited as a field from PlainBaseWithToDict" in _messages(error.value)
@@ -69,7 +69,7 @@ def test_facade_name_inherited_as_a_field_is_rejected():
 
 def test_facade_name_inherited_as_a_field_is_rejected_with_the_node_base_first():
     """A field reaches the instance, so base order relative to ConfigNode is immaterial."""
-    base = make_dataclass("PlainBaseFirstOrder", [("to_dict", str, field(default="x"))])
+    base = make_dataclass("PlainBaseFirstOrder", [("cfg", str, field(default="x"))])
     with pytest.raises(ConfigError) as error:
         make_dataclass("NodeBaseFirst", [("x", int, field(default=1))], bases=(ConfigNode, base))
     assert "is inherited as a field from PlainBaseFirstOrder" in _messages(error.value)
@@ -77,7 +77,7 @@ def test_facade_name_inherited_as_a_field_is_rejected_with_the_node_base_first()
 
 def test_facade_field_inherited_through_a_deeper_mro_is_rejected():
     """The field search runs base-ward, so a grandparent's field is still caught."""
-    root = make_dataclass("GrandparentWithFacade", [("config_hash", str, field(default="x"))])
+    root = make_dataclass("GrandparentWithFacade", [("cfg", str, field(default="x"))])
     middle = make_dataclass("MiddleNode", [("m", int, field(default=1))], bases=(root,))
     with pytest.raises(ConfigError) as error:
         make_dataclass("DeepNode", [("d", int, field(default=2))], bases=(ConfigNode, middle))
@@ -86,14 +86,14 @@ def test_facade_field_inherited_through_a_deeper_mro_is_rejected():
 
 def test_facade_name_supplied_by_a_base_after_config_node_is_accepted():
     """A plain binding after ConfigNode in the MRO loses to the facade, so it is no collision."""
-    mixin = type("LateLoaderMixin", (), {"load_json": lambda self: None})
+    mixin = type("LateLoaderMixin", (), {"cfg": lambda self: None})
     node = make_dataclass("NodeBeforeMixin", [("a", int, field(default=1))], bases=(ConfigNode, mixin))
-    assert node.load_json.__self__ is node
+    assert node.cfg._owner is node
 
 
 def test_facade_name_supplied_by_an_earlier_base_is_rejected():
     """A base preceding ConfigNode that supplies a reserved name is rejected."""
-    mixin = type("LoaderMixin", (), {"load_json": lambda self: None})
+    mixin = type("LoaderMixin", (), {"cfg": lambda self: None})
     with pytest.raises(ConfigError) as error:
         type("InheritsMixin", (mixin, ConfigNode), {})
     assert "is supplied by base LoaderMixin" in _messages(error.value)
@@ -102,38 +102,39 @@ def test_facade_name_supplied_by_an_earlier_base_is_rejected():
 def test_facade_name_in_own_slots_is_rejected():
     """A ``__slots__`` entry becomes a class-dict descriptor, which shadows the method."""
     with pytest.raises(ConfigError) as error:
-        type("SlotShadow", (ConfigNode,), {"__slots__": ("to_dict",)})
-    assert "to_dict" in _messages(error.value)
+        type("SlotShadow", (ConfigNode,), {"__slots__": ("cfg",)})
+    assert "cfg" in _messages(error.value)
 
 
 def test_facade_name_as_a_property_is_rejected():
     """A property of a reserved name is a class-body binding like any other."""
     with pytest.raises(ConfigError) as error:
-        type("PropertyShadow", (ConfigNode,), {"to_dict": property(lambda self: "x")})
-    assert "to_dict" in _messages(error.value)
+        type("PropertyShadow", (ConfigNode,), {"cfg": property(lambda self: "x")})
+    assert "cfg" in _messages(error.value)
 
 
 def test_facade_name_in_a_later_base_slots_keeps_the_method():
     """A ``__slots__`` descriptor after ConfigNode loses to the facade in MRO order."""
-    slot_base = type("LateSlotBase", (), {"__slots__": ("to_dict",)})
+    slot_base = type("LateSlotBase", (), {"__slots__": ("cfg",)})
     node = type("NodeBeforeSlots", (ConfigNode, slot_base), {})
-    assert callable(node().to_dict)
+    assert node().cfg is not None
 
 
-def test_every_collision_on_one_class_is_reported_together():
+def test_a_collision_names_the_accessor_and_the_way_it_was_taken():
     with pytest.raises(ConfigError) as error:
         make_dataclass(
             "ManyShadows",
-            [("to_dict", str, field(default="a")), ("config_hash", str, field(default="b"))],
+            [("cfg", str, field(default="a"))],
             bases=(ConfigNode,),
         )
-    assert len(error.value.issues) == 2
+    assert len(error.value.issues) == 1
+    assert "ManyShadows.cfg is declared as a field" in error.value.issues[0].message
 
 
 def test_reserved_names_are_free_on_a_plain_dataclass():
     """A plain dataclass shadows no method, so the same names carry no restriction."""
-    plain = make_dataclass("PlainWithFacadeNames", [("to_dict", str, field(default="x"))])
-    assert from_dict(plain, {"to_dict": "y"}).to_dict == "y"
+    plain = make_dataclass("PlainWithFacadeNames", [("cfg", str, field(default="x"))])
+    assert from_dict(plain, {"cfg": "y"}).cfg == "y"
 
 
 @pytest.mark.parametrize("annotation", ["int", "ClassVar[int]", "InitVar[int]", "ClassVarLike[int]"])
@@ -145,21 +146,21 @@ def test_a_node_may_not_annotate_a_reserved_name_at_all(annotation: str):
     reason to spell one of its own method names.
     """
     with pytest.raises(ConfigError) as error:
-        type("OwnAnnotation", (ConfigNode,), {"__annotations__": {"to_dict": annotation}})
+        type("OwnAnnotation", (ConfigNode,), {"__annotations__": {"cfg": annotation}})
     assert "is declared as a field" in _messages(error.value)
 
 
 def test_inherited_class_var_of_a_reserved_name_is_still_accepted():
     """What a class inherits is judged by what lands on it, which fields() answers exactly."""
     node = make_dataclass("OverInheritedCV", [("y", int, field(default=2))], bases=(ConfigNode, ClassVarMetadataBase))
-    assert callable(node(y=2).to_dict)
+    assert node(y=2).cfg is not None
 
 
 class RaisingDescriptorMeta(type):
     """Metaclass whose descriptor raises when resolution touches it."""
 
     @property
-    def load_json(cls) -> str:
+    def cfg(cls) -> str:
         raise RuntimeError("resolved during class creation")
 
 
@@ -175,20 +176,20 @@ class SplitDescriptor:
     """Descriptor handing back the real method for class access and a string otherwise."""
 
     def __get__(self, instance: object, owner: type | None = None) -> object:
-        return ConfigNode.to_dict if instance is None else "shadow"
+        return ConfigNode.__dict__["cfg"] if instance is None else "shadow"
 
 
 def test_descriptor_matching_the_method_on_class_access_is_rejected():
     """Class access cannot establish instance behavior, so the binding alone rejects."""
     with pytest.raises(ConfigError) as error:
-        type("SplitShadow", (ConfigNode,), {"to_dict": SplitDescriptor()})
+        type("SplitShadow", (ConfigNode,), {"cfg": SplitDescriptor()})
     assert "is bound in the class body" in _messages(error.value)
 
 
 def test_staticmethod_wrapping_a_builder_function_is_rejected():
     """The underlying function matches, but a staticmethod drops the class binding."""
-    builder = ConfigNode.__dict__["load_json"].__func__
-    mixin = type("StaticBuilderMixin", (), {"load_json": staticmethod(builder)})
+    builder = ConfigNode.__dict__["cfg"]
+    mixin = type("StaticBuilderMixin", (), {"cfg": staticmethod(builder)})
     with pytest.raises(ConfigError) as error:
         make_dataclass("StaticShadow", [("x", int, field(default=1))], bases=(mixin, ConfigNode))
     assert "is supplied by base StaticBuilderMixin" in _messages(error.value)
@@ -196,27 +197,14 @@ def test_staticmethod_wrapping_a_builder_function_is_rejected():
 
 def test_bound_builder_alias_from_config_node_is_rejected():
     """An alias stays bound to ConfigNode, so engine calls would target the wrong class."""
-    mixin = type("AliasMixin", (), {"load_json": ConfigNode.load_json})
+    mixin = type("AliasMixin", (), {"cfg": ConfigNode.__dict__["cfg"]})
     with pytest.raises(ConfigError) as error:
         make_dataclass("AliasShadow", [("x", int, field(default=1))], bases=(mixin, ConfigNode))
     assert "is supplied by base AliasMixin" in _messages(error.value)
 
 
-def test_reserved_surface_is_the_documented_eleven_methods():
-    """A public method added to ConfigNode is reserved, and deliberately so."""
-    assert set(_FACADE_NAMES) == {
-        "config_hash",
-        "dumps_json",
-        "dumps_yaml",
-        "from_dict",
-        "from_file",
-        "load_json",
-        "load_yaml",
-        "save_json",
-        "save_yaml",
-        "to_dict",
-        "to_file",
-    }
+def test_reserved_surface_is_one_accessor():
+    assert set(_FACADE_NAMES) == {"cfg"}
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +262,7 @@ def test_decorated_plain_child_of_a_hand_written_eq_base_is_accepted():
 def test_node_subclassing_a_plain_dataclass_is_accepted():
     base = make_dataclass("OrdinaryBase", [("a", int, field(default=1))])
     node = make_dataclass("NodeOverOrdinary", [("b", int, field(default=2))], bases=(base, ConfigNode))
-    assert node.from_dict({"a": 3}).a == 3
+    assert node.cfg.from_dict({"a": 3}).a == 3
 
 
 # ---------------------------------------------------------------------------
@@ -307,22 +295,22 @@ class NoNewFields(DecoratedNode):
 
 def test_undecorated_subclass_declaring_a_field_is_rejected():
     with pytest.raises(ConfigError) as error:
-        ForgotDecorator.from_dict({"a": 7})
+        ForgotDecorator.cfg.from_dict({"a": 7})
     assert "did not apply @dataclass" in _messages(error.value)
     assert "ForgotDecorator" in _messages(error.value)
 
 
 def test_undecorated_subclass_with_only_a_class_var_is_accepted():
-    assert ClassVarOnly.from_dict({"a": 7}).a == 7
+    assert ClassVarOnly.cfg.from_dict({"a": 7}).a == 7
 
 
 def test_undecorated_subclass_without_new_annotations_is_accepted():
-    assert NoNewFields.from_dict({"a": 7}).a == 7
+    assert NoNewFields.cfg.from_dict({"a": 7}).a == 7
 
 
 def test_decorated_subclass_is_accepted():
     decorated = make_dataclass("Decorated", [("b", int, field(default=2))], bases=(DecoratedNode,))
-    assert decorated.from_dict({"a": 7, "b": 9}).b == 9
+    assert decorated.cfg.from_dict({"a": 7, "b": 9}).b == 9
 
 
 @dataclass
@@ -334,7 +322,7 @@ class HoldsForgotten(ConfigNode):
 
 def test_undecorated_nested_node_is_reported_at_its_schema_path():
     with pytest.raises(ConfigError) as error:
-        HoldsForgotten.from_dict({})
+        HoldsForgotten.cfg.from_dict({})
     assert [issue.path for issue in error.value.issues] == ["inner"]
 
 
@@ -353,7 +341,7 @@ class NotAConfig:
 
 def test_non_dataclass_node_entry_is_rejected():
     with pytest.raises(ConfigError) as error:
-        BareNode.from_dict({})
+        BareNode.cfg.from_dict({})
     assert "without being a dataclass" in _messages(error.value)
 
 
@@ -378,14 +366,14 @@ class DataDescriptorMeta(type):
     """Metaclass supplying a builder name as a data descriptor."""
 
     @property
-    def load_json(cls) -> str:
+    def cfg(cls) -> str:
         return "shadow"
 
 
 class NonDataDescriptorMeta(type):
     """Metaclass supplying a builder name as an ordinary method."""
 
-    def load_json(cls) -> str:
+    def cfg(cls) -> str:
         return "shadow"
 
 
@@ -401,14 +389,14 @@ def test_metaclass_non_data_binding_keeps_the_classmethod():
     """A non-data metaclass binding loses to the class MRO, so it is no collision."""
     base = NonDataDescriptorMeta("PlainMetaBase", (), {})
     node = make_dataclass("MetaIntact", [("x", int, field(default=1))], bases=(ConfigNode, base))
-    assert node.load_json.__func__ is ConfigNode.__dict__["load_json"].__func__
+    assert node.cfg._owner is node
 
 
 @dataclass
 class ClassVarMetadataBase:
     """Plain dataclass declaring a reserved name as a ``ClassVar`` rather than a field."""
 
-    to_dict: ClassVar[str] = "metadata"
+    cfg: ClassVar[str] = "metadata"
     x: int = 1
 
 
@@ -416,7 +404,7 @@ class ClassVarMetadataBase:
 class FieldThenClassVarBase:
     """Plain dataclass declaring a reserved name as a stored field."""
 
-    to_dict: str = "old field"
+    cfg: str = "old field"
     x: int = 1
 
 
@@ -426,24 +414,24 @@ class ClassVarOverrideBase(FieldThenClassVarBase):
 
     # Narrowing an inherited field to a ClassVar is exactly the removal this
     # fixture exercises; dataclasses honor it, so the schema no longer stores it.
-    to_dict: ClassVar[str] = "metadata"  # pyrefly: ignore[bad-override]
+    cfg: ClassVar[str] = "metadata"  # pyrefly: ignore[bad-override]
 
 
 def test_inherited_class_var_pseudo_field_is_accepted():
     """``ClassVar`` entries are not stored on the instance, so they shadow nothing."""
     node = make_dataclass("OverClassVar", [("y", int, field(default=2))], bases=(ConfigNode, ClassVarMetadataBase))
-    assert callable(node(y=2).to_dict)
+    assert node(y=2).cfg is not None
 
 
 def test_field_removed_by_a_class_var_override_is_accepted():
     """A base that redeclares an inherited field as a ``ClassVar`` removes it from the schema."""
     node = make_dataclass("OverRemoved", [("y", int, field(default=2))], bases=(ConfigNode, ClassVarOverrideBase))
-    assert callable(node(y=2).to_dict)
+    assert node(y=2).cfg is not None
 
 
 def test_stored_field_reintroduced_after_a_class_var_override_is_rejected():
     """The most-derived declaration decides, so a restored stored field still collides."""
-    restored = make_dataclass("RestoredField", [("to_dict", str, field(default="back"))], bases=(ClassVarOverrideBase,))
+    restored = make_dataclass("RestoredField", [("cfg", str, field(default="back"))], bases=(ClassVarOverrideBase,))
     with pytest.raises(ConfigError) as error:
         make_dataclass("OverRestored", [("y", int, field(default=2))], bases=(ConfigNode, restored))
     assert "is inherited as a field from RestoredField" in _messages(error.value)
@@ -467,13 +455,13 @@ class UndecoratedInitVar(InitVarNode):
 
 
 def test_decorated_node_with_an_init_var_is_accepted():
-    assert InitVarNode.from_dict({"a": 5}).a == 5
+    assert InitVarNode.cfg.from_dict({"a": 5}).a == 5
 
 
 def test_undecorated_subclass_declaring_an_init_var_is_rejected():
     """An ``InitVar`` needs the decorator to mean anything, so the class is reported."""
     with pytest.raises(ConfigError) as error:
-        UndecoratedInitVar.from_dict({"a": 5})
+        UndecoratedInitVar.cfg.from_dict({"a": 5})
     assert "did not apply @dataclass" in _messages(error.value)
 
 
@@ -502,7 +490,7 @@ class HiddenDataDescriptor(metaclass=HidingType):
 def test_data_descriptor_hidden_from_attribute_lookup_is_still_detected():
     """Descriptor kind is read from raw namespaces, so a denying metaclass cannot hide it."""
     HidingType.probes.clear()
-    descriptor_meta = type("HidingDescriptorMeta", (type,), {"load_json": HiddenDataDescriptor()})
+    descriptor_meta = type("HidingDescriptorMeta", (type,), {"cfg": HiddenDataDescriptor()})
     base = descriptor_meta("HidingDescriptorBase", (), {})
     with pytest.raises(ConfigError) as error:
         type("HiddenShadow", (ConfigNode, base), {})

@@ -58,12 +58,12 @@ from the defaults:
 Load it into a typed, validated object and derive a stable run identity:
 
 ```python
-config = TrainingConfig.load_json("train.json")
+config = TrainingConfig.cfg.load_json("train.json")
 
 config.optimizer.lr             # 0.001, coerced to float
 config.seed                     # 0, from the default
-run_id = config.config_hash()   # "344e28a35dd4"
-saved = config.save_json(config.output_dir / run_id / "resolved.json")
+run_id = config.cfg.hash()   # "344e28a35dd4"
+saved = config.cfg.save_json(config.output_dir / run_id / "resolved.json")
 saved.as_posix()                # "runs/344e28a35dd4/resolved.json"
 ```
 

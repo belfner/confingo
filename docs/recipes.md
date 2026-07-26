@@ -21,9 +21,9 @@ Build a typed config from JSON or YAML, or route by suffix when the format is
 data-driven:
 
 ```python
-config = TrainingConfig.load_json("train.json")
-config = TrainingConfig.load_yaml("train.yaml")
-config = TrainingConfig.from_file(path)        # .json / .yaml / .yml by suffix
+config = TrainingConfig.cfg.load_json("train.json")
+config = TrainingConfig.cfg.load_yaml("train.yaml")
+config = TrainingConfig.cfg.from_file(path)        # .json / .yaml / .yml by suffix
 ```
 
 Each call returns a validated `TrainingConfig` with every value coerced to its
@@ -35,9 +35,9 @@ annotation. See [Files, formats, and run identity](files-and-identity.md) and
 Write the resolved object back out, choosing the format directly or by suffix:
 
 ```python
-config.save_json("resolved.json")              # atomic write, returns the Path
-config.save_yaml("resolved.yaml")              # sort_keys=False by default
-config.to_file(run_dir / "resolved.json")      # by suffix
+config.cfg.save_json("resolved.json")              # atomic write, returns the Path
+config.cfg.save_yaml("resolved.yaml")              # sort_keys=False by default
+config.cfg.to_file(run_dir / "resolved.json")      # by suffix
 ```
 
 The save is atomic and returns the destination `Path`. See
@@ -53,8 +53,8 @@ parameter. Both surfaces produce the same object:
 
 ```python
 # method surface
-config = TrainingConfig.load_json("train.json")
-run_id = config.config_hash()
+config = TrainingConfig.cfg.load_json("train.json")
+run_id = config.cfg.hash()
 
 # free-function surface
 from confingo import config_hash, load_json
@@ -74,20 +74,20 @@ A section that subclasses `ConfigNode` carries the same methods over its own
 subtree, so it can be persisted or identified on its own:
 
 ```python
-config = TrainingConfig.load_json("train.json")
+config = TrainingConfig.cfg.load_json("train.json")
 
-optimizer_id = config.optimizer.config_hash()   # "be59896dec38"
-config.optimizer.save_json(run_dir / "optimizer.json")
+optimizer_id = config.optimizer.cfg.hash()   # "be59896dec38"
+config.optimizer.cfg.save_json(run_dir / "optimizer.json")
 
 # Reload that snapshot through the section's own class.
-optimizer = OptimizerConfig.load_json(run_dir / "optimizer.json")
+optimizer = OptimizerConfig.cfg.load_json(run_dir / "optimizer.json")
 ```
 
 Issue paths from a section load are relative to that section, so `lr` locates the
 value in the mapping that call received. Pass `context=` to label the source:
 
 ```python
-OptimizerConfig.from_dict(overrides, context="optimizer override")
+OptimizerConfig.cfg.from_dict(overrides, context="optimizer override")
 ```
 
 
@@ -101,10 +101,10 @@ directory name, and saving there records the full resolved config:
 ```python
 from pathlib import Path
 
-run_id = config.config_hash()                  # "344e28a35dd4"
+run_id = config.cfg.hash()                  # "344e28a35dd4"
 run_dir = Path("runs") / run_id
 run_dir.mkdir(parents=True, exist_ok=True)
-config.save_json(run_dir / "resolved.json")    # runs/344e28a35dd4/resolved.json
+config.cfg.save_json(run_dir / "resolved.json")    # runs/344e28a35dd4/resolved.json
 ```
 
 The saved file carries defaults and overrides together, a complete record of the
@@ -120,10 +120,10 @@ section keeps the rest:
 ```python
 for overrides in sweep:                        # e.g. {"optimizer": {"lr": 1e-3}}
     merged = deep_merge(base, overrides)
-    config = TrainingConfig.from_dict(merged)
-    run_dir = Path("runs") / config.config_hash()
+    config = TrainingConfig.cfg.from_dict(merged)
+    run_dir = Path("runs") / config.cfg.hash()
     run_dir.mkdir(parents=True, exist_ok=True)
-    config.save_json(run_dir / "resolved.json")
+    config.cfg.save_json(run_dir / "resolved.json")
 ```
 
 Distinct hashing values give distinct directories. See
@@ -149,7 +149,7 @@ def deep_merge(base: dict, overrides: dict) -> dict:
 
 
 base = {"optimizer": {"name": "adamw", "lr": 3e-4}}
-config = TrainingConfig.from_dict(deep_merge(base, {"optimizer": {"lr": 1e-3}}))
+config = TrainingConfig.cfg.from_dict(deep_merge(base, {"optimizer": {"lr": 1e-3}}))
 config.optimizer.name    # "adamw", kept from the base layer
 config.optimizer.lr      # 0.001, from the override layer
 ```
@@ -166,7 +166,7 @@ The recursive merge preserves `optimizer.name` while overriding `lr`; a shallow
 from confingo import ConfigError
 
 try:
-    config = TrainingConfig.from_dict({"optimizer": {"name": "adam", "lr": "fast"}})
+    config = TrainingConfig.cfg.from_dict({"optimizer": {"name": "adam", "lr": "fast"}})
 except ConfigError as err:
     for issue in err.issues:
         print(f"{issue.path}: {issue.message}")

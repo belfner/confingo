@@ -107,6 +107,33 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
+def validate(config_cls: type[Any], *, context: str = "config schema") -> None:
+    """Check a config dataclass's schema without building anything from it.
+
+    Walks the whole tree the class declares, recursing into nested dataclasses
+    and into dataclasses held in lists, tuples, sets, and dict values, and
+    reports every annotation outside the supported set along with every authored
+    ``field(default=...)`` that does not already carry its annotation's runtime
+    type and a plain serializable form. No config data is read and no
+    ``default_factory`` is called, so this answers whether the schema is
+    well formed before any file exists.
+
+    This is the same check ``from_dict`` runs before it builds, so a class that
+    validates here raises no schema issue at load time.
+
+    Args:
+      config_cls (type[Any]): The entry dataclass to validate.
+      context (str = "config schema"): Description used in the error summary.
+
+    Raises:
+      ConfigError: When the schema carries any issue. The exception lists every
+        issue found in the whole tree, each tagged with its dotted path.
+    """
+    issues = _validate_schema(config_cls)
+    if len(issues) > 0:
+        raise ConfigError(issues, context=context)
+
+
 def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "config") -> T:
     """Build a dataclass tree from a nested mapping, reporting every problem at once.
 

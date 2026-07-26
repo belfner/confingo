@@ -3,9 +3,9 @@
 confingo turns one dataclass declaration into a schema, a type validator, and a set of defaults: a nested mapping goes in through `from_dict` and comes out as a typed dataclass tree, and `to_dict` takes the tree back to plain serializable data. Validation walks the whole config in one pass and reports every problem with its dotted path.
 
 ```python
-config = TrainingConfig.from_file("train.json")   # typed dataclass tree
-run_id = config.config_hash()                     # stable fingerprint
-config.to_file(Path("runs") / run_id / "resolved.json")
+config = TrainingConfig.cfg.from_file("train.json")   # typed dataclass tree
+run_id = config.cfg.hash()                     # stable fingerprint
+config.cfg.to_file(Path("runs") / run_id / "resolved.json")
 ```
 
 
