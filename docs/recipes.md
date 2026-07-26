@@ -48,7 +48,7 @@ The save is atomic and returns the destination `Path`. See
 
 ### Use methods or free functions
 
-A `ConfigRoot` subclass carries methods; the free functions take the class as a
+A `ConfigNode` subclass carries methods; the free functions take the class as a
 parameter. Both surfaces produce the same object:
 
 ```python
@@ -63,9 +63,32 @@ config = load_json(TrainingConfig, "train.json")
 run_id = config_hash(config)                   # same digest, "344e28a35dd4"
 ```
 
-The method style reads well for a root that owns its schema; the free functions
-suit library code that receives the class. See the
-[method map](api-reference.md#configroot-method-map).
+The method style reads well for a class that owns the operation scope; the free
+functions suit library code that receives the class. See the
+[method map](api-reference.md#confignode-method-map).
+
+
+### Save or fingerprint one section
+
+A section that subclasses `ConfigNode` carries the same methods over its own
+subtree, so it can be persisted or identified on its own:
+
+```python
+config = TrainingConfig.load_json("train.json")
+
+optimizer_id = config.optimizer.config_hash()   # "be59896dec38"
+config.optimizer.save_json(run_dir / "optimizer.json")
+
+# Reload that snapshot through the section's own class.
+optimizer = OptimizerConfig.load_json(run_dir / "optimizer.json")
+```
+
+Issue paths from a section load are relative to that section, so `lr` locates the
+value in the mapping that call received. Pass `context=` to label the source:
+
+```python
+OptimizerConfig.from_dict(overrides, context="optimizer override")
+```
 
 
 ## Resolve and identify a run

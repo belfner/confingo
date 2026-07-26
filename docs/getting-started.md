@@ -31,10 +31,11 @@ quickstart/
 ```
 
 The schema is a tree of `@dataclass` declarations. Each field's annotation is its
-validator and each default is its fallback value. The root subclasses `ConfigRoot`
-for load, save, and hash methods; the `optimizer` section carries a bare
-annotation and builds itself, so `optimizer.name` is the one value the file must
-supply.
+validator and each default is its fallback value. A class subclasses `ConfigNode`
+to get load, save, and hash methods; here both classes do, so the optimizer
+section carries them over its own subtree too. The `optimizer` field carries a
+bare annotation and builds itself, so `optimizer.name` is the one value the file
+must supply.
 
 <!-- canonical:config.py -->
 ```python
@@ -44,17 +45,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
-class OptimizerConfig:
+class OptimizerConfig(ConfigNode):
     name: Literal["adamw", "sgd"]
     lr: float = 3e-4
 
 
 @dataclass
-class TrainingConfig(ConfigRoot):
+class TrainingConfig(ConfigNode):
     optimizer: OptimizerConfig
     seed: int = 0
     output_dir: Path = Path("runs")
@@ -89,6 +90,9 @@ def main() -> None:
     print(f"optimizer.lr: {config.optimizer.lr}")
     print(f"seed: {config.seed}")
 
+    # OptimizerConfig is a ConfigNode too, so it fingerprints its own section.
+    print(f"optimizer id: {config.optimizer.config_hash()}")
+
     run_id = config.config_hash()
     print(f"run id: {run_id}")
 
@@ -107,6 +111,7 @@ $ python run.py
 optimizer.name: adamw
 optimizer.lr: 0.001
 seed: 0
+optimizer id: be59896dec38
 run id: 344e28a35dd4
 saved: runs/344e28a35dd4/resolved.json
 ```
@@ -158,7 +163,7 @@ from dataclasses import (
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
@@ -177,14 +182,14 @@ class DataConfig:
 
 
 @dataclass
-class OptimizerConfig:
+class OptimizerConfig(ConfigNode):
     name: Literal["adamw", "sgd"]
     lr: float = 3e-4
     weight_decay: float = 0.01
 
 
 @dataclass
-class TrainingConfig(ConfigRoot):
+class TrainingConfig(ConfigNode):
     model: ModelConfig
     data: DataConfig
     optimizer: OptimizerConfig
@@ -258,9 +263,35 @@ confingo.ConfigError: config file train.json has 4 issues:
 custom validation hooks.
 
 
+## Call methods on a section
+
+`OptimizerConfig` subclasses `ConfigNode` too, so it carries the same methods
+over its own subtree:
+
+```python
+config.optimizer.to_dict()      # {'name': 'adamw', 'lr': 0.001, 'weight_decay': 0.01}
+config.optimizer.config_hash()  # "41263e6f3612"
+config.optimizer.save_json("optimizer.json")
+OptimizerConfig.load_json("optimizer.json")
+```
+
+Issue paths follow the same scope. Building the section on its own reports its
+leaves relative to it:
+
+```python
+OptimizerConfig.from_dict({"lr": "fast"})
+# config has 2 issues:
+#   - name: missing required value
+#   - lr: expected float, got str
+```
+
+A section that stays a plain dataclass keeps working exactly as before; the free
+functions cover it.
+
+
 ## Free-function equivalent
 
-Every `ConfigRoot` method has a free-function twin, so a plain dataclass root
+Every `ConfigNode` method has a free-function twin, so a plain dataclass
 works the same way:
 
 ```python
@@ -271,7 +302,7 @@ save_json(config, "resolved.json")
 config_hash(config)
 ```
 
-The [API reference](api-reference.md#configroot-method-map) maps each method to
+The [API reference](api-reference.md#confignode-method-map) maps each method to
 its function.
 
 

@@ -13,10 +13,12 @@ QUICKSTART_DIR = REPO_ROOT / "examples" / "quickstart"
 QUICKSTART_FILES = ("config.py", "train.json", "run.py")
 
 EXPECTED_RUN_ID = "344e28a35dd4"
+EXPECTED_OPTIMIZER_ID = "be59896dec38"
 EXPECTED_STDOUT = (
     "optimizer.name: adamw\n"
     "optimizer.lr: 0.001\n"
     "seed: 0\n"
+    f"optimizer id: {EXPECTED_OPTIMIZER_ID}\n"
     f"run id: {EXPECTED_RUN_ID}\n"
     f"saved: runs/{EXPECTED_RUN_ID}/resolved.json\n"
 )

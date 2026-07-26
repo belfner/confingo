@@ -21,7 +21,7 @@ from confingo._json import (
     load_json,
     save_json,
 )
-from confingo._root import ConfigRoot
+from confingo._node import ConfigNode
 from confingo._serialize import (
     config_hash,
     to_dict,
@@ -40,7 +40,7 @@ __version__ = "0.3.0"
 __all__ = [
     "ConfigError",
     "ConfigIssue",
-    "ConfigRoot",
+    "ConfigNode",
     "config_equal",
     "config_hash",
     "dumps_json",

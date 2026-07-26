@@ -86,6 +86,8 @@ Dataclasses held in containers (`list[StageConfig]`, `dict[str, DatasetConfig]`)
 
 A bare-annotated dataclass field defaults to an implicit build from an empty mapping, so its required leaves are reported at their nested paths. See [implicit sections](schema-design.md#implicit-sections-and-leaf-level-requirements).
 
+The annotation drives construction, so a section annotated with a [config node](schema-design.md#config-nodes) class rebuilds as that class, in a direct field, in a container, or as a union member. Construction runs through the same recursion that builds a plain dataclass section, so each section's `__post_init__` and `__validate__` run once for the value that is kept.
+
 
 ## Sequences and tuples
 
@@ -134,6 +136,8 @@ Union members are tried in declaration order and the first member that coerces c
 Finite-float validation still recurses through the value, including nested mapping keys and list elements, because every value in the tree needs a JSON form.
 
 Under `to_dict`, tuple- and set-shaped values held by an `Any` field serialize as lists. An explicit container annotation is what restores the exact container type on the next load. See [cross-format round trips](files-and-identity.md#cross-format-round-trip).
+
+A mapping supplied to an `Any` field stays a mapping: the annotation names no class, so it reaches the field as plain data. A config object assigned to one programmatically serializes through `to_dict` as its plain form, and a [node](schema-design.md#config-nodes) or dataclass annotation is what reconstructs the object on the next load.
 
 Arrays and tensors follow the same rule under `Any`: a supplied array validates on the way in (supported dtype, finite elements, the size cap) and stays in memory as the object you passed, `to_dict` renders it as plain scalars and lists, and reloading yields that plain data. An [array annotation](#arrays-and-tensors) is what rebuilds a backend object on the next load.
 

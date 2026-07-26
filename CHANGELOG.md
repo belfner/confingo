@@ -6,7 +6,39 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `ConfigNode` replaces `ConfigRoot` as the name of the method facade, and any
+  dataclass in a config tree may subclass it rather than the root alone. Each
+  method is scoped to the node it is called on, so a nested node builds,
+  exports, fingerprints, and writes its own subtree, and issue paths from a
+  subtree load are relative to that node. Attaching the base to a section
+  changes its method surface alone: the engine reaches a nested section through
+  the same generic recursion either way, so an enclosing load produces identical
+  values, exported data, digests, and issue paths. Update imports and base
+  classes from `ConfigRoot` to `ConfigNode`.
+
 ### Added
+
+- A `ConfigNode` subclass reserves the eleven facade names (`from_dict`,
+  `load_json`, `load_yaml`, `from_file`, `to_dict`, `dumps_json`, `save_json`,
+  `dumps_yaml`, `save_yaml`, `to_file`, `config_hash`). A node declares none of
+  them: any annotation or class-body binding under one of these names is
+  rejected at class creation, as is one supplied by a base ahead of `ConfigNode`
+  in the MRO, inherited as a field, or supplied as a metaclass data descriptor,
+  with every collision on the class reported together. Declarations are read
+  rather than resolved, so a descriptor under a reserved name is never run. The
+  same names carry no restriction on a plain dataclass.
+- A `ConfigNode` subclass that inherits a hand-written `__eq__` or `__hash__`
+  from a base is rejected at class creation, naming the base that owns it, since
+  the canonical methods land on the subclass ahead of the decorator.
+- A `ConfigNode` subclass that declares annotations without carrying
+  `@dataclass` is reported as a schema error at its schema path: its own names
+  stay outside the schema while the inherited fields load. `ClassVar`
+  annotations raise no such error.
+- An entry class that is not a dataclass is reported as a schema issue carrying
+  the calling operation's context, in place of the standard library's bare
+  `TypeError` from `dataclasses.fields`.
 
 - Canonical equality on every schema dataclass: two configs are `==` exactly
   when their compared fields (`init=True` and `compare=True`) serialize to the
@@ -14,7 +46,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   vectorized equality wherever that comparison is provably exact (with a
   tensor meeting a numpy array via `detach().cpu().numpy()`), and every
   other pair compares by its serialized form, so `==` on large arrays runs
-  at native speed with exact value semantics. A `ConfigRoot` subclass
+  at native speed with exact value semantics. A `ConfigNode` subclass
   carries the canonical `__eq__` and identity `__hash__` from class-creation
   time, installed by `__init_subclass__` ahead of the `@dataclass`
   decorator. Every other schema dataclass receives canonical
@@ -23,14 +55,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   disabled it. The new `config_equal(left, right)` free function exposes the
   same relation ahead of any engine call.
 - confingo owns equality and hashing on config dataclasses: a class that
-  hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigRoot` subclass at
+  hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at
   class creation (both reported together when it defines both), a section at its
   first schema touch -- and a `@dataclass` flag confingo cannot honor
   (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a
   `ConfigError` at first schema processing, every violation on one class reported
-  together. A `ConfigRoot` subclass declared `unsafe_hash=True` is the exception:
+  together. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception:
   it fails at class creation with the standard-library `TypeError` for
-  overwriting `__hash__`, since the root installs identity hashing ahead of the
+  overwriting `__hash__`, since the node installs identity hashing ahead of the
   decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported;
   a frozen or inherited generated `__hash__` is reduced to identity hashing so
   every config shares one value-equality plus identity-hash model.
@@ -74,7 +106,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - PyYAML (`>=6.0`) is now a core runtime dependency, so YAML file IO
-  (`load_yaml`, `save_yaml`, `dumps_yaml`, and the matching `ConfigRoot`
+  (`load_yaml`, `save_yaml`, `dumps_yaml`, and the matching `ConfigNode`
   methods) and extension dispatch work from the base install. The three YAML
   helpers are importable directly from `confingo` and resolve at import time.
   The `yaml` optional extra is removed; `pip install confingo` now carries YAML
@@ -99,7 +131,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hashing ownership resolves through one method-contract helper. Every docstring
   follows the project's Google style. The public API (`from confingo import ...`)
   and observable behavior are preserved.
-
 ## [0.2.0] - 2026-07-22
 
 ### Added

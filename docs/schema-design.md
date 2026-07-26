@@ -2,14 +2,14 @@
 
 # Schema design
 
-This page covers structuring a program's configuration as a dataclass tree: implicit sections, leaf-level requirements, defaults, authored factories, `ConfigRoot`, field options, validation hooks, and a summary of canonical equality.
+This page covers structuring a program's configuration as a dataclass tree: implicit sections, leaf-level requirements, defaults, authored factories, `ConfigNode`, field options, validation hooks, and a summary of canonical equality.
 
 
 ## A dataclass tree is the schema
 
 One dataclass declaration serves three roles: the field names define the accepted keys, the annotations define the accepted types, and the defaults define the fallback values. Nested dataclasses define sections, and containers of dataclasses (`list[StageConfig]`, `dict[str, DatasetConfig]`) define repeated sections.
 
-Schema classes are ordinary `@dataclass` declarations. The root subclasses `ConfigRoot` for load/save/hash methods and config-aware equality, summarized in [canonical equality](#canonical-equality) below; sections are plain dataclasses.
+Schema classes are ordinary `@dataclass` declarations. Any of them may subclass `ConfigNode` for load/save/hash methods and config-aware equality, summarized in [canonical equality](#canonical-equality) below; the rest are plain dataclasses the free functions cover.
 
 
 ## Implicit sections and leaf-level requirements
@@ -38,7 +38,7 @@ from dataclasses import (
 )
 from pathlib import Path
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
@@ -54,7 +54,7 @@ class ScheduleConfig:
 
 
 @dataclass
-class RunConfig(ConfigRoot):
+class RunConfig(ConfigNode):
     schedule: ScheduleConfig
     stages: list[str]
     checkpoints: list[Path] = field(default_factory=list)
@@ -83,7 +83,7 @@ from dataclasses import (
     field,
 )
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
@@ -94,7 +94,7 @@ class OptimizerConfig:
 
 
 @dataclass
-class ExperimentConfig(ConfigRoot):
+class ExperimentConfig(ConfigNode):
     seed: int = 0
     batch_size: int = 64
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=1e-3))
@@ -109,11 +109,19 @@ Partial files fall out of the leaf-level model everywhere: a minimal experiment 
 An empty mapping (`{}`) builds the full default config whenever every leaf in the tree has a default, which also makes JSON `null` and empty YAML documents load as pure defaults ([document rules](files-and-identity.md#document-and-read-rules)).
 
 
-## Root facade and nested sections
+## Config nodes
 
-Apply `ConfigRoot` to the root class only; child sections are plain dataclasses.
+Any dataclass in the tree may subclass `ConfigNode`, at any depth. A section that subclasses it gains the same methods over its own subtree; a section that stays a plain dataclass is walked by introspection, and the free functions operate on it.
 
-The base class is a thin facade: each method delegates to the matching free function (`TrainingConfig.load_json(path)` calls `load_json(TrainingConfig, path)`), so both styles are equivalent public surfaces. The full mapping is in the [API reference](api-reference.md#configroot-method-map).
+The base class is a thin facade: each method delegates to the matching free function (`TrainingConfig.load_json(path)` calls `load_json(TrainingConfig, path)`), so both styles are equivalent public surfaces. The full mapping is in the [API reference](api-reference.md#confignode-method-map).
+
+Each method is scoped to the node it is called on. `optimizer.to_dict()` renders that section, `optimizer.config_hash()` fingerprints that section, `optimizer.save_json(path)` writes a document that loads back through `OptimizerConfig`, and `OptimizerConfig.from_dict(...)` reports issue paths relative to that section, so a leaf reported as `optimizer.lr` through the enclosing config is reported as `lr` here.
+
+Attaching `ConfigNode` to a section changes its method surface and nothing else. The engine reaches a nested section through the same generic recursion either way, so the built values, exported data, fingerprints, and issue paths of an enclosing load are identical whether or not the section subclasses it.
+
+Subclassing reserves the eleven method names (`from_dict`, `load_json`, `load_yaml`, `from_file`, `to_dict`, `dumps_json`, `save_json`, `dumps_yaml`, `save_yaml`, `to_file`, `config_hash`). A node declares none of them: any annotation or class-body binding under one of these names is rejected at class creation, as is one supplied by a base ahead of `ConfigNode` in the MRO, inherited as a field, or supplied as a metaclass data descriptor. What a class inherits is judged by the fields that actually land on it, so an inherited `ClassVar` of a reserved name stores nothing and is accepted. The same names are free on a plain dataclass, which shadows nothing.
+
+Each subclass that declares its own fields carries the `@dataclass` decorator. A subclass that declares annotations without it inherits the base's fields alone, so confingo reports it as a schema error naming the class.
 
 
 ## Runtime-resolvable annotations
@@ -156,7 +164,7 @@ Before coercing any value, `from_dict` runs a recursive schema preflight over ev
 
 Two configs are `==` exactly when their compared fields serialize to the same canonical plain form, with `NotImplemented` for a different class. Equality compares the fields that are `init=True` and `compare=True` (the defaults); a [`field(compare=False)`](#field-options) still serializes through `to_dict`, and an `init=False` field holds runtime state. The relation works uniformly for every supported field type, [array-valued fields](arrays-and-tensors.md) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
 
-A `ConfigRoot` subclass carries canonical equality from class-creation time; every other schema dataclass receives the same canonical `__eq__` at its first schema processing. confingo owns equality and hashing on config dataclasses, so a hand-written `__eq__` or `__hash__`, or a `@dataclass` flag that conflicts with that ownership (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`), is rejected; `frozen`, `slots`, and `weakref_slot` are supported. `__hash__` stays object identity, so [`config_hash`](equality-and-hashing.md#stable-run-identity) is the value-identity tool, and the `config_equal` free function exposes the same relation ahead of any engine call.
+A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives the same canonical `__eq__` at its first schema processing. confingo owns equality and hashing on config dataclasses, so a hand-written `__eq__` or `__hash__`, or a `@dataclass` flag that conflicts with that ownership (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`), is rejected; `frozen`, `slots`, and `weakref_slot` are supported. `__hash__` stays object identity, so [`config_hash`](equality-and-hashing.md#stable-run-identity) is the value-identity tool, and the `config_equal` free function exposes the same relation ahead of any engine call.
 
 The full account -- structural array and tensor comparison, the two installation doors, the ownership guard and its rejected-flag behavior, and `config_equal` -- lives in [Equality and hashing](equality-and-hashing.md#canonical-equality).
 

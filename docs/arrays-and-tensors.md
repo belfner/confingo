@@ -21,16 +21,16 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
-class InferredArrays(ConfigRoot):
+class InferredArrays(ConfigNode):
     values: np.ndarray                       # dtype inferred by value on load
 
 
 @dataclass
-class TypedArrays(ConfigRoot):
+class TypedArrays(ConfigNode):
     kernel: npt.NDArray[np.float32]          # rebuilt as float32
     grid: np.ndarray[tuple[int, int], np.dtype[np.float64]]  # 2-D, float64
 ```
@@ -43,11 +43,11 @@ from typing import Annotated
 
 import torch
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
-class TensorField(ConfigRoot):
+class TensorField(ConfigNode):
     bias: torch.Tensor                                       # pinned bool/int64/float64
     weight: Annotated[torch.Tensor, torch.float32, tuple[int, int]]  # float32, 2-D
 ```
@@ -134,7 +134,7 @@ Round trips hold as canonical serialized equality:
 `to_dict(from_dict(cls, to_dict(config))) == to_dict(config)` for every supported
 input, and concrete-dtype annotations additionally guarantee dtype and bit-exact
 values. The `==` operator implements this contract on every schema class -- a
-`ConfigRoot` subclass carries [canonical equality](equality-and-hashing.md#canonical-equality)
+`ConfigNode` subclass carries [canonical equality](equality-and-hashing.md#canonical-equality)
 from class-creation time and every other schema dataclass receives it at first
 schema processing -- so `from_dict(cls, to_dict(config)) == config` reads
 literally, with array fields compared through the backends' vectorized operations.

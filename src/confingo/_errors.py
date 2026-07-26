@@ -29,7 +29,7 @@ class ConfigIssue:
 
     Args:
       path (str): Dotted path to the offending value, such as ``training.trainer.lr``.
-        The root config itself carries an empty path, rendered as ``<root>``.
+        The entry object of the current operation carries an empty path, rendered as ``<root>``.
       message (str): Human-readable description of the problem.
     """
 

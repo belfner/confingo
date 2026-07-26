@@ -52,7 +52,7 @@ def build_from_document(config_cls: type[T], data: Any, source: Path) -> T:
     anything other than a mapping is rejected.
 
     Args:
-      config_cls (type[T]): The root dataclass to build.
+      config_cls (type[T]): The entry dataclass to build.
       data (Any): The parsed document.
       source (Path): The file the document came from, used for the error context.
 

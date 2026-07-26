@@ -4,17 +4,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
-class OptimizerConfig:
+class OptimizerConfig(ConfigNode):
     name: Literal["adamw", "sgd"]
     lr: float = 3e-4
 
 
 @dataclass
-class TrainingConfig(ConfigRoot):
+class TrainingConfig(ConfigNode):
     optimizer: OptimizerConfig
     seed: int = 0
     output_dir: Path = Path("runs")

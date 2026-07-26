@@ -30,7 +30,7 @@ New to the library? [Getting started](getting-started.md) goes from install to a
 
 **Concepts and guarantees**
 
-- [Schema design](schema-design.md): dataclass schemas, implicit sections, leaf-level requirements, defaults, factories, `ConfigRoot`, field options, invariants.
+- [Schema design](schema-design.md): dataclass schemas, implicit sections, leaf-level requirements, defaults, factories, `ConfigNode`, field options, invariants.
 - [Types and coercion](types-and-coercion.md): a "choose an annotation" table, accepted annotations, and exact conversion rules.
 - [Validation and errors](validation-and-errors.md): reading an error, the collect-all model, and custom invariants.
 - [Files, formats, and run identity](files-and-identity.md): JSON, YAML, extension dispatch, atomic saves, resolved snapshots.

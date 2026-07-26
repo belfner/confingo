@@ -23,7 +23,7 @@ import pytest
 
 from confingo import (
     ConfigError,
-    ConfigRoot,
+    ConfigNode,
     config_equal,
     config_hash,
     from_dict,
@@ -598,7 +598,7 @@ def test_to_dict_emits_all_init_true_in_declaration_order():
     assert list(plain.keys()) == ["a", "b", "c"]  # d (init=False) omitted
 
 
-# --- ConfigRoot / plain parity -----------------------------------------------
+# --- ConfigNode / plain parity -----------------------------------------------
 
 
 @dataclass
@@ -608,7 +608,7 @@ class PlainRoot:
 
 
 @dataclass
-class RootSubclass(ConfigRoot):
+class RootSubclass(ConfigNode):
     a: int
     note: str = field(default="x", compare=False)
 
@@ -629,7 +629,7 @@ class UntouchedPlain:
 
 
 @dataclass
-class UntouchedRoot(ConfigRoot):
+class UntouchedRoot(ConfigNode):
     a: int
     note: str = field(default="x", compare=False)
 
@@ -637,8 +637,8 @@ class UntouchedRoot(ConfigRoot):
 def test_config_equal_before_any_engine_call():
     # config_equal resolves the classification at call time, so it honors
     # compare=False on freshly constructed instances of a plain dataclass and a
-    # ConfigRoot subclass alike, ahead of any from_dict/to_dict call. A
-    # ConfigRoot installs canonical __eq__ at class creation, so `==` works too.
+    # ConfigNode subclass alike, ahead of any from_dict/to_dict call. A
+    # ConfigNode installs canonical __eq__ at class creation, so `==` works too.
     assert config_equal(UntouchedPlain(1, "p"), UntouchedPlain(1, "q"))
     assert config_equal(UntouchedRoot(1, "p"), UntouchedRoot(1, "q"))
     assert UntouchedRoot(1, "p") == UntouchedRoot(1, "q")

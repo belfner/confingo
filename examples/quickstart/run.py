@@ -10,6 +10,9 @@ def main() -> None:
     print(f"optimizer.lr: {config.optimizer.lr}")
     print(f"seed: {config.seed}")
 
+    # OptimizerConfig is a ConfigNode too, so it fingerprints its own section.
+    print(f"optimizer id: {config.optimizer.config_hash()}")
+
     run_id = config.config_hash()
     print(f"run id: {run_id}")
 

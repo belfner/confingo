@@ -83,7 +83,7 @@ def load_yaml(config_cls: type[T], path: str | Path) -> T:
     """Load a YAML file into a config object.
 
     Args:
-      config_cls (type[T]): The root dataclass to build.
+      config_cls (type[T]): The entry dataclass to build.
       path (str | Path): Path to the YAML file.
 
     Returns:

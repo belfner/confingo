@@ -10,9 +10,9 @@ speed on large arrays while ``from_dict(cls, to_dict(config)) == config`` holds.
 A ``compare=False`` field is carried by ``to_dict`` yet ignored here; an
 ``init=False`` runtime field is outside equality entirely.
 
-Ordinary ``@dataclass`` declarations are the schema surface. A ``ConfigRoot``
+Ordinary ``@dataclass`` declarations are the schema surface. A ``ConfigNode``
 subclass carries canonical ``__eq__`` from class-creation time (installed by
-``ConfigRoot.__init_subclass__`` ahead of the ``@dataclass`` decorator, which
+``ConfigNode.__init_subclass__`` ahead of the ``@dataclass`` decorator, which
 then skips generating its own), and every other schema dataclass receives it
 at its first schema processing through ``_install_canonical_eq``. The
 ``config_equal`` free function exposes the same relation without touching the
@@ -427,8 +427,8 @@ def _install_canonical_eq(config_cls: type[Any]) -> None:
     The class is first checked against confingo's ownership contract (no custom
     ``__eq__`` / ``__hash__``, no conflicting ``@dataclass`` flags); only then is
     ``_canonical_eq`` installed in place of the generated ``__eq__`` and the
-    generated ``__hash__`` reduced to identity, so sections and roots share one
-    equality contract however they were declared. A ``ConfigRoot`` subclass
+    generated ``__hash__`` reduced to identity, so every config dataclass shares
+    one equality contract however it was declared. A ``ConfigNode`` subclass
     already carries ``_canonical_eq`` from class-creation time.
 
     Args:
@@ -450,9 +450,9 @@ def config_equal(left: Any, right: Any) -> bool:
     compared fields (``init=True`` and ``compare=True``) serialize to the same
     canonical plain form, array fields compared through the backends' vectorized
     operations. Works on any config dataclass instance, ahead of any other
-    engine call and whether or not the class subclasses ``ConfigRoot``, and
-    touches no classes. The canonical relation is evaluated directly,
-    independently of a custom root ``__eq__`` preserved by the class-body rule.
+    engine call and whether or not the class subclasses ``ConfigNode``, and
+    touches no classes. The canonical relation is evaluated directly, on the
+    two objects as given.
 
     Args:
       left (Any): A config dataclass instance.

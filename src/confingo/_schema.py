@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import (
     Annotated,
     Any,
+    ClassVar,
     Literal,
     get_args,
     get_origin,
@@ -47,7 +48,7 @@ from confingo._errors import (
 _HINT_CACHE: dict[type[Any], dict[str, Any]] = {}
 
 _SCHEMA_CACHE: dict[type[Any], tuple[ConfigIssue, ...]] = {}
-"""Per-dataclass cache of schema-validation issues, keyed by the root type."""
+"""Per-dataclass cache of schema-validation issues, keyed by the entry type."""
 
 _BARE_CONTAINERS: dict[Any, Any] = {
     tuple: tuple,
@@ -396,7 +397,7 @@ def _validate_schema(config_cls: type[Any]) -> tuple[ConfigIssue, ...]:
     back to its default. Field default values are left untouched.
 
     Args:
-      config_cls (type[Any]): The root dataclass to validate.
+      config_cls (type[Any]): The entry dataclass to validate.
 
     Returns:
       tuple[ConfigIssue, ...]: The schema issues found, empty when the schema is fully supported.
@@ -405,10 +406,93 @@ def _validate_schema(config_cls: type[Any]) -> tuple[ConfigIssue, ...]:
     if cached is not None:
         return cached
     issues: list[ConfigIssue] = []
-    _validate_dataclass_schema(config_cls, "", issues, set())
+    entry_message = _entry_type_message(config_cls)
+    if entry_message is None:
+        _validate_dataclass_schema(config_cls, "", issues, set())
+    else:
+        # Field classification reads dataclasses.fields, so a non-dataclass entry
+        # is reported here rather than walked.
+        issues.append(ConfigIssue("", entry_message))
     result = tuple(issues)
     _SCHEMA_CACHE[config_cls] = result
     return result
+
+
+def _entry_type_message(config_cls: type[Any]) -> str | None:
+    """Report why an entry class carries no schema, or None when it is a dataclass.
+
+    Args:
+      config_cls (type[Any]): The class an engine operation was entered on.
+
+    Returns:
+      str | None: The rejection message when the class is not a dataclass, else None.
+    """
+    if _is_dataclass_type(config_cls):
+        return None
+    node_message = _node_message(config_cls)
+    if node_message is not None:
+        return node_message
+    label = getattr(config_cls, "__name__", _typename(config_cls))
+    return f"{label} is not a dataclass, so it carries no config schema. Declare it with @dataclass."
+
+
+def _undecorated_node_message(config_cls: type[Any], hints: Mapping[str, Any]) -> str | None:
+    """Report a node subclass whose declaration skipped ``@dataclass``, or None.
+
+    A subclass of a decorated node inherits ``__dataclass_fields__`` through the
+    MRO, so ``is_dataclass`` stays true while its own annotations never become
+    fields: they load as unknown keys and are absent from every projection.
+    Ownership of ``__dataclass_fields__`` is the exact test for whether the
+    decorator ran on this class, so ``ClassVar`` and ``InitVar`` annotations --
+    which ``fields()`` legitimately omits -- raise no false positive.
+
+    Args:
+      config_cls (type[Any]): The dataclass being validated.
+      hints (Mapping[str, Any]): The class's resolved annotations.
+
+    Returns:
+      str | None: The rejection message when the decorator was skipped on a class
+        declaring its own non-``ClassVar`` annotations, else None.
+    """
+    if "__dataclass_fields__" in config_cls.__dict__:
+        return None
+    own = config_cls.__dict__.get("__annotations__", {})
+    if all(_is_class_var(hints.get(name, Any)) for name in own):
+        return None
+    return _node_message(config_cls)
+
+
+def _node_message(config_cls: type[Any]) -> str | None:
+    """Describe a ``ConfigNode`` subclass carrying no schema of its own, or None.
+
+    The import is deferred because ``_node`` sits above this module
+    (``_node`` -> ``_core`` -> ``_schema``), and it is held here so both callers
+    share one cycle-avoiding site.
+
+    Args:
+      config_cls (type[Any]): The class being validated.
+
+    Returns:
+      str | None: The rejection message when ``config_cls`` is a node, else None.
+    """
+    from confingo._node import (  # noqa: PLC0415
+        _is_config_node,
+        _missing_dataclass_message,
+    )
+
+    return _missing_dataclass_message(config_cls) if _is_config_node(config_cls) else None
+
+
+def _is_class_var(hint: Any) -> bool:
+    """Report whether a resolved hint declares a ``ClassVar``.
+
+    Args:
+      hint (Any): The resolved type hint to inspect.
+
+    Returns:
+      bool: True when the hint is ``ClassVar`` or a ``ClassVar[...]`` subscription.
+    """
+    return hint is ClassVar or get_origin(hint) is ClassVar
 
 
 def _validate_dataclass_schema(
@@ -426,6 +510,9 @@ def _validate_dataclass_schema(
         return
     seen = seen | {config_cls}
     hints = _resolved_hints(config_cls)
+    undecorated = _undecorated_node_message(config_cls, hints)
+    if undecorated is not None:
+        issues.append(ConfigIssue(path, undecorated))
     for classified in _classify_dataclass_fields(config_cls).declared:
         field = classified.definition
         field_path = _join(path, field.name)

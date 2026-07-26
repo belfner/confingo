@@ -51,7 +51,7 @@ def test_extension_is_case_insensitive(tmp_path: Path):
     assert from_file(Training, path) == cfg
 
 
-def test_config_root_file_methods_round_trip(tmp_path: Path):
+def test_config_node_file_methods_round_trip(tmp_path: Path):
     cfg = RootConfig(device=Device.CUDA, seed=9)
     path = cfg.to_file(tmp_path / "config.yaml")
     assert RootConfig.from_file(path) == cfg

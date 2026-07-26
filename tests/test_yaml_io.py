@@ -99,7 +99,7 @@ def test_yaml_and_json_dumps_hold_same_data():
     assert yaml.safe_load(dumps_yaml(cfg)) == json.loads(dumps_json(cfg))
 
 
-def test_config_root_yaml_methods_round_trip(tmp_path: Path):
+def test_config_node_yaml_methods_round_trip(tmp_path: Path):
     cfg = RootConfig(device=Device.CUDA, seed=9)
     path = cfg.save_yaml(tmp_path / "config.yaml")
     assert RootConfig.load_yaml(path) == cfg

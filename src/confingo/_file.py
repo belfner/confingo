@@ -75,7 +75,7 @@ def from_file(config_cls: type[T], path: str | Path) -> T:
     A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML.
 
     Args:
-      config_cls (type[T]): The root dataclass to build.
+      config_cls (type[T]): The entry dataclass to build.
       path (str | Path): Path to the config file.
 
     Returns:

@@ -11,7 +11,7 @@ Compact reference for the public surface. Signatures are exact; behavior details
 from confingo import (
     ConfigError,
     ConfigIssue,
-    ConfigRoot,
+    ConfigNode,
     config_equal,
     config_hash,
     dumps_json,
@@ -32,7 +32,7 @@ from confingo import dumps_yaml, load_yaml, save_yaml
 
 Learn more: [canonical equality](schema-design.md#canonical-equality).
 
-Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigRoot` subclass carries this from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. confingo owns equality and hashing: a class that hand-writes `__eq__` or `__hash__` is rejected -- a root at class creation, a section at first schema touch -- and a conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigRoot` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported.
+Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations, and `__hash__` kept as object identity. A `ConfigNode` subclass carries this from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. confingo owns equality and hashing: a class that hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at class creation, including one that inherits a hand-written definition from a base, and a plain dataclass at first schema touch -- and a conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigNode` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported.
 
 ### `config_equal(left, right) -> bool`
 
@@ -101,9 +101,13 @@ Frozen dataclass; one problem at one dotted path. `str(issue)` renders `path: me
 `ValueError` subclass carrying `.issues` (tuple, discovery order) and `.context` (str). The rendered message summarizes the count and lists every issue. `ConfigError.single(message, *, context, path="")` builds a one-issue error.
 
 
-## `ConfigRoot` method map
+## `ConfigNode` method map
 
-`ConfigRoot` is a mixin for the root dataclass; each method delegates to its free-function twin, and subclassing installs [canonical equality](schema-design.md#canonical-equality) at class-creation time. Subclasses still carry the `@dataclass` decorator, and nested sections are plain dataclasses.
+`ConfigNode` is a mixin any config dataclass may carry, at any depth in the tree; each method delegates to its free-function twin, and subclassing installs [canonical equality](schema-design.md#canonical-equality) at class-creation time. Subclasses still carry the `@dataclass` decorator.
+
+The receiver defines the operation scope: a method called on a nested node builds, exports, fingerprints, or writes that node's own subtree, and issue paths are relative to it.
+
+Subclassing reserves the eleven method names below. A node declares none of them: any annotation or class-body binding under one of these names is rejected at class creation with a `config schema` error, as is one supplied by a base ahead of `ConfigNode` in the MRO, inherited as a field, or supplied as a metaclass data descriptor. The same names carry no restriction on a plain dataclass.
 
 | Method | Free function |
 | --- | --- |

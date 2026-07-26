@@ -16,9 +16,10 @@ Runs on Python 3.11 and newer.
 
 ## Quick example
 
-Define the schema as dataclasses. The root subclasses `ConfigRoot` for load, save,
-and hash methods; the `optimizer` section carries a bare annotation and builds
-itself, so `optimizer.name` is the one value the file must supply.
+Define the schema as dataclasses. Any of them subclasses `ConfigNode` to get load,
+save, and hash methods over its own subtree; the `optimizer` section carries a
+bare annotation and builds itself, so `optimizer.name` is the one value the file
+must supply.
 
 <!-- canonical:config.py -->
 ```python
@@ -28,17 +29,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
-class OptimizerConfig:
+class OptimizerConfig(ConfigNode):
     name: Literal["adamw", "sgd"]
     lr: float = 3e-4
 
 
 @dataclass
-class TrainingConfig(ConfigRoot):
+class TrainingConfig(ConfigNode):
     optimizer: OptimizerConfig
     seed: int = 0
     output_dir: Path = Path("runs")
@@ -99,7 +100,7 @@ Recipes:
 
 Concepts:
 
-- [Schema design](docs/schema-design.md): implicit sections, leaf-level requirements, defaults, `ConfigRoot`.
+- [Schema design](docs/schema-design.md): implicit sections, leaf-level requirements, defaults, `ConfigNode`.
 - [Types and coercion](docs/types-and-coercion.md): accepted annotations and exact conversion rules.
 - [Validation and errors](docs/validation-and-errors.md): the collect-all error model and custom invariants.
 - [Files, formats, and run identity](docs/files-and-identity.md): JSON, YAML, extension dispatch, atomic saves.

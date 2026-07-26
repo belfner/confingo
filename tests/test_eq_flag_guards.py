@@ -18,7 +18,7 @@ import pytest
 
 from confingo import (
     ConfigError,
-    ConfigRoot,
+    ConfigNode,
     config_equal,
     config_hash,
     from_dict,
@@ -40,7 +40,7 @@ class SectionCustomEq:
 
 
 @dataclass
-class RootWithCustomEqSection(ConfigRoot):
+class RootWithCustomEqSection(ConfigNode):
     sec: SectionCustomEq = field(default_factory=SectionCustomEq)
 
 
@@ -53,7 +53,7 @@ class SectionCustomHash:
 
 
 @dataclass
-class RootWithCustomHashSection(ConfigRoot):
+class RootWithCustomHashSection(ConfigNode):
     sec: SectionCustomHash = field(default_factory=SectionCustomHash)
 
 
@@ -63,7 +63,7 @@ class OrderSection:
 
 
 @dataclass
-class RootWithOrderSection(ConfigRoot):
+class RootWithOrderSection(ConfigNode):
     sec: OrderSection = field(default_factory=OrderSection)
 
 
@@ -73,7 +73,7 @@ class NoEqSection:
 
 
 @dataclass
-class RootWithNoEqSection(ConfigRoot):
+class RootWithNoEqSection(ConfigNode):
     sec: NoEqSection = field(default_factory=NoEqSection)
 
 
@@ -83,7 +83,7 @@ class UnsafeHashSection:
 
 
 @dataclass
-class RootWithUnsafeHashSection(ConfigRoot):
+class RootWithUnsafeHashSection(ConfigNode):
     sec: UnsafeHashSection = field(default_factory=UnsafeHashSection)
 
 
@@ -93,7 +93,7 @@ class NoInitSection:
 
 
 @dataclass
-class RootWithNoInitSection(ConfigRoot):
+class RootWithNoInitSection(ConfigNode):
     sec: NoInitSection = field(default_factory=NoInitSection)
 
 
@@ -103,7 +103,7 @@ class MultiFlagSection:
 
 
 @dataclass
-class RootWithMultiFlagSection(ConfigRoot):
+class RootWithMultiFlagSection(ConfigNode):
     sec: MultiFlagSection = field(default_factory=MultiFlagSection)
 
 
@@ -120,7 +120,7 @@ class InheritsEqFalse(EqFalseBase):
 
 
 @dataclass
-class RootInheritsEqFalse(ConfigRoot):
+class RootInheritsEqFalse(ConfigNode):
     sec: InheritsEqFalse = field(default_factory=InheritsEqFalse)  # pyrefly: ignore[bad-assignment]
 
 
@@ -139,7 +139,7 @@ class InheritsCustomEq(CustomEqBase):
 
 
 @dataclass
-class RootInheritsCustomEq(ConfigRoot):
+class RootInheritsCustomEq(ConfigNode):
     sec: InheritsCustomEq = field(default_factory=InheritsCustomEq)  # pyrefly: ignore[bad-assignment]
 
 
@@ -154,7 +154,7 @@ class SlotWrapperEqSection:
 
 
 @dataclass
-class RootWithSlotWrapperEq(ConfigRoot):
+class RootWithSlotWrapperEq(ConfigNode):
     sec: SlotWrapperEqSection = field(default_factory=SlotWrapperEqSection)
 
 
@@ -168,7 +168,7 @@ class FrozenSection:
 
 
 @dataclass
-class GoodRoot(ConfigRoot):
+class GoodRoot(ConfigNode):
     fs: FrozenSection = field(default_factory=FrozenSection)
     plain: int = 3
 
@@ -179,7 +179,7 @@ class FrozenArraySection:
 
 
 @dataclass
-class RootWithFrozenArray(ConfigRoot):
+class RootWithFrozenArray(ConfigNode):
     fa: FrozenArraySection = field(default_factory=FrozenArraySection)
 
 
@@ -194,19 +194,19 @@ class SlotsInner:
 
 
 @dataclass(slots=True)
-class SlotsRoot(ConfigRoot):
+class SlotsRoot(ConfigNode):
     inner: SlotsInner
     name: str = "run"
 
 
 @dataclass(slots=True)
-class SlotsIncompleteRoot(ConfigRoot):
+class SlotsIncompleteRoot(ConfigNode):
     v: int = 0
     missing: int = field(init=False)
 
 
 @dataclass(slots=True, weakref_slot=True)
-class SlotsWeakrefRoot(ConfigRoot):
+class SlotsWeakrefRoot(ConfigNode):
     x: int = 1
 
 
@@ -217,7 +217,7 @@ def test_custom_eq_root_rejected_at_class_creation():
     with pytest.raises(ConfigError, match="custom __eq__"):
 
         @dataclass
-        class CustomEqRoot(ConfigRoot):
+        class CustomEqRoot(ConfigNode):
             x: int = 0
 
             def __eq__(self, other: object) -> bool:  # pyrefly: ignore[missing-override-decorator]
@@ -248,7 +248,7 @@ def test_custom_hash_only_root_rejected_at_class_creation():
     with pytest.raises(ConfigError, match="custom __hash__"):
 
         @dataclass
-        class CustomHashRoot(ConfigRoot):
+        class CustomHashRoot(ConfigNode):
             x: int = 0
 
             def __hash__(self) -> int:
@@ -259,7 +259,7 @@ def test_custom_hash_only_slots_root_rejected_at_class_creation():
     with pytest.raises(ConfigError, match="custom __hash__"):
 
         @dataclass(slots=True)
-        class CustomHashSlotsRoot(ConfigRoot):
+        class CustomHashSlotsRoot(ConfigNode):
             x: int = 0
 
             def __hash__(self) -> int:
@@ -390,7 +390,7 @@ class InheritsMutableHash(MutableHashBase):
 
 
 @dataclass
-class RootInheritsMutableHash(ConfigRoot):
+class RootInheritsMutableHash(ConfigNode):
     sec: InheritsMutableHash = field(default_factory=InheritsMutableHash)  # pyrefly: ignore[bad-assignment]
 
 
@@ -404,7 +404,7 @@ class InheritsFrozenHash(FrozenHashBase):
 
 
 @dataclass
-class RootInheritsFrozenHash(ConfigRoot):
+class RootInheritsFrozenHash(ConfigNode):
     sec: InheritsFrozenHash = field(default_factory=InheritsFrozenHash)  # pyrefly: ignore[bad-assignment]
 
 
@@ -425,17 +425,17 @@ def test_frozen_undecorated_subclass_gets_identity_hash():
 
 
 @dataclass(order=True)
-class OrderRoot(ConfigRoot):
+class OrderRoot(ConfigNode):
     x: int = 0
 
 
 @dataclass(eq=False)
-class EqFalseRoot(ConfigRoot):
+class EqFalseRoot(ConfigNode):
     x: int = 0
 
 
 @dataclass(init=False)
-class InitFalseRoot(ConfigRoot):
+class InitFalseRoot(ConfigNode):
     x: int = 0
 
 
@@ -458,7 +458,7 @@ def test_unsafe_hash_root_fails_at_class_creation():
     with pytest.raises(TypeError, match="Cannot overwrite attribute __hash__"):
 
         @dataclass(unsafe_hash=True)
-        class UnsafeRoot(ConfigRoot):
+        class UnsafeRoot(ConfigNode):
             x: int = 0
 
 
@@ -466,7 +466,7 @@ def test_root_body_eq_and_hash_reported_together():
     with pytest.raises(ConfigError) as excinfo:
 
         @dataclass
-        class BothRoot(ConfigRoot):
+        class BothRoot(ConfigNode):
             x: int = 0
 
             def __eq__(self, other: object) -> bool:  # pyrefly: ignore[missing-override-decorator]

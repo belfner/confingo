@@ -19,6 +19,8 @@ confingo.ConfigError: config file train.json has 4 issues:
 
 Paths use dots for fields, indexes for sequence elements, and keys for mapping entries: `stages.0.name`, `datasets.train.path`.
 
+Paths are relative to the object the operation was entered on, and `<root>` names that object. Loading through the whole config reports a leaf as `optimizer.lr`; loading the same section through `OptimizerConfig.from_dict(...)` reports it as `lr`, since the mapping supplied to that call is the document the path locates values in. Pass `context="optimizer override"` to label which source a subtree load was reading.
+
 
 ## Read an error in three steps
 
@@ -83,8 +85,11 @@ The context on the raised error tells you where the problem came from:
 - Non-finite floats anywhere in supplied data.
 - A contradictory field declaration, `field(hash=True, compare=False)`, reported at preflight: a field in the fingerprint must participate in equality.
 - An `init=False` field still awaiting a value after `__post_init__`: `init=False field was not set during __post_init__`.
-- A schema class that hand-writes `__eq__` or `__hash__`, since [confingo owns equality and hashing](schema-design.md#canonical-equality): `<Class> defines a custom __eq__` / `__hash__`. A `ConfigRoot` subclass reports this at class creation, both together when it defines both; a section reports it at its first schema touch.
-- A schema class declared with a `@dataclass` flag that conflicts with confingo's ownership of equality and hashing -- `init=False`, `unsafe_hash=True`, `eq=False`, or `order=True` -- each named in the message, with every violation on one class reported together at first schema processing. A `ConfigRoot` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, because the root installs identity hashing ahead of the decorator.
+- A schema class that hand-writes `__eq__` or `__hash__`, since [confingo owns equality and hashing](schema-design.md#canonical-equality): `<Class> defines a custom __eq__` / `__hash__`. A `ConfigNode` subclass reports this at class creation, both together when it defines both, and reports the same way when it inherits a hand-written definition from a base, naming the base that owns it; a plain dataclass reports it at its first schema touch.
+- A schema class declared with a `@dataclass` flag that conflicts with confingo's ownership of equality and hashing -- `init=False`, `unsafe_hash=True`, `eq=False`, or `order=True` -- each named in the message, with every violation on one class reported together at first schema processing. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, because the node installs identity hashing ahead of the decorator.
+- A `ConfigNode` subclass that declares or inherits one of the eleven reserved method names: `<Class>.<name> is declared as a field, which shadows the ConfigNode method of the same name`. Reported at class creation, with every collision on one class together. The message names where the shadowing member comes from, so a class-body binding reads `is bound in the class body`, an inherited field reads `is inherited as a field from <Base>`, a base member reads `is supplied by base <Base>`, and a metaclass descriptor reads `is supplied as a data descriptor by metaclass <Meta>`.
+- A `ConfigNode` subclass that declares annotations without carrying `@dataclass`: its own names stay outside the schema and only the inherited fields load, so the class is reported at its schema path with the remedy to decorate it. `ClassVar` annotations raise no such error, since they are not fields in the first place.
+- An entry class that is not a dataclass, reported instead of the bare `TypeError` the standard library would raise: `<Class> is not a dataclass, so it carries no config schema`. The message carries the calling operation's context, so a file load still reports against the file it was reading.
 
 
 ## Dataclass invariants

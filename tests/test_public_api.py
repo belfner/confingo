@@ -30,7 +30,7 @@ def test_all_public_names_resolve() -> None:
     expected = {
         "ConfigError",
         "ConfigIssue",
-        "ConfigRoot",
+        "ConfigNode",
         "config_equal",
         "config_hash",
         "dumps_json",

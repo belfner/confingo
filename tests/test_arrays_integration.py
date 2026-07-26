@@ -28,7 +28,7 @@ npt = pytest.importorskip("numpy.typing")
 
 from confingo import (  # noqa: E402
     ConfigError,
-    ConfigRoot,
+    ConfigNode,
     config_hash,
     from_dict,
     load_json,
@@ -53,7 +53,7 @@ class ArraySection:
 
 
 @dataclass
-class ArrayRoot(ConfigRoot):
+class ArrayRoot(ConfigNode):
     section: ArraySection
     tags: npt.NDArray[np.int64] = field(default_factory=lambda: np.array([0], dtype=np.int64))
 
@@ -363,7 +363,7 @@ class PlainWithArray:
 
 
 @dataclass
-class AnyHolder(ConfigRoot):
+class AnyHolder(ConfigNode):
     value: Any
 
 

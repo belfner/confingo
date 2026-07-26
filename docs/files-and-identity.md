@@ -47,7 +47,7 @@ config.save_yaml("resolved.yaml")
 
 ## Extension dispatch
 
-`from_file` / `to_file` (and the matching `ConfigRoot` methods) route by file suffix: `.json`, `.yaml`, and `.yml`, case-insensitive.
+`from_file` / `to_file` (and the matching `ConfigNode` methods) route by file suffix: `.json`, `.yaml`, and `.yml`, case-insensitive.
 
 ```python
 config = TrainingConfig.from_file("experiment.yaml")
@@ -80,6 +80,15 @@ Every save funnels through one atomic writer:
 
 Saving serializes the object as currently held in memory: defaults filled in, plus any programmatic changes made after loading. Writing `runs/<run_id>/resolved.json` therefore records exactly what the run used, whichever partial file or code path produced it.
 
+A save called on a nested [config node](schema-design.md#config-nodes) writes that node's own subtree, so the document holds the section's fields and loads back through the section's class:
+
+```python
+config.optimizer.save_json(run_dir / "optimizer.json")
+optimizer = OptimizerConfig.load_json(run_dir / "optimizer.json")
+```
+
+Loading that same file through the enclosing class applies the enclosing schema, which reports the section's keys against it.
+
 
 ## Stable run identity
 
@@ -95,7 +104,13 @@ for overrides in sweep:
     config.save_json(run_dir / "resolved.json")
 ```
 
-The digest rules, the `compare` and `hash` field projections, and array and tensor hashing live in [Equality and hashing](equality-and-hashing.md#stable-run-identity).
+Called on a nested [config node](schema-design.md#config-nodes), `config_hash` fingerprints that node's subtree, which gives a section its own identity for caching or naming:
+
+```python
+optimizer_id = config.optimizer.config_hash()
+```
+
+The digest rules, the `compare` and `hash` field projections, the scope of a subtree digest, and array and tensor hashing live in [Equality and hashing](equality-and-hashing.md#stable-run-identity).
 
 
 ## Cross-format round trip

@@ -1,4 +1,4 @@
-"""Tests for canonical equality: ConfigRoot installation, injection, and ``config_equal``."""
+"""Tests for canonical equality: ConfigNode installation, injection, and ``config_equal``."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 
 from confingo import (
     ConfigError,
-    ConfigRoot,
+    ConfigNode,
     config_equal,
     from_dict,
     to_dict,
@@ -30,22 +30,22 @@ class Section:
 
 
 @dataclass
-class Tree(ConfigRoot):
+class Tree(ConfigNode):
     section: Section = field(default_factory=Section)
     seed: int = 0
 
 
 @dataclass(frozen=True)
-class FrozenRoot(ConfigRoot):
+class FrozenRoot(ConfigNode):
     x: int = 1
 
 
 @dataclass(slots=True)
-class SlottedRoot(ConfigRoot):
+class SlottedRoot(ConfigNode):
     x: int = 1
 
 
-# --- ConfigRoot installs canonical equality at class creation -----------------
+# --- ConfigNode installs canonical equality at class creation -----------------
 
 
 def test_root_subclass_carries_canonical_eq_from_class_creation():
@@ -78,7 +78,7 @@ def test_root_body_eq_is_rejected_at_class_creation():
     with pytest.raises(ConfigError, match="custom __eq__"):
 
         @dataclass
-        class CustomEqRoot(ConfigRoot):
+        class CustomEqRoot(ConfigNode):
             x: int = 0
 
             def __eq__(self, other: object) -> bool:  # pyrefly: ignore[missing-override-decorator]
@@ -118,7 +118,7 @@ class PlainSection:
 
 
 @dataclass
-class MixedRoot(ConfigRoot):
+class MixedRoot(ConfigNode):
     section: PlainSection = field(default_factory=PlainSection)
     x: int = 0
 

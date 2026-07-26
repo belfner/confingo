@@ -126,7 +126,7 @@ def from_dict(config_cls: type[T], data: Mapping[str, Any], *, context: str = "c
     ``AttributeError``.
 
     Args:
-      config_cls (type[T]): The root dataclass to build.
+      config_cls (type[T]): The entry dataclass to build.
       data (Mapping[str, Any]): Nested mapping of config values, typically parsed
         from a config file.
       context (str = "config"): Description of the config source used in the error

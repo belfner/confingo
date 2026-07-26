@@ -19,7 +19,7 @@ The comparison itself runs structurally: array and tensor pairs compare through 
 ```python
 from dataclasses import dataclass
 
-from confingo import ConfigRoot
+from confingo import ConfigNode
 
 
 @dataclass
@@ -29,17 +29,19 @@ class OptimizerConfig:
 
 
 @dataclass(frozen=True)
-class RunConfig(ConfigRoot):
+class RunConfig(ConfigNode):
     optimizer: OptimizerConfig
     seed: int = 0
 ```
 
 Canonical equality reaches a schema class through two doors:
 
-- A `ConfigRoot` subclass carries it from class-creation time: `ConfigRoot.__init_subclass__` plants the canonical `__eq__` and identity `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own.
-- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the generated `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Ahead of that, a root already compares canonically through `ConfigRoot` (recursing into its sections structurally), and `config_equal` covers any tree.
+- A `ConfigNode` subclass carries it from class-creation time: `ConfigNode.__init_subclass__` plants the canonical `__eq__` and identity `__hash__` ahead of the `@dataclass` decorator, which then keeps them in place of generating its own.
+- Every other schema dataclass receives the same canonical `__eq__` at its first schema processing -- the first `from_dict` or file load that touches the tree, including its schema preflight -- replacing the generated `__eq__` it carried, with identity hashing restored where generating `__eq__` had disabled it. Ahead of that, a node already compares canonically through `ConfigNode` (recursing into its sections structurally), and `config_equal` covers any tree.
 
-confingo owns equality and hashing on config dataclasses. A class that hand-writes `__eq__` or `__hash__` is rejected -- a root at class creation (both reported together when it defines both), a section at its first schema touch -- because a hand-written definition would disagree with `config_equal` and `config_hash`. The same guard rejects `@dataclass` flags that conflict with that ownership, reported at first schema processing once decoration has run: `init=False` (the class needs its generated `__init__` to build), `unsafe_hash=True` (it installs a field-tuple hash that disagrees with the fingerprint and raises on array fields), `eq=False`, and `order=True` (ordering compares the raw field tuple). A `ConfigRoot` subclass declared `unsafe_hash=True` is the one flag caught earlier: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the root installs identity hashing ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported; the generated hash of a frozen class, or one inherited by an undecorated dataclass subclass, is reduced to identity so it shares the same model as every other config. Provenance is told from a hand-written method by matching its code object against dataclass codegen on the current interpreter; a method fabricated to be byte-identical to that codegen is treated as generated.
+confingo owns equality and hashing on config dataclasses. A class that hand-writes `__eq__` or `__hash__` is rejected -- a `ConfigNode` subclass at class creation (both reported together when it defines both), a plain dataclass at its first schema touch -- because a hand-written definition would disagree with `config_equal` and `config_hash`. A `ConfigNode` subclass is also rejected when it inherits a hand-written `__eq__` or `__hash__` from a base, since the canonical methods land on the subclass ahead of the decorator and would otherwise resolve in place of the inherited definition; the message names the base that owns it. A plain dataclass that inherits a hand-written definition and generates its own through `@dataclass` keeps the generated one.
+
+The same guard rejects `@dataclass` flags that conflict with that ownership, reported at first schema processing once decoration has run: `init=False` (the class needs its generated `__init__` to build), `unsafe_hash=True` (it installs a field-tuple hash that disagrees with the fingerprint and raises on array fields), `eq=False`, and `order=True` (ordering compares the raw field tuple). A `ConfigNode` subclass declared `unsafe_hash=True` is the one flag caught earlier: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the node installs identity hashing ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported; the generated hash of a frozen class, or one inherited by an undecorated dataclass subclass, is reduced to identity so it shares the same model as every other config. Provenance is told from a hand-written method by matching its code object against dataclass codegen on the current interpreter; a method fabricated to be byte-identical to that codegen is treated as generated.
 
 With the canonical `__eq__` installed, `__hash__` stays object identity, so two equal configs are still distinct set members; [`config_hash`](#stable-run-identity) is the value-identity tool.
 
@@ -74,6 +76,21 @@ Two properties make it useful as a run identity:
 - A change to a hashing field's canonical encoded value changes that input, so configs differing in an encoded hashing value get distinct digests up to the collision resistance of the chosen prefix length. Longer prefixes buy more resistance; because the digest covers the hashing fields, two configs that differ only in a `hash=False` field can share one.
 
 [Array and tensor fields](arrays-and-tensors.md#round-trips-equality-and-hashing) hash by their encoded values and nesting, exactly what the file records. Arrays that share those encoded values collide by design: bare-annotated arrays holding the same values at different dtype widths hash equal, integer and float widths alike, as do tensors that share values while differing in device, gradient state, or stride and storage arrangement, and zero-size arrays that share their retained encoded dimensions. A concrete dtype annotation is schema, so it shapes the rebuilt value while the hash tracks the encoded values, the same way `tuple`-ness already works.
+
+### Subtree digests
+
+`config_hash` covers exactly the object it is called on, so a nested [config node](schema-design.md#config-nodes) fingerprints its own section:
+
+```python
+run_id = config.config_hash()              # covers the whole config
+optimizer_id = config.optimizer.config_hash()   # covers the optimizer section
+```
+
+Three consequences follow from the digest being a content fingerprint:
+
+- Each dataclass level applies its own field projection, so an enclosing field declared `hash=False` keeps that whole section out of the enclosing digest while the section's own `config_hash()` still tracks its fields. Two configs differing only inside such a section share an enclosing digest and carry distinct section digests.
+- The canonical JSON records values and structure, so two classes whose hashing fields encode identically produce the same digest. A section digest identifies content rather than the class that held it.
+- Prefix collision resistance is governed by `length` at every level, so a short section digest carries the same trade-off a short run id does.
 
 That makes the hash a natural run-directory name for sweeps:
 
