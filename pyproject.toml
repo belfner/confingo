@@ -1,9 +1,9 @@
 [project]
 name = "confingo"
-version = "0.3.0"
+version = "0.4.0"
 description = "A dataclass-driven configuration toolkit with typed coercion, collect-all validation, and stable hashing."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -14,7 +14,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -47,6 +46,11 @@ dev = [
     "types-pyyaml>=6.0.12.20260518",
 ]
 
+[tool.uv]
+# The test suite exercises the numpy and torch adapters, so the default sync
+# installs the arrays group alongside dev.
+default-groups = ["dev", "arrays"]
+
 [tool.uv.sources]
 torch = [
     {index = "pytorch-cpu"},
@@ -59,7 +63,7 @@ explicit = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 exclude = [
     ".git",
     ".mypy_cache",
@@ -133,12 +137,12 @@ matches = "tests/schemas.py"
 [tool.pyrefly.sub-config.errors]
 implicit-any-type-argument = false
 
-# examples/quickstart/run.py imports its sibling config module by running from the
+# Each example's run.py imports its sibling schema module by running from the
 # example directory (the documented `python run.py` invocation puts that directory
 # on sys.path), so the import resolves at run time rather than during a project
 # type check.
 [[tool.pyrefly.sub-config]]
-matches = "examples/quickstart/run.py"
+matches = "examples/*/run.py"
 
 [tool.pyrefly.sub-config.errors]
 missing-import = false

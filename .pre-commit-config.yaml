@@ -1,4 +1,4 @@
-# Pre-commit hooks for the ML team template repo
+# Pre-commit hooks for confingo
 # See https://pre-commit.com for more information
 # Install: pre-commit install
 # Run manually: pre-commit run --all-files (WARNING: this will modify all files in repo destructivly with no easy to
@@ -48,7 +48,7 @@ repos:
 
 # Configuration for specific checks
 default_language_version:
-  python: python3.10
+  python: python3.12
 
 # Fail fast: stop running hooks after first failure
 fail_fast: false
