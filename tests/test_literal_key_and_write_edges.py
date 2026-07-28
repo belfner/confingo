@@ -15,7 +15,6 @@ from enum import (
 )
 from typing import (  # noqa: UP035  (Tuple used to test the legacy alias)
     TYPE_CHECKING,
-    Any,
     Literal,
     Tuple,
 )
@@ -24,6 +23,9 @@ import pytest
 
 from confingo import (
     ConfigError,
+    ConfigValue,
+)
+from confingo.functional import (
     from_dict,
     load_yaml,
     to_dict,
@@ -82,7 +84,7 @@ def test_plain_literal_still_accepted():
 
 @dataclass
 class AnyHolder:
-    x: Any = None
+    x: ConfigValue = None
 
 
 def test_nan_mapping_key_under_any_rejected():

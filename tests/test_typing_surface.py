@@ -21,7 +21,6 @@ from dataclasses import (
 from typing import (
     TYPE_CHECKING,
     Any,
-    TypeVar,
     assert_type,
 )
 
@@ -30,6 +29,8 @@ from confingo import (
     ConfigError,
     ConfigIssue,
     ConfigNode,
+)
+from confingo.functional import (
     config_equal,
     config_hash,
     dumps_json,
@@ -42,7 +43,7 @@ from confingo import (
     save_yaml,
     to_dict,
     to_file,
-    validate,
+    validate_schema,
 )
 
 
@@ -79,11 +80,8 @@ class SubNode(Node):
 if TYPE_CHECKING:
     from pathlib import Path
 
-NodeT = TypeVar("NodeT", bound=ConfigNode)
-ConfigT = TypeVar("ConfigT")
 
-
-def build_any(config_cls: type[ConfigT], data: dict[str, Any]) -> ConfigT:
+def build_any[ConfigT](config_cls: type[ConfigT], data: dict[str, Any]) -> ConfigT:
     """Build any dataclass through the free function, keeping the caller's type.
 
     Args:
@@ -96,7 +94,7 @@ def build_any(config_cls: type[ConfigT], data: dict[str, Any]) -> ConfigT:
     return from_dict(config_cls, data)
 
 
-def build_node(config_cls: type[NodeT]) -> NodeT:
+def build_node[NodeT: ConfigNode](config_cls: type[NodeT]) -> NodeT:
     """Build a node through the class route, keeping the caller's type.
 
     Args:
@@ -108,7 +106,7 @@ def build_node(config_cls: type[NodeT]) -> NodeT:
     return config_cls.cfg.from_dict({})
 
 
-def fingerprint(node: NodeT) -> str:
+def fingerprint[NodeT: ConfigNode](node: NodeT) -> str:
     """Fingerprint any node through the value route.
 
     Args:
@@ -120,7 +118,7 @@ def fingerprint(node: NodeT) -> str:
     return node.cfg.hash()
 
 
-def export(node: NodeT) -> Any:
+def export[NodeT: ConfigNode](node: NodeT) -> Any:
     """Render any node's subtree through the value route.
 
     Args:
@@ -153,7 +151,7 @@ def test_the_probed_file_operations_round_trip(tmp_path: Path):
     assert config_equal(built, Node.cfg.from_dict({})) is True
     assert dumps_json(built).endswith("\n")
     assert dumps_yaml(built).endswith("\n")
-    validate(Node)
+    validate_schema(Node)
 
 
 if TYPE_CHECKING:
@@ -166,8 +164,8 @@ if TYPE_CHECKING:
         assert_type(load_json(Plain, Path("c.json")), Plain)
         assert_type(load_yaml(Plain, "c.yaml"), Plain)
         assert_type(from_file(Plain, "c.json"), Plain)
-        assert_type(validate(Plain), None)
-        assert_type(validate(Plain, context="schema"), None)
+        assert_type(validate_schema(Plain), None)
+        assert_type(validate_schema(Plain, context="schema"), None)
 
         config = from_dict(Plain, {})
         assert_type(to_dict(config), Any)
@@ -188,8 +186,8 @@ if TYPE_CHECKING:
         assert_type(Node.cfg.load_json("c.json"), Node)
         assert_type(Node.cfg.load_yaml(Path("c.yaml")), Node)
         assert_type(Node.cfg.from_file("c.json"), Node)
-        assert_type(Node.cfg.validate(), None)
-        assert_type(Node.cfg.validate(context="sweep template"), None)
+        assert_type(Node.cfg.validate_schema(), None)
+        assert_type(Node.cfg.validate_schema(context="sweep template"), None)
         assert_type(SubNode.cfg.from_dict({}), SubNode)
         assert_type(SubNode.cfg.load_json("c.json"), SubNode)
         assert_type(from_dict(SubNode, {}), SubNode)
@@ -206,7 +204,7 @@ if TYPE_CHECKING:
         assert_type(node.cfg.to_file(Path("c.json")), Path)
         assert_type(node.cfg.hash(), str)
         assert_type(node.cfg.hash(length=8), str)
-        assert_type(node.cfg.validate(), None)
+        assert_type(node.cfg.validate_schema(), None)
         assert_type(node.cfg.from_dict({}), Node)
         assert_type(sub.cfg.from_dict({}), SubNode)
         assert_type(sub.cfg.hash(), str)
@@ -223,7 +221,7 @@ if TYPE_CHECKING:
         assert_type(node.trainer.cfg.to_dict(), Any)
         assert_type(node.trainer.cfg.hash(), str)
         assert_type(node.trainer.cfg.save_json("c.json"), Path)
-        assert_type(node.trainer.cfg.validate(), None)
+        assert_type(node.trainer.cfg.validate_schema(), None)
 
         assert_type(node.stages[0], Trainer)
         assert_type(node.stages[0].cfg.from_dict({}), Trainer)
@@ -233,7 +231,7 @@ if TYPE_CHECKING:
         """The class route offers the operations a class can answer.
 
         A value operation names the instance form, which the type checker sees
-        as the class facade carrying the builders and ``validate`` alone. The
+        as the class facade carrying the builders and ``validate_schema`` alone. The
         same call raises the naming ``TypeError`` at run time, asserted in
         ``test_config_node.py``.
 

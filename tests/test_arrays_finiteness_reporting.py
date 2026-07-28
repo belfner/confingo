@@ -26,7 +26,9 @@ def test_numpy_subclass_nonfinite_reports_issue() -> None:
 
     array = np.array([1.0, float("nan"), 3.0]).view(StrictIndex)
     issues: list[tuple[str, str]] = []
-    result = _arrays.validate_array_value(array, "w", lambda path, message: issues.append((path, message)))
+    spec = _arrays.inspect_annotation(np.ndarray).spec
+    assert spec is not None
+    result = _arrays.coerce_array(array, spec, "w", lambda path, message: issues.append((path, message)))
 
     assert result is _arrays.FAILED
     assert issues == [("w.1", "expected a finite float, got nan")]

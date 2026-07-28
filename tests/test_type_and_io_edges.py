@@ -23,8 +23,8 @@ from typing import (
 
 import pytest
 
-from confingo import (
-    ConfigError,
+from confingo import ConfigError
+from confingo.functional import (
     dumps_json,
     from_dict,
     from_file,
@@ -155,20 +155,20 @@ def test_float_overflow_collected():
 # --- bare dict enforces str keys ----------------------------------------
 
 
-def test_bare_dict_rejects_non_str_key():
+def test_open_dict_rejects_non_str_key():
     with pytest.raises(ConfigError) as info:
-        from_dict(Containers, {"bare_dict": {1: "one"}})
+        from_dict(Containers, {"open_dict": {1: "one"}})
     assert any("expected str" in i.message for i in info.value.issues)
 
 
-def test_bare_dict_accepts_str_key():
-    cfg = from_dict(Containers, {"bare_dict": {"a": 1}})
-    assert cfg.bare_dict == {"a": 1}
+def test_open_dict_accepts_str_key():
+    cfg = from_dict(Containers, {"open_dict": {"a": 1}})
+    assert cfg.open_dict == {"a": 1}
 
 
-def test_bare_dict_yaml_int_key_rejected(tmp_path: Path):
+def test_open_dict_yaml_int_key_rejected(tmp_path: Path):
     path = tmp_path / "c.yaml"
-    path.write_text("bare_dict:\n  1: one\n", encoding="utf-8")
+    path.write_text("open_dict:\n  1: one\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_yaml(Containers, path)
 
@@ -216,10 +216,11 @@ def test_atomic_write_leaves_foreign_tmp_untouched(tmp_path: Path):
 
 _HASH_PROG = (
     "from dataclasses import dataclass, field\n"
-    "from confingo import from_dict, config_hash\n"
+    "from confingo import ConfigScalar\n"
+    "from confingo.functional import from_dict, config_hash\n"
     "@dataclass\n"
     "class M:\n"
-    "    s: frozenset[int | str] = field(default_factory=frozenset)\n"
+    "    s: frozenset[ConfigScalar] = field(default_factory=frozenset)\n"
     "print(config_hash(from_dict(M, {'s': [3, 1, 'b', 'a']})))\n"
 )
 

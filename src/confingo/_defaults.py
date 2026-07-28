@@ -34,6 +34,7 @@ from typing import (
 from confingo import _arrays
 from confingo._errors import _IssueCollector
 from confingo._schema import (
+    MAX_PLAIN_DEPTH,
     _classify_dataclass_fields,
     _classify_hint,
     _hint_name,
@@ -41,11 +42,17 @@ from confingo._schema import (
     _join,
     _resolved_hints,
     _typename,
+    plain_cycle_message,
+    plain_data_message,
+    plain_depth_message,
+    plain_key_message,
+    plain_scalar_message,
 )
 from confingo._serialize import (
     _PlainProjection,
     _to_plain,
 )
+from confingo.typing import ConfigScalar
 
 
 DEFAULT_LABEL = "invalid authored default"
@@ -77,6 +84,7 @@ def validate_authored_value(
     collector: _IssueCollector,
     *,
     label: str,
+    depth: int = 0,
 ) -> bool:
     """Validate one authored value against its annotation and its plain form.
 
@@ -88,16 +96,19 @@ def validate_authored_value(
         carried under ``label``.
       label (str): Prefix naming where the value came from, ``DEFAULT_LABEL`` or
         ``FACTORY_LABEL``.
+      depth (int = 0): How deep in the plain document this value sits, so the
+        nesting budget is the one the whole-config walks spend.
 
     Returns:
       bool: True when the value passed both gates, False when issues were added.
     """
     trial = _IssueCollector(collector.backend)
-    _check_runtime_form(value, hint, path, trial, set())
+    _check_runtime_form(value, hint, path, trial, set(), depth)
     if trial.clean():
-        # The same walk to_dict runs, so a default that validates is a default the
-        # config can be written back out with.
-        _to_plain(value, path, trial, projection=_PlainProjection.EXPORT)
+        # The same walk to_dict runs, at the depth to_dict reaches this value at, so
+        # a default that validates is a default the config can be written back out
+        # with.
+        _to_plain(value, path, trial, projection=_PlainProjection.EXPORT, depth=depth)
     for issue in trial.issues:
         collector.add(issue.path, f"{label}: {issue.message}")
     return trial.clean()
@@ -119,7 +130,9 @@ def _mismatch(hint: Any, value: Any) -> str:
     )
 
 
-def _check_runtime_form(value: Any, hint: Any, path: str, collector: _IssueCollector, seen: set[int]) -> None:
+def _check_runtime_form(
+    value: Any, hint: Any, path: str, collector: _IssueCollector, seen: set[int], depth: int = 0
+) -> None:
     """Check that a value already carries the runtime representation ``hint`` names.
 
     Args:
@@ -129,6 +142,7 @@ def _check_runtime_form(value: Any, hint: Any, path: str, collector: _IssueColle
       collector (_IssueCollector): Destination for any issues found.
       seen (set[int]): Ids of the config objects on the current branch, so a
         self-referential default terminates.
+      depth (int = 0): How deep in the plain document this value sits.
     """
     if collector.backend.active:
         match = _arrays.inspect_annotation(hint)
@@ -138,9 +152,8 @@ def _check_runtime_form(value: Any, hint: Any, path: str, collector: _IssueColle
 
     plan = _classify_hint(hint)
     kind = plan.kind
-    if kind is _HintKind.ANY:
-        # Any accepts whatever it is written as; the plain-form gate is what
-        # bounds it to a value confingo can serialize.
+    if kind is _HintKind.CONFIG_VALUE:
+        _check_plain_domain(value, plan.stripped, path, collector, depth=depth)
         return
     if kind is _HintKind.NONE:
         if value is not None:
@@ -152,21 +165,72 @@ def _check_runtime_form(value: Any, hint: Any, path: str, collector: _IssueColle
             collector.add(path, f"expected one of {_hint_name(plan.stripped)}, got {value!r}")
         return
     if kind is _HintKind.UNION:
-        _check_union(value, plan.stripped, plan.args, path, collector, seen)
+        _check_union(value, plan.stripped, plan.args, path, collector, seen, depth)
         return
     if kind is _HintKind.DATACLASS:
-        _check_section(value, plan.dataclass_type, hint, path, collector, seen)
+        _check_section(value, plan.dataclass_type, hint, path, collector, seen, depth)
         return
     if kind is _HintKind.CONTAINER:
-        _check_container(value, plan.stripped, plan.origin, plan.args, path, collector, seen)
-        return
-    if kind is _HintKind.BARE_CONTAINER:
-        # Elements pass through under Any, but the container's own rules still
-        # apply: a bare mapping carries str keys the same way an annotated one
-        # does, so its plain form reloads through the same annotation.
-        _check_container(value, plan.stripped, plan.bare_origin, (), path, collector, seen)
+        _check_container(value, plan.stripped, plan.origin, plan.args, path, collector, seen, depth)
         return
     _check_scalar(value, plan.stripped, path, collector)
+
+
+def _check_plain_domain(
+    value: Any,
+    hint: Any,
+    path: str,
+    collector: _IssueCollector,
+    *,
+    depth: int = 0,
+    seen: tuple[int, ...] = (),
+) -> None:
+    """Check that an authored value already carries the exact plain form its alias names.
+
+    ``ConfigValue`` and ``ConfigScalar`` name a domain rather than one type, so
+    the check walks the value and requires each part to be a member as written.
+    Coercion admits a tuple by rebuilding it as a list, and admits a ``Path`` or a
+    temporal value by writing it as text; a default is never coerced, so each of
+    those is reported here with the plain form to write instead.
+
+    Args:
+      value (Any): The authored object.
+      hint (Any): ``ConfigValue`` or ``ConfigScalar``, deciding whether containers
+        are admitted.
+      path (str): Dotted path of the value.
+      collector (_IssueCollector): Destination for any issues found.
+      depth (int = 0): Nesting depth reached so far.
+      seen (tuple[int, ...] = ()): Ids of the containers open on this branch.
+    """
+    value_type = type(value)
+    if value is None or value_type is bool or value_type is int or value_type is str:
+        return
+    if value_type is float:
+        if not math.isfinite(value):
+            collector.add(path, f"expected a finite float, got {value!r}")
+        return
+    if hint is ConfigScalar:
+        collector.add(path, plain_scalar_message(value))
+        return
+    if depth >= MAX_PLAIN_DEPTH:
+        collector.add(path, plain_depth_message())
+        return
+    if id(value) in seen:
+        collector.add(path, plain_cycle_message())
+        return
+    branch = (*seen, id(value))
+    if value_type is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                collector.add(path, plain_key_message(key))
+                continue
+            _check_plain_domain(item, hint, _join(path, key), collector, depth=depth + 1, seen=branch)
+        return
+    if value_type is list:
+        for index, item in enumerate(value):
+            _check_plain_domain(item, hint, _join(path, str(index)), collector, depth=depth + 1, seen=branch)
+        return
+    collector.add(path, plain_data_message(value))
 
 
 def _check_array(value: Any, match: _arrays.AnnotationMatch, hint: Any, path: str, collector: _IssueCollector) -> None:
@@ -203,6 +267,7 @@ def _check_union(
     path: str,
     collector: _IssueCollector,
     seen: set[int],
+    depth: int = 0,
 ) -> None:
     """Check a value against a union, accepting the first member it already fits.
 
@@ -213,10 +278,11 @@ def _check_union(
       path (str): Dotted path of the value.
       collector (_IssueCollector): Destination for any issues found.
       seen (set[int]): Ids of the config objects on the current branch.
+      depth (int = 0): How deep in the plain document this value sits.
     """
     for member in args:
         trial = _IssueCollector(collector.backend)
-        _check_runtime_form(value, member, path, trial, seen)
+        _check_runtime_form(value, member, path, trial, seen, depth)
         if trial.clean():
             return
     collector.add(path, _mismatch(hint, value))
@@ -229,6 +295,7 @@ def _check_section(
     path: str,
     collector: _IssueCollector,
     seen: set[int],
+    depth: int = 0,
 ) -> None:
     """Check a nested config object default, recursing into its constructor fields.
 
@@ -245,6 +312,7 @@ def _check_section(
       collector (_IssueCollector): Destination for any issues found.
       seen (set[int]): Ids of the config objects on the current branch, so a
         section holding itself terminates.
+      depth (int = 0): How deep in the plain document this section sits.
     """
     if section_cls is None or type(value) is not section_cls:
         collector.add(path, _mismatch(hint, value))
@@ -256,7 +324,7 @@ def _check_section(
     for classified in _classify_dataclass_fields(section_cls).init_fields:
         name = classified.definition.name
         held = getattr(value, name, None)
-        _check_runtime_form(held, hints[name], _join(path, name), collector, branch)
+        _check_runtime_form(held, hints[name], _join(path, name), collector, branch, depth + 1)
 
 
 def _check_container(
@@ -267,6 +335,7 @@ def _check_container(
     path: str,
     collector: _IssueCollector,
     seen: set[int],
+    depth: int = 0,
 ) -> None:
     """Check a container default's own type, its arity, and each element it holds.
 
@@ -282,6 +351,7 @@ def _check_container(
       path (str): Dotted path of the value.
       collector (_IssueCollector): Destination for any issues found.
       seen (set[int]): Ids of the config objects on the current branch.
+      depth (int = 0): How deep in the plain document this container sits.
     """
     if origin in (dict, Mapping):
         # Construction builds a dict from whatever mapping the input carried, so
@@ -295,7 +365,7 @@ def _check_container(
             if type(key) is not str:
                 collector.add(item_path, f"expected a str mapping key, got {_typename(key)}")
                 continue
-            _check_runtime_form(item, value_hint, item_path, collector, seen)
+            _check_runtime_form(item, value_hint, item_path, collector, seen, depth + 1)
         return
 
     built_type = _SEQUENCE_TYPES.get(origin, list)
@@ -318,10 +388,10 @@ def _check_container(
         # schema preflight, so each element is judged on its runtime form alone.
         element_hint = args[0] if len(args) >= 1 else Any
         for item in value:
-            _check_runtime_form(item, element_hint, path, collector, seen)
+            _check_runtime_form(item, element_hint, path, collector, seen, depth + 1)
         return
     for index, (item, element_hint) in enumerate(zip(value, element_hints, strict=True)):
-        _check_runtime_form(item, element_hint, _join(path, str(index)), collector, seen)
+        _check_runtime_form(item, element_hint, _join(path, str(index)), collector, seen, depth + 1)
 
 
 def _tuple_element_hints(

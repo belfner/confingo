@@ -21,10 +21,13 @@ class BackendSnapshot:
     Attributes:
       numpy (Any | None): The loaded numpy module, or None when not imported.
       torch (Any | None): The loaded torch module, or None when not imported.
+      numpy_typing (Any | None = None): The loaded ``numpy.typing`` module, which
+        spells the ``NDArray`` alias an annotation may name, or None.
     """
 
     numpy: Any | None
     torch: Any | None
+    numpy_typing: Any | None = None
 
     @property
     def active(self) -> bool:
@@ -40,6 +43,10 @@ def capture_backend_snapshot() -> BackendSnapshot:
     install free of numpy and torch.
 
     Returns:
-      BackendSnapshot: The numpy and torch modules loaded at call time.
+      BackendSnapshot: The backend modules loaded at call time.
     """
-    return BackendSnapshot(numpy=sys.modules.get("numpy"), torch=sys.modules.get("torch"))
+    return BackendSnapshot(
+        numpy=sys.modules.get("numpy"),
+        torch=sys.modules.get("torch"),
+        numpy_typing=sys.modules.get("numpy.typing"),
+    )

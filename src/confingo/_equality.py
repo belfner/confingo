@@ -34,6 +34,7 @@ treated as generated.
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import (
     fields,
     is_dataclass,
@@ -49,8 +50,12 @@ from confingo import _arrays
 from confingo._errors import (
     ConfigError,
     ConfigIssue,
+    class_label,
 )
-from confingo._schema import _classify_dataclass_fields
+from confingo._schema import (
+    MAX_PLAIN_DEPTH,
+    _classify_dataclass_fields,
+)
 from confingo._serialize import (
     _canonical_json,
     _PlainProjection,
@@ -77,7 +82,7 @@ fingerprint.
 """
 
 
-def _values_equal(a: Any, b: Any) -> bool:
+def _values_equal(a: Any, b: Any, *, depth: int = 0, seen: tuple[tuple[int, int], ...] = ()) -> bool:
     """Compare two field values by their canonical serialized forms.
 
     Array pairs of the loaded backends compare through
@@ -91,13 +96,26 @@ def _values_equal(a: Any, b: Any) -> bool:
     plain-form comparison on the supported value domain, so the walk is an
     evaluation strategy for one equality relation.
 
+    The structural walk is bounded the same way every other walk over a value is.
+    A pair it is already inside, or a depth past ``MAX_PLAIN_DEPTH``, hands the
+    remaining comparison to the plain-form fallback, which reports a value with no
+    plain form exactly as the fingerprint does.
+
     Args:
       a (Any): The left-hand value.
       b (Any): The right-hand value.
+      depth (int = 0): Nesting depth reached so far.
+      seen (tuple[tuple[int, int], ...] = ()): Id pairs open on this branch.
 
     Returns:
       bool: Whether the two values serialize to equal plain forms.
     """
+    if _array_depth_exceeds(a, depth) or _array_depth_exceeds(b, depth):
+        # An array deeper than the budget has no plain form, so the comparison is
+        # settled where every other walk settles it rather than by the backend.
+        # Both sides travel that route, so the pair is answered the same way
+        # whichever order it arrives in.
+        return _plain_forms_equal(a, b, depth)
     verdict = _arrays.native_equal(a, b)
     if verdict is not _arrays.NOT_COMPARABLE:
         return bool(verdict)
@@ -117,25 +135,67 @@ def _values_equal(a: Any, b: Any) -> bool:
         if a == 0.0 and b == 0.0:
             return math.copysign(1.0, a) == math.copysign(1.0, b)
         return bool(a == b)
-    if is_dataclass(a) and not isinstance(a, type) and a.__class__ is b.__class__:
-        compared = _classify_dataclass_fields(a.__class__).compared
-        return all(_values_equal(getattr(a, c.definition.name), getattr(b, c.definition.name)) for c in compared)
-    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-        if len(a) != len(b):
-            return False
-        return all(_values_equal(x, y) for x, y in zip(a, b, strict=True))
-    if (
-        isinstance(a, dict)
-        and isinstance(b, dict)
-        and all(type(key) is str for key in a)
-        and all(type(key) is str for key in b)
-    ):
-        if a.keys() != b.keys():
-            return False
-        return all(_values_equal(item, b[key]) for key, item in a.items())
-    left = _canonical_json(_project_plain(a, _PlainProjection.COMPARE))
-    right = _canonical_json(_project_plain(b, _PlainProjection.COMPARE))
+    if depth < MAX_PLAIN_DEPTH and (id(a), id(b)) not in seen:
+        branch = (*seen, (id(a), id(b)))
+        if is_dataclass(a) and not isinstance(a, type) and a.__class__ is b.__class__:
+            compared = _classify_dataclass_fields(a.__class__).compared
+            return all(
+                _values_equal(
+                    getattr(a, c.definition.name), getattr(b, c.definition.name), depth=depth + 1, seen=branch
+                )
+                for c in compared
+            )
+        if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+            if len(a) != len(b):
+                return False
+            return all(_values_equal(x, y, depth=depth + 1, seen=branch) for x, y in zip(a, b, strict=True))
+        if (
+            isinstance(a, dict)
+            and isinstance(b, dict)
+            and all(type(key) is str for key in a)
+            and all(type(key) is str for key in b)
+        ):
+            if a.keys() != b.keys():
+                return False
+            return all(_values_equal(item, b[key], depth=depth + 1, seen=branch) for key, item in a.items())
+    return _plain_forms_equal(a, b, depth)
+
+
+def _plain_forms_equal(a: Any, b: Any, depth: int) -> bool:
+    """Compare two values by the canonical JSON of their COMPARE projections.
+
+    Both sides are projected, so a value with no plain form is reported whichever
+    side of the comparison it arrived on.
+
+    Args:
+      a (Any): The left-hand value.
+      b (Any): The right-hand value.
+      depth (int): How deep in the plain document the pair sits.
+
+    Returns:
+      bool: Whether the two values render to the same canonical JSON text.
+
+    Raises:
+      ConfigError: When either value has no plain form.
+    """
+    left = _canonical_json(_project_plain(a, _PlainProjection.COMPARE, depth))
+    right = _canonical_json(_project_plain(b, _PlainProjection.COMPARE, depth))
     return left == right
+
+
+def _array_depth_exceeds(value: Any, depth: int) -> bool:
+    """Report whether a native array's plain form passes the nesting budget.
+
+    Args:
+      value (Any): One side of a comparison.
+      depth (int): How deep in the plain document that side sits.
+
+    Returns:
+      bool: True when the value is an array whose plain form is deeper than the
+        budget allows.
+    """
+    encoded = _arrays.encoded_array_depth(value)
+    return encoded is not None and depth + encoded > MAX_PLAIN_DEPTH
 
 
 def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
@@ -157,7 +217,14 @@ def _canonical_eq(self: Any, other: Any) -> bool | types.NotImplementedType:
     if other.__class__ is not self.__class__:
         return NotImplemented
     compared = _classify_dataclass_fields(self.__class__).compared
-    return all(_values_equal(getattr(self, c.definition.name), getattr(other, c.definition.name)) for c in compared)
+    # A field value sits one level below the config that holds it, which is where
+    # the marshal walk reaches it, so the two spend one budget on one document.
+    return all(
+        _values_equal(
+            getattr(self, c.definition.name), getattr(other, c.definition.name), depth=1, seen=((id(self), id(other)),)
+        )
+        for c in compared
+    )
 
 
 def _unhashable_config(self: Any) -> NoReturn:
@@ -175,7 +242,9 @@ def _unhashable_config(self: Any) -> NoReturn:
     Raises:
       TypeError: Always, naming ``config_hash`` as the value-identity operation.
     """
-    raise TypeError(f"unhashable type: {type(self).__name__!r}; use config_hash(config) for value identity")
+    raise TypeError(
+        f"unhashable type: {class_label(type(self))!r}; use confingo.functional.config_hash(config) for value identity"
+    )
 
 
 def custom_eq_message(name: str) -> str:
@@ -204,7 +273,7 @@ def custom_hash_message(name: str) -> str:
     """
     return (
         f"{name} defines a custom __hash__; confingo owns hashing and makes config dataclasses unhashable. "
-        f"Remove the __hash__ method and use config_hash(config) for value identity."
+        f"Remove the __hash__ method and use confingo.functional.config_hash(config) for value identity."
     )
 
 
@@ -229,7 +298,7 @@ def _resolve_owner(config_cls: type[Any], name: str) -> tuple[type[Any], Any]:
     return object, getattr(config_cls, name)
 
 
-def _reference_code(owner: type[Any], names: list[str], *, frozen: bool) -> Any:
+def _reference_code(names: list[str], *, frozen: bool) -> Any:
     """Build a reference method's code object from dataclass codegen for ``names``.
 
     ``make_dataclass`` runs the same equality / hash generator as ``@dataclass``
@@ -237,8 +306,6 @@ def _reference_code(owner: type[Any], names: list[str], *, frozen: bool) -> Any:
     object confingo compares provenance against.
 
     Args:
-      owner (type[Any]): The class whose provenance is being checked, used only
-        for the reference name.
       names (list[str]): Field names, in declaration order, the generated method
         ranges over.
       frozen (bool): Whether to build a frozen reference, which generates
@@ -247,7 +314,9 @@ def _reference_code(owner: type[Any], names: list[str], *, frozen: bool) -> Any:
     Returns:
       Any: The generated ``__eq__`` (mutable) or ``__hash__`` (frozen) code object.
     """
-    reference = make_dataclass(f"_ConfingoRef_{owner.__name__}", [(name, int) for name in names], frozen=frozen)
+    # The generated class is internal and compared by its code object alone, so
+    # it carries a fixed name of its own.
+    reference = make_dataclass("_ConfingoRef", [(name, int) for name in names], frozen=frozen)
     method = reference.__hash__ if frozen else reference.__eq__
     return method.__code__
 
@@ -309,7 +378,7 @@ def _custom_method_owner(
     owner, method = _resolve_owner(config_cls, name)
     if owned(method):
         return None
-    if is_dataclass(owner) and _code_matches(method, _reference_code(owner, names_of(owner), frozen=frozen)):
+    if is_dataclass(owner) and _code_matches(method, _reference_code(names_of(owner), frozen=frozen)):
         return None
     return owner
 
@@ -371,7 +440,7 @@ def _flag_conflicts(config_cls: type[Any]) -> list[str]:
     params = getattr(config_cls, "__dataclass_params__", None)
     if params is None:
         return []
-    name = config_cls.__name__
+    name = class_label(config_cls)
     messages: list[str] = []
     if params.init is False:
         messages.append(
@@ -381,7 +450,8 @@ def _flag_conflicts(config_cls: type[Any]) -> list[str]:
     if getattr(params, "unsafe_hash", False) is True:
         messages.append(
             f"{name} is declared @dataclass(unsafe_hash=True); confingo owns hashing and makes config "
-            f"dataclasses unhashable. Use the default hashing and config_hash(config) for value identity."
+            f"dataclasses unhashable. Use the default hashing and confingo.functional.config_hash(config) for "
+            f"value identity."
         )
     if params.eq is False:
         messages.append(
@@ -413,10 +483,10 @@ def _enforce_class_contract(config_cls: type[Any]) -> None:
     issues = [ConfigIssue(path="", message=message) for message in _flag_conflicts(config_cls)]
     eq_owner = _custom_eq_owner(config_cls)
     if eq_owner is not None:
-        issues.append(ConfigIssue(path="", message=custom_eq_message(eq_owner.__name__)))
+        issues.append(ConfigIssue(path="", message=custom_eq_message(class_label(eq_owner))))
     hash_owner = _custom_hash_owner(config_cls)
     if hash_owner is not None:
-        issues.append(ConfigIssue(path="", message=custom_hash_message(hash_owner.__name__)))
+        issues.append(ConfigIssue(path="", message=custom_hash_message(class_label(hash_owner))))
     if len(issues) > 0:
         raise ConfigError(issues, context="config schema")
 
@@ -452,16 +522,37 @@ def _install_canonical_eq(config_cls: type[Any]) -> None:
     operation. A ``ConfigNode`` subclass already carries ``_canonical_eq`` from
     class-creation time, and its sentinel hash is replaced here.
 
+    Installing equality and withdrawing hashing are two mutations of one class, and
+    the contract is the pair: a class carrying canonical equality while still
+    hashing is a class whose ``__hash__`` disagrees with its ``__eq__``. A lock
+    holds the pair together, so a thread reaching the class during another
+    thread's first touch sees it before both or after both. The GIL makes each
+    bytecode atomic and makes no promise about a sequence of them.
+
     Args:
       config_cls (type[Any]): The schema dataclass being processed.
 
     Raises:
       ConfigError: When the class violates the ownership contract.
     """
-    _enforce_class_contract(config_cls)
-    if config_cls.__dict__.get("__eq__") is not _canonical_eq:
-        config_cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
-    _disable_hash(config_cls)
+    if config_cls.__dict__.get("__eq__") is _canonical_eq and config_cls.__dict__.get("__hash__", _MISSING) is None:
+        # The pair is already in place, and only this function puts it there, so
+        # the contract is settled and the reference codegen below is skipped.
+        return
+    with _INSTALL_LOCK:
+        _enforce_class_contract(config_cls)
+        if config_cls.__dict__.get("__eq__") is not _canonical_eq:
+            config_cls.__eq__ = _canonical_eq  # type: ignore[method-assign]
+        _disable_hash(config_cls)
+
+
+_INSTALL_LOCK = threading.Lock()
+"""Held across the ownership install, so equality and hashing land together.
+
+One lock covers every class rather than one per class: the install runs once per
+class and does nothing but set two attributes, so the contention it can produce
+is bounded by the number of distinct schema classes an application declares.
+"""
 
 
 def config_equal(left: Any, right: Any) -> bool:
@@ -486,5 +577,5 @@ def config_equal(left: Any, right: Any) -> bool:
       TypeError: When ``left`` is anything other than a dataclass instance.
     """
     if not is_dataclass(left) or isinstance(left, type):
-        raise TypeError(f"config_equal() expects a config dataclass instance, got {type(left).__name__}")
+        raise TypeError(f"config_equal() expects a config dataclass instance, got {class_label(type(left))}")
     return _canonical_eq(left, right) is True

@@ -25,18 +25,24 @@ from typing import (
     Literal,
 )
 
-import numpy as np
-import numpy.typing as npt
 import pytest
 import yaml
 
 from confingo import (
     ConfigError,
+    ConfigScalar,
+    ConfigValue,
+)
+from confingo.functional import (
     dumps_json,
     dumps_yaml,
     from_dict,
     to_dict,
 )
+
+
+np = pytest.importorskip("numpy")
+npt = pytest.importorskip("numpy.typing")
 
 
 class Mode(Enum):
@@ -127,7 +133,9 @@ class NonFinite:
 
 @dataclass
 class OpaqueAny:
-    value: Any = Decimal("1.5")
+    # Decimal sits outside ConfigValue, which is what the preflight message below
+    # reports; the schema is ill-typed on purpose.
+    value: ConfigValue = Decimal("1.5")  # pyrefly: ignore[bad-assignment]
 
 
 def test_wrong_scalar_default_names_the_annotation_and_the_rule():
@@ -149,8 +157,13 @@ def test_non_finite_float_default_is_rejected():
     assert _issues(NonFinite) == {"throughput": "invalid authored default: expected a finite float, got inf"}
 
 
-def test_any_default_without_a_plain_form_is_rejected():
-    assert _issues(OpaqueAny) == {"value": "invalid authored default: cannot serialize value of type Decimal"}
+def test_open_data_default_outside_the_domain_is_rejected():
+    assert _issues(OpaqueAny) == {
+        "value": (
+            "invalid authored default: expected plain data for ConfigValue, got Decimal; "
+            "use a scalar, a list, or a str-keyed mapping, or name the type with a dataclass section"
+        )
+    }
 
 
 @pytest.mark.parametrize(
@@ -177,7 +190,7 @@ def test_a_supplied_override_does_not_suppress_an_invalid_default():
 
 @dataclass
 class WrongDtype:
-    a: npt.NDArray[np.float64] = field(default_factory=lambda: np.zeros(3, dtype=np.float32))  # pyrefly: ignore[bad-assignment]
+    a: npt.NDArray[np.float64] = field(default_factory=lambda: np.zeros(3, dtype=np.float32))
 
 
 @dataclass
@@ -187,9 +200,7 @@ class NonFiniteArray:
 
 @dataclass
 class WrongNdim:
-    a: np.ndarray[tuple[int, int], np.dtype[np.float64]] = field(  # pyrefly: ignore[bad-assignment]
-        default_factory=lambda: np.zeros(3, dtype=np.float64)
-    )
+    a: np.ndarray[tuple[int, int], np.dtype[np.float64]] = field(default_factory=lambda: np.zeros(3, dtype=np.float64))
 
 
 @dataclass
@@ -433,7 +444,7 @@ def test_init_false_defaults_keep_the_type_boundary_exemption():
 
 @dataclass
 class HashableSets:
-    scalars: frozenset[int | str] = frozenset({1, "a"})
+    scalars: frozenset[ConfigScalar] = frozenset({1, "a"})
     typed: set[tuple[int, int]] = field(default_factory=lambda: {(1, 2)})
 
 
@@ -472,7 +483,7 @@ class FirstEnum(Enum):
     A = "a"
 
     @classmethod
-    # pyrefly: ignore[missing-override-decorator]  (typing.override needs 3.12; the floor is 3.11)
+    # pyrefly: ignore[missing-override-decorator]
     def _missing_(cls, value: object) -> None:
         """Record a lookup miss, so a validation pass that calls it is visible.
 
@@ -490,8 +501,8 @@ class SecondEnum(Enum):
 
 
 @dataclass
-class EnumUnionSet:
-    values: frozenset[FirstEnum | SecondEnum] = frozenset({SecondEnum.B})
+class EnumUnionTuple:
+    values: tuple[FirstEnum | SecondEnum, ...] = (SecondEnum.B,)
 
 
 def _counted_factory() -> int:
@@ -523,18 +534,16 @@ class HookedSection:
 
 @dataclass
 class UnionShiftsToSection:
-    values: set[list[HookedSection] | tuple[Any, ...]] = field(  # pyrefly: ignore[bad-assignment]
-        default_factory=lambda: {(1, 2)}
-    )
+    values: set[list[HookedSection] | tuple[Any, ...]] = field(default_factory=lambda: {(1, 2)})  # pyrefly: ignore[bad-assignment]
 
 
-def test_a_valid_enum_union_set_default_runs_no_user_code():
+def test_a_valid_enum_union_default_runs_no_user_code():
     # The authored member belongs to the second enum, so a validation pass built
     # on coercion would try the first enum against the exported "b" and call its
     # _missing_ hook.
     SIDE_EFFECTS.clear()
-    built = from_dict(EnumUnionSet, {})
-    assert built.values == frozenset({SecondEnum.B})
+    built = from_dict(EnumUnionTuple, {})
+    assert built.values == (SecondEnum.B,)
     assert SIDE_EFFECTS == []
 
 

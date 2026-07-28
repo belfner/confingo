@@ -19,10 +19,8 @@ from typing import (
 
 import pytest
 
-from confingo import (
-    ConfigError,
-    from_dict,
-)
+from confingo import ConfigError
+from confingo.functional import from_dict
 
 
 POST_INIT_CALLS: list[str] = []

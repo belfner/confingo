@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import (
     TYPE_CHECKING,
     Any,
-    TypeVar,
 )
 
 import yaml
@@ -29,8 +28,6 @@ from confingo._serialize import to_dict
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-T = TypeVar("T")
 
 
 def dumps_yaml(config: Any, *, indent: int = 2, sort_keys: bool = False) -> str:
@@ -79,7 +76,7 @@ def save_yaml(config: Any, path: str | Path, *, indent: int = 2, sort_keys: bool
     return atomic_write_text(path, dumps_yaml(config, indent=indent, sort_keys=sort_keys))
 
 
-def load_yaml(config_cls: type[T], path: str | Path) -> T:
+def load_yaml[T](config_cls: type[T], path: str | Path) -> T:
     """Load a YAML file into a config object.
 
     Args:

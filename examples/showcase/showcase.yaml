@@ -1,0 +1,100 @@
+seed: 1234
+epochs: 40
+# An integral float lands on an int field, so a config file may state 32000.0.
+batch_size: 32000.0
+run_name: showcase
+output_dir: runs/showcase
+notes: excluded from equality and from the fingerprint
+resumed_from: runs/showcase/step-500.pt
+
+optimizer:
+  name: adamw
+  amsgrad: true
+  lr: 0.0003
+  weight_decay: 0.01
+  momentum: 0.9
+  warmup_steps: 500
+  # A float value stays a float under int | float, and an int stays an int.
+  grad_clip: 1.0
+  label_smoothing: 0
+  # An enum matches by member value first, then by member name.
+  precision: bf16
+  stage: MAIN
+
+schedule:
+  kind: cosine
+  total_steps: 10000
+  min_lr_ratio: 0.1
+
+data:
+  root: /data/imagenet
+  shards:
+    - shards/train-000.tar
+    - shards/train-001.tar
+  splits:
+    train: 0.9
+    val: 0.05
+    test: 0.05
+  image_size: [224, 224]
+  hidden_widths: [1024, 512, 256]
+  nothing: []
+  tags: [vision, supervised]
+  weights:
+    cross_entropy: 1.0
+    aux: 0.4
+  collected_on: "2026-03-14"
+  window_start: "09:30:00"
+  snapshot_at: "2026-03-14T09:30:00"
+
+tensors:
+  inferred: [[1, 2, 3], [4, 5, 6]]
+  concrete: [0.5, 1.5, 2.5]
+  family: [[1.0, 2.0], [3.0, 4.0]]
+  integral: [1, 2, 3, 4]
+  shaped: [[1.0, 0.0], [0.0, 1.0]]
+  pinned_tensor: [1.0, 2.0, 3.0]
+  typed_tensor: [0.25, 0.5]
+  shaped_tensor: [[1.0, 2.0], [3.0, 4.0]]
+  shape_only_tensor: [[5.0, 6.0], [7.0, 8.0]]
+  empty_leading: []
+
+telemetry:
+  # ConfigValue takes whatever shape the file states.
+  extra:
+    cluster: gpu-a
+    replicas: 8
+    flags: [fast, verbose]
+    nested:
+      depth: 2
+      ratio: 0.75
+  marker: build-417
+  labels: [alpha, beta, alpha]
+  codes: [1, 2, 3]
+  levels: [fp32, BF16]
+  optional_names: [primary, null]
+  coordinates:
+    - [x, 1]
+    - [y, 2]
+  groups:
+    - [red, green]
+    - [blue]
+  # True and 1 are one value to a Python set, so this builds two elements.
+  mixed: [1, two, true]
+  nested_pairs:
+    - [[1, a], [10, 20]]
+  payloads:
+    - {kind: scalar, value: 1}
+    - [1, 2, 3]
+    - plain string
+  lookup:
+    first: {a: 1}
+    second: [true, null, 2.5]
+
+runtime:
+  device: cpu
+  workers: 3
+
+checkpoint:
+  every_steps: 250
+  keep_last: 5
+  directory: runs/showcase/checkpoints

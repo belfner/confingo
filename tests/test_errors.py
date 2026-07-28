@@ -4,10 +4,8 @@ from dataclasses import make_dataclass
 
 import pytest
 
-from confingo import (
-    ConfigError,
-    from_dict,
-)
+from confingo import ConfigError
+from confingo.functional import from_dict
 from tests.schemas import (
     IntKeyed,
     PostInit,

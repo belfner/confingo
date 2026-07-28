@@ -12,12 +12,12 @@ from dataclasses import (
 )
 from enum import Enum
 from pathlib import Path
-from typing import (
-    Any,
-    Literal,
-)
+from typing import Literal
 
-from confingo import ConfigNode
+from confingo import (
+    ConfigNode,
+    ConfigValue,
+)
 
 
 class Device(Enum):
@@ -72,10 +72,10 @@ class Containers:
     pair: tuple[int, str] = (0, "")
     variadic: tuple[int, ...] = ()
     tags: dict[str, int] = field(default_factory=dict)
-    bare_tuple: tuple = ()
-    bare_list: list = field(default_factory=list)
-    bare_dict: dict = field(default_factory=dict)
-    anything: Any = None
+    open_tuple: tuple[ConfigValue, ...] = ()
+    open_list: list[ConfigValue] = field(default_factory=list)
+    open_dict: dict[str, ConfigValue] = field(default_factory=dict)
+    anything: ConfigValue = None
 
 
 @dataclass(frozen=True)
@@ -184,7 +184,7 @@ class PlainTree(ConfigNode):
     lookup: dict[str, PlainLeaf] = field(default_factory=dict)
     maybe: PlainLeaf | None = None
     choice: PlainLeaf | PlainAlt | None = None
-    extra: Any = None
+    extra: ConfigValue = None
     frozen_leaf: PlainFrozenLeaf = field(default_factory=PlainFrozenLeaf)
     slots_leaf: PlainSlotsLeaf = field(default_factory=PlainSlotsLeaf)
     note: str = field(default="n", compare=False)
@@ -251,7 +251,7 @@ class NodeTree(ConfigNode):
     lookup: dict[str, NodeLeaf] = field(default_factory=dict)
     maybe: NodeLeaf | None = None
     choice: NodeLeaf | NodeAlt | None = None
-    extra: Any = None
+    extra: ConfigValue = None
     frozen_leaf: NodeFrozenLeaf = field(default_factory=NodeFrozenLeaf)
     slots_leaf: NodeSlotsLeaf = field(default_factory=NodeSlotsLeaf)
     note: str = field(default="n", compare=False)

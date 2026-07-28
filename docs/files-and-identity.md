@@ -41,7 +41,8 @@ config = TrainingConfig.cfg.load_yaml("experiment.yaml")
 config.cfg.save_yaml("resolved.yaml")
 ```
 
-- Loading uses `safe_load` and saving uses `safe_dump`, restricted to the shared plain-data model.
+- Loading uses `safe_load` and saving uses `safe_dump`. Saving writes the shared plain-data model.
+- `safe_load` resolves more than that model on the way in: PyYAML's implicit resolvers turn unquoted date-shaped text into a `date`, `!!binary` into `bytes`, `!!set` into a `set`, and an anchor referring to its own node into a structure that holds itself. Each reaches its field as the object PyYAML built, and each is then answered by the field's annotation: a `str` field reports a `date`, and a `ConfigValue` field reports every one of them as a value outside the plain-data domain, a self-referential structure included. Quote text that should stay text, `version: "1.0"` and `start: "2024-01-01"`, so the field receives the string the file appears to carry.
 - `sort_keys=False` is the default, so YAML output preserves field-declaration order; pass `sort_keys=True` for alphabetical keys.
 
 
@@ -100,13 +101,12 @@ The digest rules, the `compare` and `hash` field projections, the scope of a sub
 
 One config saved to JSON and to YAML loads back into equal dataclass trees: both formats carry the same plain data, temporal fields travel as ISO 8601 strings, and container annotations rebuild their exact types (`tuple[int, ...]` comes back as a tuple).
 
-Container identity is restored by the annotation on re-load. In the raw file, tuples and sets appear as arrays, and `Any`-held tuple or set values stay lists after a round trip. See [`Any` and plain data](types-and-coercion.md#any-and-plain-data).
+Container identity is restored by the annotation on re-load. In the raw file, tuples and sets appear as arrays, and a tuple supplied to a `ConfigValue` field rebuilds as a list. See [open data](types-and-coercion.md#open-data).
 
 
 ## Exact contracts
 
-How a document that is empty or null is read, and exactly what a save does to the
-destination file.
+How a document that is empty or null is read, and exactly what a save does to the destination file.
 
 
 ## Document and read rules

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from confingo import config_hash
+from confingo.functional import config_hash
 from tests.schemas import (
     Trainer,
     Training,

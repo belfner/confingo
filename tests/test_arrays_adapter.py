@@ -168,7 +168,6 @@ def test_hidden_backends_make_everything_unmatched(monkeypatch: pytest.MonkeyPat
     monkeypatch.setitem(sys.modules, "torch", None)
     assert _arrays.inspect_annotation(hint).matched is False
     record: Sink = []
-    assert _arrays.validate_array_value(value, "w", sink(record)) is _arrays.NOT_ARRAY
     assert _arrays.array_to_plain(value, "w", sink(record)) is _arrays.NOT_ARRAY
     assert _arrays.normalize_numpy_scalar(np.float32(1.0)) == (False, None)
     assert record == []
@@ -445,8 +444,6 @@ def test_meta_and_nested_tensors_are_rejected(issues: Sink):
     assert _arrays.coerce_array(meta, spec, "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "meta torch tensors carry no element values")]
     issues.clear()
-    assert _arrays.validate_array_value(meta, "w", sink(issues)) is _arrays.FAILED
-    issues.clear()
     assert _arrays.array_to_plain(meta, "w", sink(issues)) is _arrays.FAILED
     assert issues == [("w", "meta torch tensors carry no element values")]
     issues.clear()
@@ -534,19 +531,19 @@ def test_cap_rejects_native_arrays_above_the_limit(issues: Sink):
     spec = spec_of(npt.NDArray[np.uint8])
     value = np.zeros(1_000_001, dtype=np.uint8)
     assert _arrays.coerce_array(value, spec, "w", sink(issues)) is _arrays.FAILED
-    assert issues == [("w", "array has 1000001 elements; maximum is 1000000")]
+    assert issues == [("w", _arrays.element_cap_message("1000001"))]
 
 
 def test_cap_stops_the_walker_on_plain_input(issues: Sink):
     spec = spec_of(npt.NDArray[np.uint8])
     assert _arrays.coerce_array([0] * 1_000_001, spec, "w", sink(issues)) is _arrays.FAILED
-    assert issues == [("w", "array has more than 1000000 elements; maximum is 1000000")]
+    assert issues == [("w", _arrays.element_cap_message("more than 1000000"))]
 
 
 def test_cap_rejects_on_marshal_before_materializing(issues: Sink):
     value = np.zeros(1_000_001, dtype=np.uint8)
     assert _arrays.array_to_plain(value, "w", sink(issues)) is _arrays.FAILED
-    assert issues == [("w", "array has 1000001 elements; maximum is 1000000")]
+    assert issues == [("w", _arrays.element_cap_message("1000001"))]
 
 
 # --- marshalling ----------------------------------------------------------------
@@ -605,30 +602,6 @@ def test_cuda_tensors_are_kept_on_device_at_load(issues: Sink):
     kept = _arrays.coerce_array(tensor, spec_of(torch.Tensor), "w", sink(issues))
     assert kept is tensor
     assert kept.device.type == "cuda"
-
-
-# --- Any-field validation -------------------------------------------------------
-
-
-def test_any_path_retains_valid_arrays(issues: Sink):
-    value = np.array([1, 2])
-    assert _arrays.validate_array_value(value, "w", sink(issues)) is value
-    tensor = torch.tensor([True])
-    assert _arrays.validate_array_value(tensor, "w", sink(issues)) is tensor
-    assert issues == []
-
-
-def test_any_path_rejects_invalid_arrays(issues: Sink):
-    assert _arrays.validate_array_value(np.array([float("nan")]), "w", sink(issues)) is _arrays.FAILED
-    assert issues == [("w.0", "expected a finite float, got nan")]
-    issues.clear()
-    assert _arrays.validate_array_value(np.array(["a"]), "w", sink(issues)) is _arrays.FAILED
-    assert "unsupported array dtype" in issues[0][1]
-
-
-def test_any_path_passes_plain_values_through(issues: Sink):
-    assert _arrays.validate_array_value([1, 2], "w", sink(issues)) is _arrays.NOT_ARRAY
-    assert _arrays.validate_array_value(np.float32(1.0), "w", sink(issues)) is _arrays.NOT_ARRAY
 
 
 # --- numpy scalars --------------------------------------------------------------

@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from confingo import (
-    ConfigError,
+from confingo import ConfigError
+from confingo.functional import (
     from_file,
     to_file,
 )

@@ -27,6 +27,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    override,
 )
 
 import pytest
@@ -34,6 +35,9 @@ import pytest
 from confingo import (
     ConfigError,
     ConfigNode,
+    ConfigValue,
+)
+from confingo.functional import (
     from_dict,
     to_dict,
 )
@@ -113,8 +117,9 @@ def test_frozenset_of_sections_is_rejected_with_both_remedies():
     assert [(issue.path, issue.message) for issue in info.value.issues] == [
         (
             "sections",
-            "config sections are unhashable, so frozenset[Section] cannot be built; use a list or tuple for "
-            "the collection, and use config_hash(section) as the value-identity key when uniqueness matters",
+            "config sections are unhashable, so frozenset[Section] cannot be built; use a list or tuple "
+            "for the collection, and use confingo.functional.config_hash(section) as the value-identity "
+            "key when uniqueness matters",
         )
     ]
 
@@ -157,7 +162,7 @@ def test_a_defect_inside_the_section_still_aggregates():
 
 @dataclass
 class AnySet:
-    values: set[Any] = field(default_factory=set)
+    values: set[ConfigValue] = field(default_factory=set)
 
 
 @dataclass
@@ -177,7 +182,7 @@ class ScalarListUnionSet:
 
 @dataclass
 class NestedAnyTupleSet:
-    values: set[tuple[int, Any]] = field(default_factory=set)
+    values: set[tuple[int, ConfigValue]] = field(default_factory=set)
 
 
 @dataclass
@@ -235,30 +240,22 @@ class RaisingHashSet:
 @pytest.mark.parametrize(
     ("config_cls", "rendered", "element"),
     [
-        (AnySet, "set[Any]", "Any"),
-        (BareSet, "set", "set"),
+        (AnySet, "set[ConfigValue]", "ConfigValue"),
         (ListElementSet, "set[list[int]]", "list[int]"),
         (ScalarListUnionSet, "set[int | list[int]]", "int | list[int]"),
-        (NestedAnyTupleSet, "set[tuple[int, Any]]", "tuple[int, Any]"),
+        (NestedAnyTupleSet, "set[tuple[int, ConfigValue]]", "tuple[int, ConfigValue]"),
         (LeadingAnyTupleSet, "set[tuple[Any, int]]", "tuple[Any, int]"),
         (MappingElementSet, "frozenset[dict[str, int]]", "dict[str, int]"),
-        (EmptyArgsSet, "set", "Any"),
-        (EmptyArgsFrozenset, "frozenset", "Any"),
-        (NestedEmptyArgsSet, "frozenset", "Any"),
         (SuppressedHashSet, "set[SuppressedHash]", "SuppressedHash"),
         (RaisingHashSet, "set[RaisingHash]", "RaisingHash"),
     ],
     ids=[
         "any",
-        "bare",
         "list",
         "scalar-list-union",
         "nested-any-tuple",
         "leading-any-tuple",
         "mapping",
-        "empty-args-set",
-        "empty-args-frozenset",
-        "nested-empty-args",
         "suppressed-enum-hash",
         "raising-enum-hash",
     ],
@@ -272,7 +269,7 @@ def test_elements_that_rebuild_unhashable_are_rejected_at_preflight(config_cls: 
 
 @dataclass
 class ScalarUnionSet:
-    values: set[int | str] = field(default_factory=set)
+    values: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -293,7 +290,7 @@ class OptionalScalarSet:
 @pytest.mark.parametrize(
     "config_cls",
     [ScalarUnionSet, ScalarTupleSet, NestedScalarFrozensetSet, OptionalScalarSet],
-    ids=["scalar-union", "scalar-tuple", "nested-frozenset", "optional-scalar"],
+    ids=["scalar", "scalar-tuple", "nested-frozenset", "optional-scalar"],
 )
 def test_elements_that_rebuild_hashable_are_admitted(config_cls: type[Any]):
     assert from_dict(config_cls, {}).values == set()
@@ -306,7 +303,7 @@ def test_elements_that_rebuild_hashable_are_admitted(config_cls: type[Any]):
 class ScalarSets:
     tags: set[str] = field(default_factory=set)
     seeds: frozenset[int] = field(default_factory=frozenset)
-    mixed: set[int | str] = field(default_factory=set)
+    mixed: set[int] = field(default_factory=set)
     literals: set[Literal["on", "off"]] = field(default_factory=set)
     paired: set[tuple[str, int]] = field(default_factory=set)
 
@@ -317,14 +314,14 @@ def test_scalar_sets_build_and_deduplicate():
         {
             "tags": ["b", "a", "b"],
             "seeds": [2, 1, 2],
-            "mixed": [1, "1"],
+            "mixed": [1, 2, 1],
             "literals": ["on", "on", "off"],
             "paired": [["a", 1], ["a", 1], ["b", 2]],
         },
     )
     assert built.tags == {"a", "b"}
     assert built.seeds == frozenset({1, 2})
-    assert built.mixed == {1, "1"}
+    assert built.mixed == {1, 2}
     assert built.literals == {"on", "off"}
     assert built.paired == {("a", 1), ("b", 2)}
 
@@ -372,17 +369,21 @@ def test_an_unsupported_element_reports_only_the_unsupported_type():
     messages = [message for _path, message in _issues(UnsupportedGenericElementSet)]
     assert messages == [
         "unsupported field type deque[int]; choose a supported annotation (bool, int, float, str, Path, "
-        "date/time, Enum/Literal, dataclass, container/union, array/tensor, or Any) and derive other runtime "
-        "values in an init=False field"
+        "date/time, Enum/Literal, dataclass, container/union, array/tensor, or ConfigValue/ConfigScalar for "
+        "plain data) and derive other runtime values in an init=False field"
     ]
 
 
 def test_a_bare_container_element_reports_its_own_and_the_container_instability():
-    # A bare set rebuilds unhashable whatever its elements turn out to be, so the
-    # container's own instability is established and stands beside the element's.
+    # An argument-free element names no contents, and it still rebuilds a mutable
+    # set whatever those contents turn out to be, so the container's own
+    # instability is established on its own and stands beside the element's remedy.
     messages = [message for _path, message in _issues(BareElementSet)]
-    assert any(message.startswith("set cannot be built") for message in messages), messages
-    assert any("set[set] cannot be built" in message for message in messages), messages
+    assert messages == [
+        "set carries no element type; write set[ConfigScalar] for plain data of any shape, or name the element type",
+        "set[set] cannot be built: a set element must rebuild hashable when a file is loaded, and set rebuilds "
+        "a value a set cannot hold; use a scalar element, a tuple of scalars, or hold the values in a list",
+    ], messages
 
 
 def test_a_section_element_still_aggregates_defects_inside_the_section():
@@ -669,7 +670,7 @@ class ListBesideBadMappingKey:
 
 @dataclass
 class NestedAnySet:
-    values: set[set[Any]] = field(default_factory=set)
+    values: set[set[ConfigValue]] = field(default_factory=set)
 
 
 @dataclass
@@ -844,7 +845,7 @@ def test_a_recursion_failure_from_comparing_values_is_collected():
 
 @dataclass
 class AnyFrozensetSet:
-    values: set[frozenset[Any]] = field(default_factory=set)
+    values: set[frozenset[ConfigValue]] = field(default_factory=set)
 
 
 @dataclass
@@ -860,7 +861,7 @@ class FrozensetInTupleSet:
 @pytest.mark.parametrize(
     ("config_cls", "rendered"),
     [
-        (AnyFrozensetSet, "frozenset[Any]"),
+        (AnyFrozensetSet, "frozenset[ConfigValue]"),
         (ListFrozensetSet, "frozenset[list[int]]"),
         (FrozensetInTupleSet, "frozenset[list[int]]"),
     ],
@@ -880,24 +881,10 @@ def test_a_frozenset_names_its_own_member_without_claiming_the_container(config_
 # --- an enum's own type answers for it ----------------------------------------
 
 
-class LyingEnumMeta(EnumType):
-    def __call__(cls, value: Any, *args: Any, **kwargs: Any) -> Any:
-        """Hand back a foreign object for every lookup.
-
-        Args:
-          value (Any): The value looked up.
-          *args (Any): Ignored.
-          **kwargs (Any): Ignored.
-
-        Returns:
-          Any: A list, which no enum lookup should produce.
-        """
-        foreign: list[Any] = []
-        return foreign
-
-    # pyrefly: ignore[missing-override-decorator]  (typing.override needs 3.12; the floor is 3.11)
+class CertifyingEnumMeta(EnumType):
+    # pyrefly: ignore[missing-override-decorator]
     def __instancecheck__(cls, instance: object) -> bool:
-        """Certify anything as a member.
+        """Certify anything as a member, leaving the member lookup as it stands.
 
         Args:
           instance (object): The object checked.
@@ -908,8 +895,26 @@ class LyingEnumMeta(EnumType):
         return True
 
 
-class LyingMode(Enum, metaclass=LyingEnumMeta):
+class LyingMode(Enum, metaclass=CertifyingEnumMeta):
     A = "a"
+
+    @override
+    @classmethod
+    def _missing_(cls, value: object) -> Any:
+        """Hand back a foreign object for a value no member carries.
+
+        A lookup reaches this only after the member values miss, and the
+        certifying metaclass above is what lets the foreign object past the
+        standard lookup's own check on what this returns.
+
+        Args:
+          value (object): The value looked up.
+
+        Returns:
+          Any: A list, which no enum lookup should produce.
+        """
+        foreign: list[Any] = []
+        return foreign
 
 
 @dataclass
@@ -920,10 +925,55 @@ class LyingEnumSet:
 def test_an_enum_result_is_confirmed_by_its_own_type():
     # The class being confirmed owns the hook an isinstance check would ask, so
     # the result's own type answers instead and the foreign value is reported at
-    # the element's path.
+    # the element's path. "zz" is a value no member carries, which is what routes
+    # the lookup through _missing_ to reach the foreign object.
     with pytest.raises(ConfigError) as info:
-        from_dict(LyingEnumSet, {"values": ["a"]})
+        from_dict(LyingEnumSet, {"values": ["zz"]})
     assert [issue.path for issue in info.value.issues] == ["values.0"]
+
+
+class RedirectingEnumMeta(EnumType):
+    def __call__(cls, value: Any, *args: Any, **kwargs: Any) -> Any:
+        """Answer every lookup with the same member.
+
+        Args:
+          value (Any): The value looked up.
+          *args (Any): Ignored.
+          **kwargs (Any): Ignored.
+
+        Returns:
+          Any: The first member, whatever was asked for.
+        """
+        return next(iter(cls))
+
+
+class RedirectedMode(Enum, metaclass=RedirectingEnumMeta):
+    A = "a"
+    B = "b"
+
+
+@dataclass
+class RedirectedEnumSet:
+    values: set[RedirectedMode] = field(default_factory=set)
+
+
+@dataclass
+class RedirectedEnumScalar:
+    value: RedirectedMode = RedirectedMode.B
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "path"),
+    [(RedirectedEnumSet, "values"), (RedirectedEnumScalar, "value")],
+    ids=["set-element", "scalar-field"],
+)
+def test_an_enum_binding_its_own_lookup_is_reported_at_preflight(config_cls: type[Any], path: str):
+    # Every member writes its own value, so a lookup that answers with one member
+    # rebuilds B's value as A. The annotation says so before any value is read,
+    # and it says so wherever the enum is named rather than in sets alone.
+    messages = dict(_issues(config_cls))
+    assert "looks a member up through RedirectingEnumMeta" in messages[path], messages
+    assert messages[path].endswith("after a member's own value resolves"), messages
 
 
 class Shade(Enum):

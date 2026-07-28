@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
-    TypeVar,
 )
 
 from confingo._errors import ConfigError
@@ -34,7 +33,6 @@ if TYPE_CHECKING:
     Writer = Callable[..., Path]
     """Writer that serializes a config object to a file path."""
 
-T = TypeVar("T")
 
 _FORMATS: dict[str, tuple[Reader, Writer]] = {
     ".json": (load_json, save_json),
@@ -69,7 +67,7 @@ def _handlers_for(path: str | Path) -> tuple[Reader, Writer]:
     return handlers
 
 
-def from_file(config_cls: type[T], path: str | Path) -> T:
+def from_file[T](config_cls: type[T], path: str | Path) -> T:
     """Load a config file, choosing the loader from the path's extension.
 
     A ``.json`` path loads as JSON; a ``.yaml`` or ``.yml`` path loads as YAML.

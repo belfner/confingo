@@ -19,8 +19,42 @@ from confingo._backend import (
 )
 
 
+RESOURCE_ERRORS = (MemoryError, SystemError)
+"""Exceptions describing the interpreter's own state rather than the config.
+
+These reach the caller unchanged wherever confingo runs code it does not own,
+since an allocation failure or an interpreter defect would be named wrongly as
+invalid configuration. A ``RecursionError`` sits outside this set: walking a
+supplied value reaches it through the depth of the value itself, which is a
+property of the config being built.
+"""
+
+
 _UNSET = object()
 """Sentinel returned by coercion helpers when a value failed to convert."""
+
+
+def class_label(config_cls: Any) -> str:
+    """Name a class for a message without letting the reading fail again.
+
+    Reading ``__name__`` goes through the class's metaclass, which a class may
+    supply code for. A metaclass that raises there would replace the problem being
+    reported with a problem of its own, so a fixed phrase answers instead and the
+    original report still arrives. Every message that names a class the config
+    author owns reads it through here.
+
+    Args:
+      config_cls (Any): The class to name.
+
+    Returns:
+      str: The class's name, or a fixed phrase when reading it fails.
+    """
+    try:
+        return str.__str__(config_cls.__name__)
+    except RESOURCE_ERRORS:
+        raise
+    except Exception:
+        return "a class that could not be named"
 
 
 @dataclass(frozen=True)

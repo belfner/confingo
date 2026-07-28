@@ -33,13 +33,22 @@ from typing import (
     Annotated,
     Any,
     Literal,
+    TypeAliasType,
+    TypeVar,
     get_args,
     get_origin,
+)
+
+from confingo._errors import (
+    RESOURCE_ERRORS,
+    class_label,
 )
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from confingo._backend import BackendSnapshot
 
     IssueSink = Callable[[str, str], None]
     """Callback receiving ``(path, message)`` for each problem found."""
@@ -164,16 +173,69 @@ def is_array_value(value: Any) -> bool:
     return torch is not None and isinstance(value, torch.Tensor)
 
 
-def inspect_annotation(hint: Any) -> AnnotationMatch:
-    """Classify a resolved type hint against the loaded array backends.
+def _numpy_typing() -> Any | None:
+    """Return the ``numpy.typing`` module when the application has imported it.
+
+    Returns:
+      Any | None: The loaded ``numpy.typing`` module, or None.
+    """
+    return sys.modules.get("numpy.typing")
+
+
+def _expand_ndarray_alias(hint: Any, np_typing: Any | None) -> Any:
+    """Substitute the parameters of NumPy's ``NDArray`` alias, returning its body.
+
+    NumPy 2.5 spells ``npt.NDArray`` as a PEP 695 ``TypeAliasType``, where 2.4
+    handed back an already-substituted ``ndarray[Shape, dtype[T]]``. Applying the
+    supplied arguments to the alias body recovers the second spelling, so one
+    classifier reads both.
+
+    Expansion is confined to that one alias, matched by identity against the
+    loaded ``numpy.typing`` module the same way every other backend object here
+    is matched. A PEP 695 alias body evaluates on first read, so an alias
+    confingo has no reading for keeps its body dormant and reaches the type
+    boundary as the unsupported annotation it is.
+
+    Args:
+      hint (Any): A resolved type hint, with any ``Annotated`` layer removed.
+      np_typing (Any | None): The ``numpy.typing`` module to match against, or
+        None when it is absent.
+
+    Returns:
+      Any: The expanded form when ``hint`` subscripts ``npt.NDArray``, else
+        ``hint`` unchanged.
+    """
+    origin = get_origin(hint)
+    if not isinstance(origin, TypeAliasType):
+        return hint
+    if np_typing is None or origin is not getattr(np_typing, "NDArray", None):
+        return hint
+    try:
+        return origin.__value__[get_args(hint)]
+    except (TypeError, KeyError, IndexError):
+        # The alias body rejects these arguments, so the hint carries no form
+        # this module can read; the caller reports it at the type boundary.
+        return hint
+
+
+def inspect_annotation(hint: Any, backend: BackendSnapshot | None = None) -> AnnotationMatch:
+    """Classify a resolved type hint against a set of array backends.
+
+    An array annotation names classes belonging to a backend, so the answer holds
+    only for the backends it was made against. A snapshot names those explicitly,
+    which is what lets one operation classify against a single consistent set and
+    what makes an answer safe to cache under it. Passing none reads the modules
+    loaded right now, which suits a one-off check outside an operation.
 
     Args:
       hint (Any): The resolved hint, with any ``Annotated`` wrapper intact.
+      backend (BackendSnapshot | None = None): The backends to classify against,
+        or None to read the currently loaded ones.
 
     Returns:
-      AnnotationMatch: The classification: unmatched for hints unrelated to
-        loaded backends, matched with a spec for supported forms, matched with
-        an error message for array forms carrying unsupported parameterizations.
+      AnnotationMatch: The classification: unmatched for hints unrelated to those
+        backends, matched with a spec for supported forms, matched with an error
+        message for array forms carrying unsupported parameterizations.
     """
     base = hint
     metadata: tuple[Any, ...] = ()
@@ -181,14 +243,15 @@ def inspect_annotation(hint: Any) -> AnnotationMatch:
         annotated_args = get_args(base)
         base, metadata = annotated_args[0], annotated_args[1:]
 
-    torch = _torch()
+    torch = _torch() if backend is None else backend.torch
     if torch is not None and base is torch.Tensor:
         return _inspect_torch(torch, metadata)
 
-    np = _numpy()
+    np = _numpy() if backend is None else backend.numpy
     if np is not None:
         if base is np.ndarray:
             return AnnotationMatch(ArraySpec("numpy", None, None, None, "ndarray"))
+        base = _expand_ndarray_alias(base, _numpy_typing() if backend is None else backend.numpy_typing)
         if get_origin(base) is np.ndarray:
             return _inspect_numpy_generic(np, base)
     return AnnotationMatch()
@@ -250,7 +313,7 @@ def _inspect_numpy_generic(np: Any, base: Any) -> AnnotationMatch:
         return AnnotationMatch(error="malformed ndarray annotation; expected ndarray[Shape, np.dtype[...]]")
 
     scalar_arg = get_args(dtype_arg)[0]
-    if scalar_arg is Any or type(scalar_arg).__name__ == "TypeVar":
+    if scalar_arg is Any or isinstance(scalar_arg, TypeVar):
         return AnnotationMatch(ArraySpec("numpy", None, None, ndim, "ndarray"))
     for family_name in _NUMPY_FAMILY_NAMES:
         if scalar_arg is getattr(np, family_name):
@@ -258,7 +321,7 @@ def _inspect_numpy_generic(np: Any, base: Any) -> AnnotationMatch:
             return AnnotationMatch(ArraySpec("numpy", None, scalar_arg, ndim, display))
     if isinstance(scalar_arg, type) and issubclass(scalar_arg, np.generic):
         if _is_abstract_numpy_scalar(np, scalar_arg):
-            return AnnotationMatch(error=f"unsupported numpy dtype family numpy.{scalar_arg.__name__}")
+            return AnnotationMatch(error=f"unsupported numpy dtype family numpy.{class_label(scalar_arg)}")
         dtype = np.dtype(scalar_arg)
         if dtype.kind not in _SUPPORTED_KINDS or dtype.itemsize > 8:
             return AnnotationMatch(error=f"unsupported array dtype {dtype.name}; {_SUPPORTED_MESSAGE}")
@@ -288,8 +351,10 @@ def _fixed_ndim(shape_arg: Any) -> int | None:
     """Extract an enforced dimensionality from an authored shape argument.
 
     A fixed-arity all-``int`` tuple such as ``tuple[int, int]`` encodes exactly
-    its arity as the array's dimensionality. Library placeholder shapes and
-    variadic tuples carry no claim.
+    its arity as the array's dimensionality, and the subscripted empty tuple
+    ``tuple[()]`` encodes zero dimensions the same way, which is the annotation
+    for a scalar array. Library placeholder shapes and variadic tuples carry no
+    claim: a bare ``tuple`` subscripts nothing, so its origin answers first.
 
     Args:
       shape_arg (Any): The first argument of an ``np.ndarray[...]`` annotation.
@@ -301,7 +366,7 @@ def _fixed_ndim(shape_arg: Any) -> int | None:
     if get_origin(shape_arg) is not tuple:
         return None
     entries = get_args(shape_arg)
-    if len(entries) == 0 or any(entry is not int for entry in entries):
+    if any(entry is not int for entry in entries):
         return None
     return len(entries)
 
@@ -368,26 +433,29 @@ class _WalkState:
     """Mutable facts collected while walking raw plain input.
 
     Attributes:
-        ok: Whether every node seen so far validated.
-        count: Number of leaf elements seen.
-        truncated: Whether the walk stopped at the element cap.
-        category: Leaf category, fixed by the target dtype or by the first leaf
-          under an inferred form: ``"bool"``, ``"int"``, ``"float"``, or None
-          until the first leaf decides.
-        has_float: Whether any leaf arrived as a Python float.
-        int_lo: Inclusive lower bound leaves must satisfy, or None.
-        int_hi: Inclusive upper bound leaves must satisfy, or None.
-        float_bound: Largest magnitude the target float dtype represents, or
-          None when any finite float is fine.
-        collect_range: Whether integer leaves defer range selection, recording
-          out-of-int64 values in ``overs`` instead of failing immediately.
-        allow_float_leaves: Whether float leaves are acceptable at all.
-        negatives: Whether any integer leaf is negative.
-        overs: ``(path, value)`` pairs for integer leaves above the int64 range,
-          empty until one is seen.
-        dims: Expected length at each nesting depth, grown on first visit, empty
-          until the first sequence node.
-        leaf_depth: Nesting depth of the first leaf, fixing the array's shape.
+      ok (bool): Whether every node seen so far validated.
+      count (int): Number of leaf elements seen.
+      truncated (bool): Whether the walk stopped at the element cap.
+      category (str | None): Leaf category, fixed by the target dtype or by the
+        first leaf under an inferred form: ``"bool"`` or ``"number"``, and None
+        until the first leaf decides.
+      label (str | None): The target dtype's name, used in leaf issue messages,
+        and None under an inferred form.
+      has_float (bool): Whether any leaf arrived as a Python float.
+      int_lo (int | None): Inclusive lower bound leaves must satisfy, or None.
+      int_hi (int | None): Inclusive upper bound leaves must satisfy, or None.
+      float_bound (float | None): Largest magnitude the target float dtype
+        represents, or None when any finite float is fine.
+      collect_range (bool): Whether integer leaves defer range selection,
+        recording out-of-int64 values in ``overs`` instead of failing immediately.
+      allow_float_leaves (bool): Whether float leaves are acceptable at all.
+      negatives (bool): Whether any integer leaf is negative.
+      overs (list[tuple[str, int]]): ``(path, value)`` pairs for integer leaves
+        above the int64 range, empty until one is seen.
+      dims (list[int]): Expected length at each nesting depth, grown on first
+        visit, empty until the first sequence node.
+      leaf_depth (int | None): Nesting depth of the first leaf, fixing the
+        array's shape.
     """
 
     ok: bool = True
@@ -458,7 +526,7 @@ def _walk_plain(node: Any, depth: int, path: str, field_path: str, issue: IssueS
     state.count += 1
     if state.count > _ELEMENT_CAP:
         state.truncated = True
-        state.reject(issue, field_path, f"array has more than {_ELEMENT_CAP} elements; maximum is {_ELEMENT_CAP}")
+        state.reject(issue, field_path, element_cap_message(f"more than {_ELEMENT_CAP}"))
         return
     _check_leaf(node, path, issue, state)
 
@@ -479,7 +547,7 @@ def _check_leaf(leaf: Any, path: str, issue: IssueSink, state: _WalkState) -> No
         state.category = "bool" if type(leaf) is bool else "number"
     if state.category == "bool":
         if type(leaf) is not bool:
-            state.reject(issue, path, f"expected bool for array dtype bool, got {type(leaf).__name__}")
+            state.reject(issue, path, f"expected bool for array dtype bool, got {class_label(type(leaf))}")
         return
     if type(leaf) is bool:
         state.reject(issue, path, f"expected a number{_dtype_clause(state.label)}, got bool")
@@ -490,7 +558,7 @@ def _check_leaf(leaf: Any, path: str, issue: IssueSink, state: _WalkState) -> No
     if type(leaf) is float:
         _check_float_leaf(leaf, path, issue, state)
         return
-    state.reject(issue, path, f"expected a number{_dtype_clause(state.label)}, got {type(leaf).__name__}")
+    state.reject(issue, path, f"expected a number{_dtype_clause(state.label)}, got {class_label(type(leaf))}")
 
 
 def _check_int_leaf(leaf: int, path: str, issue: IssueSink, state: _WalkState) -> None:
@@ -582,10 +650,17 @@ def _sanitize(exc: BaseException) -> str:
     Returns:
       str: The message with whitespace collapsed, truncated to 200 characters.
     """
-    text = " ".join(str(exc).split())
+    try:
+        text = " ".join(str(exc).split())
+    except RESOURCE_ERRORS:
+        raise
+    except Exception:
+        # Rendering an exception is the exception's own code, and a class that
+        # fails there would replace the failure being reported with its own.
+        return "an exception that could not be described"
     if len(text) > 200:
-        return text[:197] + "..."
-    return text
+        return str.__str__(text[:197]) + "..."
+    return str.__str__(text)
 
 
 def _configure_walk(spec: ArraySpec, np: Any, torch: Any) -> _WalkState:
@@ -732,7 +807,7 @@ def coerce_array(value: Any, spec: ArraySpec, path: str, issue: IssueSink) -> An
     if is_scalar:
         value = normalized
     if not isinstance(value, (list, tuple)) and type(value) not in (bool, int, float):
-        typename = type(value).__name__
+        typename = class_label(type(value))
         issue(path, f"expected an array-compatible scalar or sequence for {spec.display}, got {typename}")
         return FAILED
 
@@ -945,8 +1020,33 @@ def _numpy_backend(np: Any) -> _Backend:
         is_float=lambda value: value.dtype.kind == "f",
         nonfinite_indices=nonfinite,
         element_at=lambda value, idx: float(value[idx]),
-        form_issue=lambda value, verb: None,
+        form_issue=lambda value, verb: _numpy_form_issue(np, value, verb),
     )
+
+
+def _numpy_form_issue(np: Any, value: Any, verb: str) -> str | None:
+    """Check an array's structural form: a plain array of elements.
+
+    A masked array carries a mask beside its data, and ``tolist`` writes each
+    masked element as ``null``. That document has no reading back through the
+    array annotation it came from, so the mask is answered where it enters rather
+    than after it has been written.
+
+    Args:
+      np (Any): The loaded numpy module.
+      value (Any): The array to check.
+      verb (str): The clause naming the operation, ``"are supported"`` at load and
+        ``"can be serialized"`` at marshal.
+
+    Returns:
+      str | None: The issue message for a masked array, or None for a plain one.
+    """
+    if isinstance(value, np.ma.MaskedArray):
+        return (
+            f"only plain numpy arrays {verb}; got a masked array, whose mask has no plain form; "
+            f"pass np.asarray(value) after deciding what each masked element holds"
+        )
+    return None
 
 
 def _torch_backend(torch: Any) -> _Backend:
@@ -1091,7 +1191,7 @@ def _native_prefix_ok(
         return False
     count = backend.count(value)
     if count > _ELEMENT_CAP:
-        issue(path, f"array has {count} elements; maximum is {_ELEMENT_CAP}")
+        issue(path, element_cap_message(f"{count}"))
         return False
     if not backend.is_float(value):
         return True
@@ -1316,36 +1416,121 @@ def _convert_torch(torch: Any, value: Any, target: Any, path: str, issue: IssueS
 
 
 # ---------------------------------------------------------------------------
-# Any-field validation and marshalling
+# Marshalling
 # ---------------------------------------------------------------------------
 
 
-def validate_array_value(value: Any, path: str, issue: IssueSink) -> Any:
-    """Validate a native array under an ``Any`` field, retaining it as-is.
+def element_cap_message(counted: str) -> str:
+    """Build the rejection message for an array holding more elements than a config carries.
 
     Args:
-      value (Any): The incoming value.
-      path (str): Dotted path of the field.
-      issue (IssueSink): Destination for problems found.
+      counted (str): How many elements were found, as the message spells it.
 
     Returns:
-      Any: ``NOT_ARRAY`` when the value is unrelated to loaded backends, the
-        value itself when it validates, or ``FAILED``.
+      str: The rejection message naming the cap and the remedy.
     """
-    backend = _native_backend_for(value)
-    if backend is None:
-        return NOT_ARRAY
-    if not _native_prefix_ok(
-        backend,
-        value,
-        path,
-        issue,
-        dtype_message=_load_dtype_message,
-        nonfinite_message=_finite_load_message,
-        verb="are supported",
+    return (
+        f"array has {counted} elements; a config field holds at most {_ELEMENT_CAP}, since every element "
+        f"is written into the config file; store the data in its own file and configure that file's path"
+    )
+
+
+def encoded_array_depth(value: Any) -> int | None:
+    """Report how many list levels a native array's plain form writes.
+
+    An array writes one list per axis, and an empty axis ends the encoding: an
+    array shaped ``(0, 1, 1)`` writes ``[]`` and one shaped ``(1, 0, 1)`` writes
+    ``[[]]``, whatever their rank. Reading the shape costs nothing, which lets a
+    caller answer before materializing anything.
+
+    Only an exact backend class is answered from its shape. A subclass supplies
+    its own ``tolist``, so what it writes is settled by rendering it rather than
+    by the shape it carries.
+
+    Args:
+      value (Any): The value being marshalled.
+
+    Returns:
+      int | None: The levels the array's plain form writes, or None when the shape
+        cannot answer: an unrelated value, or a class that writes its own form.
+    """
+    if writes_its_own_plain_form(value):
+        # The plain form comes from the value's own class, so its shape says
+        # nothing about what that class writes; only rendering it can answer.
+        return None
+    shape = _native_shape(value)
+    if shape is None:
+        return None
+    for axis, length in enumerate(shape):
+        if length == 0:
+            return axis + 1
+    return len(shape)
+
+
+def _native_shape(value: Any) -> tuple[int, ...] | None:
+    """Read a native array's shape.
+
+    Args:
+      value (Any): The value being marshalled.
+
+    Returns:
+      tuple[int, ...] | None: The array's shape, or None when the value is
+        unrelated to the loaded backends.
+    """
+    np = _numpy()
+    if np is not None and isinstance(value, np.ndarray):
+        return tuple(int(length) for length in value.shape)
+    torch = _torch()
+    if (
+        torch is not None
+        and isinstance(value, torch.Tensor)
+        and _torch_form_issue(torch, value, "are supported") is None
     ):
-        return FAILED
-    return value
+        return tuple(int(length) for length in value.shape)
+    return None
+
+
+def writes_its_own_plain_form(value: Any) -> bool:
+    """Report whether a value's plain form comes from code confingo does not own.
+
+    ``tolist`` belongs to the value's own class, so a subclass may define it and
+    hand back whatever it likes. An exact backend class writes the plain form the
+    backend documents; anything else is a class of the author's own, and what it
+    produces is checked the way any other supplied value is.
+
+    Args:
+      value (Any): The value being marshalled.
+
+    Returns:
+      bool: True when the value's class supplies its own plain form.
+    """
+    value_type = type(value)
+    np = _numpy()
+    if np is not None and value_type is np.ndarray:
+        return False
+    torch = _torch()
+    return not (torch is not None and value_type is torch.Tensor)
+
+
+def render_own_plain_form(value: Any) -> Any:
+    """Render an array whose own class supplies its plain form, for measurement.
+
+    A subclass hands back whatever its ``tolist`` produces, so the levels it
+    writes are settled by rendering it and walking the result. Problems raised
+    along the way are dropped here: this answers a measurement, and the
+    authored-value validator is what reports a value at its own path.
+
+    Args:
+      value (Any): The value being measured.
+
+    Returns:
+      Any: The rendered plain form; ``NOT_ARRAY`` when the value is unrelated to
+        the loaded backends or its class writes the form its backend documents;
+        ``FAILED`` when the value matched an array form and declined to render.
+    """
+    if not writes_its_own_plain_form(value):
+        return NOT_ARRAY
+    return array_to_plain(value, "", lambda _path, _message: None)
 
 
 def array_to_plain(value: Any, path: str, issue: IssueSink) -> Any:
@@ -1374,10 +1559,19 @@ def array_to_plain(value: Any, path: str, issue: IssueSink) -> Any:
             issue,
             dtype_message=lambda name: f"unsupported numpy dtype {name}",
             nonfinite_message=_serialize_finite_message,
-            verb="are supported",
+            verb="can be serialized",
         ):
             return FAILED
-        return value.tolist()
+        try:
+            return value.tolist()
+        except RESOURCE_ERRORS:
+            raise
+        except Exception as exc:
+            # tolist belongs to the array's own class, which an ndarray subclass
+            # may define, so what it raises is reported the way the torch branch
+            # below already reports its conversion.
+            issue(path, f"cannot convert numpy array to its plain form: {_sanitize(exc)}")
+            return FAILED
     torch = _torch()
     if torch is not None and isinstance(value, torch.Tensor):
         if not _native_prefix_ok(

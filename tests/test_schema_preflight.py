@@ -13,20 +13,28 @@ from dataclasses import (
     field,
 )
 from datetime import date
-from enum import Enum
+from enum import (
+    Enum,
+    EnumType,
+)
 from typing import (
     TYPE_CHECKING,
     Any,
     NewType,
+    override,
 )
 
 import pytest
 
 from confingo import (
     ConfigError,
+    ConfigValue,
+)
+from confingo.functional import (
     from_dict,
     to_dict,
     to_file,
+    validate_schema,
 )
 
 
@@ -133,7 +141,7 @@ def test_dict_any_key_rejected():
 
 @dataclass
 class AnyHolder:
-    x: Any = None
+    x: ConfigValue = None
 
 
 def test_nan_under_any_rejected():
@@ -210,3 +218,39 @@ def test_atomic_write_preserves_existing_mode(tmp_path: Path):
     target.chmod(0o644)
     to_file(Payload(x=1), target)
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+class PreflightNameTrap(EnumType):
+    """A metaclass that keeps the standard lookup and raises on the class name."""
+
+    @override
+    def __getattribute__(cls, name: str) -> Any:
+        if name == "__name__":
+            raise RuntimeError("name lookup boom")
+        return super().__getattribute__(name)
+
+
+class UnnameableEnum(Enum, metaclass=PreflightNameTrap):
+    A = ("not", "primitive")
+
+
+@dataclass
+class HasUnnameableEnum:
+    x: UnnameableEnum
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [validate_schema, lambda config_cls: from_dict(config_cls, {"x": 1})],
+    ids=["validate_schema", "from_dict"],
+)
+def test_a_schema_issue_naming_an_unnameable_class_still_reports_its_own_problem(operation: Any):
+    # Preflight has its own problem to report about this enum's member value.
+    # Reading the class name goes through the metaclass, so it reads through the
+    # one guarded helper and the member-value report still arrives.
+    with pytest.raises(ConfigError) as info:
+        operation(HasUnnameableEnum)
+    (issue,) = info.value.issues
+    assert issue.path == "x"
+    assert issue.message.startswith("enum a class that could not be named must carry primitive values")
+    assert "('not', 'primitive')" in issue.message

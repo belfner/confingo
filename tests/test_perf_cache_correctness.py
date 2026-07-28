@@ -11,6 +11,7 @@ floats must still be rejected.
 from __future__ import annotations
 
 import gc
+import subprocess
 import sys
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -18,11 +19,13 @@ from dataclasses import (
     dataclass,
     make_dataclass,
 )
+from decimal import Decimal
 from enum import (
     Enum,
     IntEnum,
     StrEnum,
 )
+from pathlib import Path
 from threading import Barrier
 from typing import (
     Annotated,
@@ -31,14 +34,20 @@ from typing import (
 
 import pytest
 
-import confingo
 from confingo import (
     ConfigError,
+    ConfigValue,
     _schema,
+)
+from confingo.functional import (
     config_hash,
     from_dict,
     to_dict,
+    validate_schema,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @dataclass
@@ -197,7 +206,7 @@ def test_intenum_strenum_bool_leaves_roundtrip() -> None:
 @dataclass
 class FloatBox:
     ratio: float
-    anything: Any
+    anything: ConfigValue
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
@@ -262,12 +271,107 @@ def test_concurrent_first_touch_is_consistent() -> None:
 
 
 def test_base_package_stays_stdlib_only() -> None:
-    """Importing and using confingo never imports the optional array backends."""
-    # The test session may have numpy/torch loaded from array tests; only assert
-    # confingo itself does not require them for a plain schema.
-    built = from_dict(Tree, _VALID)
-    assert to_dict(built)["labels"] == {"k": 4}
-    assert confingo.config_hash(built)
-    # A no-backend build path is exercised whenever these modules are absent.
-    if "numpy" not in sys.modules and "torch" not in sys.modules:
-        assert built.root.leaf.name == "a"
+    """A cold interpreter builds, exports, and fingerprints with the backends absent.
+
+    The check runs in its own interpreter, because the test session loads NumPy and
+    PyTorch for the array modules and a same-process assertion would pass whatever
+    ``import confingo`` pulled in.
+    """
+    source = (
+        "import sys\n"
+        "from dataclasses import dataclass, field\n"
+        "from confingo.functional import config_hash, from_dict, to_dict\n"
+        "@dataclass\n"
+        "class Leaf:\n"
+        "    name: str = 'a'\n"
+        "@dataclass\n"
+        "class Root:\n"
+        "    leaf: Leaf\n"
+        "    labels: dict[str, int] = field(default_factory=dict)\n"
+        "built = from_dict(Root, {'labels': {'k': 4}})\n"
+        "assert to_dict(built)['labels'] == {'k': 4}\n"
+        "assert config_hash(built)\n"
+        "loaded = sorted(name for name in ('numpy', 'torch') if name in sys.modules)\n"
+        "print(','.join(loaded))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", source], capture_output=True, text=True, check=True, cwd=REPO_ROOT
+    )
+    assert completed.stdout.strip() == "", completed.stdout
+
+
+CACHE_SLOTS = ("_confingo_schema_issues", "_confingo_resolved_hints", "_confingo_classified_fields")
+
+
+@pytest.mark.parametrize("slot", CACHE_SLOTS)
+def test_a_field_named_like_a_cache_slot_keeps_its_own_value(slot: str):
+    # The slot names are ordinary attribute names, so a schema is free to bind
+    # them. The cache reads back only what it tagged and wrote itself, so the
+    # class's own binding stays the field default it was declared as.
+    config_cls = make_dataclass("SlotNamed", [(slot, int, 0)])
+    validate_schema(config_cls)
+    validate_schema(config_cls)
+    assert config_cls.__dict__[slot] == 0
+    built = from_dict(config_cls, {slot: 7})
+    assert getattr(built, slot) == 7
+    assert to_dict(built) == {slot: 7}
+
+
+@pytest.mark.parametrize("slot", CACHE_SLOTS)
+def test_a_class_attribute_named_like_a_cache_slot_never_stands_in_for_a_result(slot: str):
+    # An empty tuple under the issues slot reads like a clean cached result, so
+    # a binding that was never confingo's has to be passed over rather than
+    # trusted; the unsupported annotation is still reported.
+    config_cls = make_dataclass("SlotShadowed", [("amount", Decimal, None)], namespace={slot: ()})
+    with pytest.raises(ConfigError) as info:
+        validate_schema(config_cls)
+    assert "unsupported field type Decimal" in str(info.value)
+    assert config_cls.__dict__[slot] == ()
+
+
+def test_a_cached_result_is_read_back_only_on_the_class_it_describes():
+    # Reads go through the class's own __dict__, and each result records the
+    # class it was computed for, so a subclass computes its own rather than
+    # answering with a base's.
+    @dataclass
+    class Base:
+        a: int = 1
+
+    validate_schema(Base)
+    assert isinstance(Base.__dict__[_schema._SCHEMA_SLOT], _schema._CachedResult)
+    assert Base.__dict__[_schema._SCHEMA_SLOT].owner is Base
+
+
+@dataclass
+class NoneBoundSlot:
+    _confingo_schema_issues: int | None = None
+    x: int = 1
+
+
+@dataclass(slots=True)
+class SlotBase:
+    _confingo_resolved_hints: int = 5
+
+
+@dataclass(slots=True)
+class SlotChild(SlotBase):
+    x: int = 1
+
+
+def test_an_own_binding_holding_none_is_left_as_the_class_declared_it():
+    # Membership answers whether the class bound the name, so a binding whose
+    # value is None is the class's own rather than an absent cache entry.
+    validate_schema(NoneBoundSlot)
+    validate_schema(NoneBoundSlot)
+    assert NoneBoundSlot.__dict__["_confingo_schema_issues"] is None
+    assert from_dict(NoneBoundSlot, {})._confingo_schema_issues is None
+
+
+def test_a_slot_descriptor_a_base_declares_keeps_answering_on_the_subclass():
+    # A slot descriptor lives on the base, so writing a cache entry onto the
+    # subclass would shadow it and leave the inherited field unreadable. The
+    # whole MRO is read, so the subclass recomputes instead.
+    validate_schema(SlotChild)
+    built = SlotChild()
+    assert built._confingo_resolved_hints == 5
+    assert from_dict(SlotChild, {}).x == 1

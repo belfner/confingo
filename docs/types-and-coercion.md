@@ -16,12 +16,12 @@ Start from the value a field holds and read down to the rules that govern it:
 | a single value | `bool`, `int`, `float`, `str`, `Path`, `datetime`, `date`, `time` | [Scalars](#scalars) |
 | one of a fixed set | `Literal[...]`, or an `Enum` subclass | [Enums and literals](#enums-and-literals) |
 | a nullable value | `T \| None` | [Unions and optionals](#unions-and-optionals) |
-| a first-match choice of types | `X \| Y` in declaration order | [Unions and optionals](#unions-and-optionals) |
+| a first-match choice of types | `X \| Y` in declaration order, with a numeric pair settled by the value's own class | [Unions and optionals](#unions-and-optionals) |
 | a nested section | a dataclass type | [Nested dataclasses](#nested-dataclasses); builds implicitly from its own leaves |
 | an ordered collection | `list[T]`, `tuple[T, ...]`, `tuple[X, Y]`, `Sequence[T]` | [Sequences and tuples](#sequences-and-tuples) |
 | a unique collection | `set[T]`, `frozenset[T]` | [Sequences and tuples](#sequences-and-tuples) |
 | a keyed collection | `dict[str, T]`, `Mapping[str, T]` | [Mappings](#mappings); keys are strings |
-| free-form data | `Any` | [`Any` and plain data](#any-and-plain-data) |
+| free-form data | `ConfigValue` | [open data](#open-data) |
 | a numeric array | `np.ndarray`, `npt.NDArray[...]`, `torch.Tensor` | [Arrays and tensors](arrays-and-tensors.md); the backend is imported by the application |
 | a value with a default fallback | `field(default=...)`, `field(default_factory=...)` | [leaf defaults and precedence](schema-design.md#leaf-defaults-and-precedence) |
 
@@ -63,7 +63,7 @@ from_dict(DataConfig, {"dataset_path": "d", "batch_size": 2e6})
 
 ## Enums and literals
 
-Enum members must carry primitive values (`str`, `int`, or `bool`). An input matches an enum field by member value first, then by member name:
+Enum members must carry primitive values whose runtime type is exactly `str`, `int`, or `bool`. A load reads one of those three from a file and hands it to the member lookup, and exact typing is what keeps that lookup single-valued: two members whose values differ only by a subclass of one of those three write the same plain form, so preflight names them and asks for exact values instead. An input matches an enum field by member value first, then by member name:
 
 ```python
 class Optimizer(Enum):
@@ -74,6 +74,8 @@ class Optimizer(Enum):
 #   "adamw"  (by value)
 #   "ADAMW"  (by member name)
 ```
+
+An enum leaves the member lookup to `EnumType`, which resolves a member's own value before anything else. A class whose metaclass binds `__call__` decides for itself what a value reaches, so a member's value could rebuild as a different member, and preflight reports it naming the metaclass. A `_missing_` hook is unaffected and stays the way to map spellings outside the member values, since a lookup reaches it only after those values miss.
 
 `to_dict` serializes an enum as its `.value`. Error messages for a failed match list the valid values.
 
@@ -93,24 +95,26 @@ The annotation drives construction, so a section annotated with a [config node](
 
 ## Sequences and tuples
 
-Every sequence-container annotation accepts a sequence, a `set`, or a `frozenset` as input:
+A sequence-container annotation whose positions carry one shared meaning accepts a sequence, a `set`, or a `frozenset` as input. A fixed-arity `tuple[X, Y]` gives each position its own meaning, so it takes an ordered sequence:
 
 | Annotation | Accepted inputs | Runtime value | Serialized form |
 | --- | --- | --- | --- |
 | `list[T]` | sequence/set of `T`-coercible items | `list` | array |
 | `tuple[T, ...]` | sequence/set, each item `T`-coercible | `tuple` | array |
-| `tuple[X, Y]` | sequence/set of exactly that arity | `tuple` | array |
+| `tuple[X, Y]` | ordered sequence of exactly that arity | `tuple` | array |
 | `tuple[()]` / `typing.Tuple[()]` | empty sequence/set | `()` | `[]` |
 | `set[T]` / `frozenset[T]` | sequence/set of `T`-coercible items, `T` a scalar or a tuple/frozenset whose arguments recursively satisfy the same rule | `set` / `frozenset` | array, deterministically ordered |
 | `Sequence[T]` | sequence/set of `T`-coercible items | `list` | array |
-| bare `list` / `tuple` | sequence/set; elements pass through as `Any` | matching container | array |
+| `list[ConfigValue]` / `tuple[ConfigValue, ...]` | sequence/set of [open data](#open-data) | matching container | array |
 
 A few rules apply across every row of the table:
 
 - Elements coerce individually, and element issues carry their index in the path (`hidden_widths.1`).
+- A `set` or `frozenset` supplied to a sequence annotation is read in its own iteration order, which varies from run to run, so use one where the order carries no meaning. A fixed-arity `tuple[X, Y]` declines a set outright: each position carries its own meaning, and the message names a list as the form to write.
 - String and bytes inputs follow scalar handling: a `list[str]` field reports a bare `"abc"` as one type mismatch.
 - A `str`, `int`, or temporal value handed straight to `from_dict` already satisfies its annotation, so a subclass instance is kept as supplied and reaches a set with its own hashing and equality. Building the set runs both, and a failure in either reports as `cannot build set[str]: unhashable type: 'NoHashStr'` alongside any sibling issues. A subclass whose hashing and equality both succeed builds normally, and a `float` or `Path` value is rebuilt through its own type. A `MemoryError` or `SystemError` travels to the caller, since it describes the interpreter rather than the config.
-- A `set[T]` / `frozenset[T]` element annotation is admitted when the plain data a file carries rebuilds hashable under it, which `T` settles on its own: a scalar, or a `tuple` / `frozenset` whose own arguments recursively satisfy that same rule. `set[str]`, `set[int | str]`, `set[Color]`, `set[tuple[str, int]]`, `set[frozenset[str]]`, and deeper shapes such as `set[tuple[tuple[int, str], frozenset[int]]]` all qualify. An `Enum` qualifies when it leaves hashing to the implementation it inherits. Anything else is reported at preflight naming the annotation as written, with a scalar element, a tuple of scalars, or a list as the remedy.
+- A `set[T]` / `frozenset[T]` element annotation is admitted when the plain data a file carries rebuilds hashable under it, which `T` settles on its own: a scalar, or a `tuple` / `frozenset` whose own arguments recursively satisfy that same rule. `set[str]`, `set[Color]`, `set[tuple[str, int]]`, `set[frozenset[str]]`, and deeper shapes such as `set[tuple[tuple[int, str], frozenset[int]]]` all qualify. An `Enum` qualifies when it leaves hashing to the implementation it inherits, and it carries the [member value and lookup requirements](#enums-and-literals) every enum annotation carries. Anything else is reported at preflight naming the annotation as written, with a scalar element, a tuple of scalars, or a list as the remedy.
+- A `set[T]` / `frozenset[T]` element names one type. A union puts two readers behind one plain form, and the load hands that form to the first member accepting it, so a set of `str | Path` writes `"a"` for both `"a"` and `Path("a")` and rebuilds one element where the file carried two. `T | None` is the exception, and the only one, because `null` is a plain form no other reader accepts. The rule reaches into the `tuple` and `frozenset` positions an element can nest, so `set[tuple[int, str | Path]]` is reported and `set[tuple[int, str | None]]` is admitted. Every other position in a schema still takes a union.
 - A `set[T]` / `frozenset[T]` whose element type carries a config section keeps a remedy of its own, since [config objects are unhashable](equality-and-hashing.md#config-objects-are-unhashable). Hold sections in a `list` or `tuple`, and key them by `config_hash(section)` when uniqueness matters.
 - A container annotation carries the type arguments the engine builds from: one element type for a sequence or set, a key and a value type for a mapping, and `...` only as the variadic marker of `tuple[T, ...]`. Anything else is reported at preflight naming the annotation as written.
 - A container field uses its default when it has one, and a required container needs a supplied value. An intentionally empty container is authored as `field(default_factory=list)`.
@@ -120,9 +124,10 @@ Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int,
 
 ## Mappings
 
-`dict[str, T]`, `Mapping[str, T]`, and bare `dict` accept mappings with `str` keys and construct a concrete `dict`. Values of a bare `dict` pass through as `Any`.
+`dict[str, T]` and `Mapping[str, T]` accept mappings with `str` keys and construct a concrete `dict`. `dict[str, ConfigValue]` is the form for values whose shape the schema leaves to the file.
 
 - Every key is checked as a string at load time, which catches YAML documents whose keys parsed as numbers.
+- A document that repeats a key carries the value written last, which is what the JSON and YAML parsers hand confingo. Detecting the repetition belongs to the parser: supply your own loader and hand its result to `from_dict` when a repeated key should be reported.
 - Split definitions like `datasets: dict[str, DatasetConfig]` construct each value against the annotated section type, with the key in the issue path (`datasets.train.path`).
 - A mapping field uses its default when it has one, and a required mapping needs a supplied value; `field(default_factory=dict)` authors an intentionally empty mapping.
 
@@ -130,6 +135,12 @@ Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int,
 ## Unions and optionals
 
 Union members are tried in declaration order and the first member that coerces cleanly wins, so order unions deliberately: `int | str` sends `5` to `int` and `"5"` to `str`, while `OptimizerConfig | SchedulerConfig` tries `OptimizerConfig` first for every mapping.
+
+One rule runs ahead of that order, and it applies to a union naming **two distinct classes** from `bool`, `int`, and `float`. A file states each of the three as itself, so a value's own class names which one the file carried, and the member naming that class is tried first. This is what makes `int | float` and `float | int` both round-trip: an `int` field reads an integral float so that `1e6` is accepted, which by declaration order alone would send a `1.0` to the `int` member and read it back as `1`. Once the rule applies, the member naming the carried class outranks every other member, an earlier member of another kind included, since that is what settles the conversion between the two numeric classes.
+
+One numeric class keeps the declared order, however many members name it. `Number | int` reads `1` as the declared `Number`, and so does `Number | Annotated[int, "a"] | Annotated[int, "b"]`, where both `Annotated` members name the one class `int`. Where one plain form fits two members the declared order also still answers, as it does for `Path | str`: both are written as a string, so the form names neither.
+
+A `float` field holds the float its annotation names. Assigning an `int` to one in Python is accepted by a type checker, since the numeric tower promotes it, and the value stays the `int` it was written as: `to_dict` renders `1` and the next load reads it back as `1.0`, which the fingerprint tokenizes differently. Write `1.0` where the field names a float, and a value that came from a file already carries it.
 
 When every member fails, the field reports a summary naming the whole union and the member that came closest, followed by that one member's own issues at their own paths:
 
@@ -144,17 +155,41 @@ config has 2 issues:
 `T | None` is special-cased: `None` is accepted directly, and any other input coerces straight through `T`, preserving nested issue paths and running the section's construction hooks exactly once.
 
 
-## `Any` and plain data
+## Open data
 
-`Any` fields pass plain data through unchanged: mappings, sequences, scalars, and `None` all survive as-is.
+Two annotations name plain data whose shape the schema leaves to the file. Both come from the package root:
 
-Finite-float validation still recurses through the value, including nested mapping keys and list elements, because every value in the tree needs a JSON form.
+```python
+from confingo import ConfigScalar, ConfigValue
+```
 
-Under `to_dict`, tuple- and set-shaped values held by an `Any` field serialize as lists. An explicit container annotation is what restores the exact container type on the next load. See [cross-format round trips](files-and-identity.md#cross-format-round-trip).
+`ConfigValue` is the whole plain-data domain: `bool`, `int`, `float`, `str`, `None`, lists of those, and `str`-keyed mappings of those, nested up to 64 levels. `ConfigScalar` is the leaf half of it, for a field holding one value.
 
-A mapping supplied to an `Any` field stays a mapping: the annotation names no class, so it reaches the field as plain data. A config object assigned to one programmatically serializes through `to_dict` as its plain form, and a [node](schema-design.md#config-nodes) or dataclass annotation is what reconstructs the object on the next load.
+```python
+@dataclass
+class Experiment:
+    notes: ConfigValue = None
+    marker: ConfigScalar = None
+```
 
-Arrays and tensors follow the same rule under `Any`: a supplied array validates on the way in (supported dtype, finite elements, the size cap) and stays in memory as the object you passed, `to_dict` renders it as plain scalars and lists, and reloading yields that plain data. An [array annotation](#arrays-and-tensors) is what rebuilds a backend object on the next load.
+Both are ordinary PEP 695 aliases, so a type checker reads them structurally and reports a value outside the domain at the assignment. confingo checks whatever the file supplied against the same domain.
+
+A tuple supplied to a `ConfigValue` field rebuilds as a list, so the value round-trips to the plain form it was written as. Every leaf is checked for the JSON representation the fingerprint depends on, so a non-finite float is reported at its own path.
+
+A value outside the domain is reported where it enters rather than after it has been written. A `Path`, a temporal value, a set, a config object, an array, and a numpy scalar each carry a shape the annotation does not name, and each is reported with the shapes that are inside it. Name the type instead: an [array annotation](#arrays-and-tensors) for an array, a [section](schema-design.md#config-nodes) for a config object, `Path` for a path.
+
+A mapping key that is not a `str` is reported by its type, so a key whose `__str__` raises is named rather than run. Sibling entries still report together.
+
+An authored default carries the same domain, checked as written rather than coerced. A mutable open-data default is authored as a factory annotated with its return type, which is what gives the literal an expected type for a checker to read it against:
+
+```python
+def default_notes() -> ConfigValue:
+    return {"owner": "ml-platform", "tags": []}
+
+@dataclass
+class Experiment:
+    notes: ConfigValue = field(default_factory=default_notes)
+```
 
 
 ## Arrays and tensors
@@ -179,16 +214,21 @@ The accepted annotation set is explicit and closed:
 | --- | --- |
 | Scalars | `bool`, `int`, `float`, `str`, `Path`, `datetime`, `date`, `time`, `None` |
 | Enums / literals | `Enum` subclasses with primitive member values; `Literal` with primitive or `None` options |
-| Containers | `list`, `tuple`, `dict`, `Sequence`, `Mapping` (str keys for mappings), bare or parameterized; `set` and `frozenset` parameterized with an element that [rebuilds hashable](#sequences-and-tuples) |
-| Structure | dataclasses (each `init=True` field boundary-checked; an `init=False` field holds runtime state and is exempt), unions of accepted members, `Optional[T]`, `Any` |
+| Open data | `ConfigValue` for plain data of any shape, `ConfigScalar` for one plain leaf; see [open data](#open-data) |
+| Containers | `list[T]`, `tuple[T, ...]`, `dict[str, T]`, `Sequence[T]`, `Mapping[str, T]`, each naming its element type; `set[T]` and `frozenset[T]` with an element that [rebuilds hashable](#sequences-and-tuples) |
+| Structure | dataclasses (each `init=True` field boundary-checked; an `init=False` field holds runtime state and is exempt), unions of accepted members, `Optional[T]` |
 | Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
 | Wrappers | `Annotated[T, ...]`, treated as `T`; on tensors, a `torch.dtype` entry pins the dtype and a fixed-arity all-`int` shape tuple such as `tuple[int, int]` enforces dimensionality, each usable alone or together; every other metadata entry passes through as ordinary annotation metadata |
 
 An `init=True` annotation outside this set produces a `ConfigError` during schema preflight, even for a field that would have used its default. Rejected shapes include:
 
 - `Decimal`, `TypedDict`, `Iterable[T]`, and `NewType`
-- mappings with keys other than `str`, including `dict[Any, T]`
+- `Any`, which leaves the values it holds undescribed; write `ConfigValue` for plain data of any shape, or name the type the field holds
+- an argument-free container (`list`, `dict`, `Sequence`, `typing.List`, `set[()]`, and every other spelling of the same), which names no element type; write the parameterized form the message gives. `tuple[()]` is the one exception: it names a tuple holding nothing, which is a shape confingo builds
+- mappings with keys other than `str`, including `dict[int, T]`
 - enums with object values, and enum-backed `Literal` options
+- a schema class that owns type parameters, whether written `class Config[T]` or with the legacy `Generic[T]` / `Protocol[T]` spelling, and whether the parameters are its own, a base's, or its metaclass's. A config file carries concrete values, so a load builds the type an annotation names and a parameter names none; the class that declares them is the one reported, with the concrete types to write in their place. A `TypeVar` reached *through* an annotation is unaffected, which is how numpy spells `npt.NDArray`
+- a subclass of `Path`, `datetime`, `date`, or `time`. A load builds the base class, so the annotation would name a type the value does not carry; annotate the base and derive the subclass in an [`init=False`](schema-design.md#field-options) field
 
 An [`init=False`](schema-design.md#field-options) field holds runtime state populated in `__post_init__` and is exempt from this boundary; its annotation need only resolve. The preflight runs before any value is coerced. See [validation phases](validation-and-errors.md#two-validation-phases).
 

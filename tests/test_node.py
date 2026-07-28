@@ -7,14 +7,14 @@ from typing import (
 
 import pytest
 
-from confingo import (
-    ConfigError,
+from confingo import ConfigError
+from confingo._schema import forget_schema_issues
+from confingo.functional import (
     config_hash,
     dumps_json,
     dumps_yaml,
     to_dict,
 )
-from confingo._schema import _SCHEMA_CACHE
 from tests.schemas import (
     HOOK_CALLS,
     Device,
@@ -294,12 +294,12 @@ def test_schema_cache_warm_order_does_not_change_reports():
         return built, [(issue.path, issue.message) for issue in error.value.issues]
 
     for entry in (NodeLeaf, NodeMid, NodeTree):
-        _SCHEMA_CACHE.pop(entry, None)
+        forget_schema_issues(entry)
     NodeLeaf.cfg.from_dict({"name": "adamw"})
     inner_first = build()
 
     for entry in (NodeLeaf, NodeMid, NodeTree):
-        _SCHEMA_CACHE.pop(entry, None)
+        forget_schema_issues(entry)
     outer_first = build()
 
     assert inner_first == outer_first

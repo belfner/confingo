@@ -13,17 +13,11 @@ import os
 import secrets
 from collections.abc import Mapping
 from pathlib import Path
-from typing import (
-    Any,
-    TypeVar,
-)
+from typing import Any
 
 from confingo._core import from_dict
 from confingo._errors import ConfigError
 from confingo._schema import _typename
-
-
-T = TypeVar("T")
 
 
 def read_source_text(path: str | Path) -> tuple[Path, str]:
@@ -45,7 +39,7 @@ def read_source_text(path: str | Path) -> tuple[Path, str]:
         raise ConfigError.single(str(exc), context=f"config file {source}") from exc
 
 
-def build_from_document(config_cls: type[T], data: Any, source: Path) -> T:
+def build_from_document[T](config_cls: type[T], data: Any, source: Path) -> T:
     """Build a config object from an already-parsed document.
 
     A ``null`` document builds the config from its defaults; a document that is
@@ -79,6 +73,12 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     file or the complete new one, and concurrent writers never share a temporary.
     Parent directories are created as needed.
 
+    The contents reach the disk before the rename, so a file a reader opens is the
+    whole file it was written as. The directory entry is flushed after the rename
+    where the platform offers it, which is what carries a completed save across a
+    power loss; a platform that declines the flush has still written the file, so
+    the save succeeds and its durability is the filesystem's own.
+
     Args:
       path (str | Path): Destination file path.
       text (str): The full file contents to write.
@@ -101,12 +101,36 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(text)
-        # Preserve an existing target's mode; a new file keeps the umask-applied mode.
-        if destination.exists():
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Preserve an existing target's mode; a new file keeps the umask-applied
+        # mode. One stat answers both whether the target exists and what mode it
+        # carries, so a concurrent unlink between two reads cannot turn a
+        # successful save into a failure.
+        with contextlib.suppress(OSError):
             temporary.chmod(destination.stat().st_mode & 0o777)
         temporary.replace(destination)
     except BaseException:
         with contextlib.suppress(OSError):
             temporary.unlink()
         raise
+    _sync_directory(destination.parent)
     return destination
+
+
+def _sync_directory(directory: Path) -> None:
+    """Flush a directory entry so a completed rename survives a power loss.
+
+    Every step is best-effort: a filesystem that declines to open a directory, or
+    to sync one, has written the file either way, and a save that succeeded is not
+    turned into a failure by a durability step the platform does not offer.
+
+    Args:
+      directory (Path): The directory holding the renamed file.
+    """
+    with contextlib.suppress(OSError, AttributeError):
+        descriptor = os.open(directory, getattr(os, "O_DIRECTORY", os.O_RDONLY))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)

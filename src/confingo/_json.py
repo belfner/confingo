@@ -11,7 +11,6 @@ import json
 from typing import (
     TYPE_CHECKING,
     Any,
-    TypeVar,
 )
 
 from confingo._errors import ConfigError
@@ -25,8 +24,6 @@ from confingo._serialize import to_dict
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-T = TypeVar("T")
 
 
 def dumps_json(config: Any, *, indent: int = 2) -> str:
@@ -65,7 +62,7 @@ def save_json(config: Any, path: str | Path, *, indent: int = 2) -> Path:
     return atomic_write_text(path, dumps_json(config, indent=indent))
 
 
-def load_json(config_cls: type[T], path: str | Path) -> T:
+def load_json[T](config_cls: type[T], path: str | Path) -> T:
     """Load a JSON file into a config object.
 
     Args:

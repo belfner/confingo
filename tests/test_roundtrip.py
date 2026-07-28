@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from confingo import (
+from confingo.functional import (
     from_dict,
     to_dict,
 )
@@ -40,9 +40,9 @@ def test_containers_round_trip():
         pair=(7, "x"),
         variadic=(1, 2, 3),
         tags={"a": 1, "b": 2},
-        bare_tuple=(1, "two"),
-        bare_list=[1, "two"],
-        bare_dict={"k": "v"},
+        open_tuple=(1, "two"),
+        open_list=[1, "two"],
+        open_dict={"k": "v"},
         anything=[1, 2],
     )
     assert from_dict(Containers, to_dict(cfg)) == cfg

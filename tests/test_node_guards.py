@@ -20,9 +20,12 @@ import pytest
 from confingo import (
     ConfigError,
     ConfigNode,
-    from_dict,
 )
 from confingo._node import _FACADE_NAMES
+from confingo.functional import (
+    from_dict,
+    validate_schema,
+)
 
 
 def _messages(error: ConfigError) -> str:
@@ -120,7 +123,14 @@ def test_facade_name_in_a_later_base_slots_keeps_the_method():
     assert node().cfg is not None
 
 
-def test_a_collision_names_the_accessor_and_the_way_it_was_taken():
+def test_a_collision_names_the_accessor_and_the_remedy():
+    """A programmatic build reports one issue naming the accessor and what to do about it.
+
+    The phrase describing where the name came from follows what the class holds
+    at the moment of the check, which for a programmatic build depends on when
+    the standard library attaches its annotations. The accessor, the conflict,
+    and the remedy hold on every route.
+    """
     with pytest.raises(ConfigError) as error:
         make_dataclass(
             "ManyShadows",
@@ -128,7 +138,26 @@ def test_a_collision_names_the_accessor_and_the_way_it_was_taken():
             bases=(ConfigNode,),
         )
     assert len(error.value.issues) == 1
-    assert "ManyShadows.cfg is declared as a field" in error.value.issues[0].message
+    message = error.value.issues[0].message
+    assert "ManyShadows.cfg" in message
+    assert "shadows the ConfigNode method of the same name" in message
+    assert "rename it so the node keeps its cfg method" in message
+
+
+def test_a_programmatic_node_taking_the_accessor_is_reported_at_one_of_the_two_doors():
+    """Class creation reports a declaration it can see, and preflight reports the rest.
+
+    Both doors read the completed declaration, so the message naming the field is
+    the same wherever the build makes its annotations available.
+    """
+
+    def build_and_validate() -> None:
+        node = make_dataclass("DeferredShadow", [("cfg", str)], bases=(ConfigNode,))
+        validate_schema(node)
+
+    with pytest.raises(ConfigError) as error:
+        build_and_validate()
+    assert "DeferredShadow.cfg is declared as a field" in _messages(error.value)
 
 
 def test_reserved_names_are_free_on_a_plain_dataclass():

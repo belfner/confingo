@@ -12,12 +12,14 @@ from dataclasses import (
     dataclass,
     field,
 )
-from typing import Any
 
 import pytest
 
 from confingo import (
     ConfigError,
+    ConfigValue,
+)
+from confingo.functional import (
     from_dict,
     to_dict,
 )
@@ -79,7 +81,7 @@ class OptionalSection:
 
 @dataclass(frozen=True)
 class AnyLeaf:
-    extra: Any
+    extra: ConfigValue
 
 
 @dataclass(frozen=True)

@@ -14,18 +14,19 @@ from dataclasses import (
     field,
 )
 
-import numpy as np
 import pytest
 
 from confingo import (
     ConfigError,
     ConfigNode,
+)
+from confingo._equality import _unhashable_config
+from confingo.functional import (
     config_equal,
     config_hash,
     from_dict,
     to_dict,
 )
-from confingo._equality import _unhashable_config
 
 
 # --- module-level fixtures (annotations resolve at module scope) --------------
@@ -175,16 +176,6 @@ class GoodRoot(ConfigNode):
     plain: int = 3
 
 
-@dataclass(frozen=True)
-class FrozenArraySection:
-    arr: np.ndarray = field(default_factory=lambda: np.array([0.0, 1.0]))
-
-
-@dataclass
-class RootWithFrozenArray(ConfigNode):
-    fa: FrozenArraySection = field(default_factory=FrozenArraySection)
-
-
 @dataclass(slots=True)
 class SlotsInner:
     lr: float
@@ -274,7 +265,7 @@ def test_custom_hash_section_rejected_at_first_touch():
 
 
 def test_custom_hash_message_names_config_hash():
-    with pytest.raises(ConfigError, match="use config_hash\\(config\\) for value identity"):
+    with pytest.raises(ConfigError, match=r"use confingo\.functional\.config_hash\(config\) for value identity"):
         from_dict(RootWithCustomHashSection, {})
 
 
@@ -386,14 +377,6 @@ def test_frozen_section_hash_disabled():
 def test_two_equal_frozen_sections_compare_equal():
     assert FrozenSection(1, 2.0) == FrozenSection(1, 2.0)
     assert FrozenSection(1, 2.0) != FrozenSection(2, 2.0)
-
-
-def test_frozen_section_with_array_is_unhashable_rather_than_raising_on_the_array():
-    built = from_dict(RootWithFrozenArray, {})
-    assert type(built.fa).__dict__["__hash__"] is None
-    with pytest.raises(TypeError, match="unhashable type"):
-        hash(built.fa)
-    assert config_hash(built.fa) == config_hash(built.fa)
 
 
 # --- slots --------------------------------------------------------------------

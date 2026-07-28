@@ -57,7 +57,7 @@ Typical homes are ML training runs, experiment sweeps, and services that load co
 - One dataclass declaration is the schema, the validator, and the defaults.
 - Validation collects every issue in one pass, each with a dotted path.
 - Coercion moves values toward annotations under explicit, documented rules; authored defaults are validated against those same annotations and used exactly as written.
-- `from_dict(cls, to_dict(config))` restores exact types for concretely annotated fields, across JSON and YAML alike; `Any` fields round trip through their plain serialized shape.
+- `from_dict(cls, to_dict(config))` restores exact types for concretely annotated fields, across JSON and YAML alike; `ConfigValue` fields round trip through their plain serialized shape. The invariant reads over a value carrying the type its annotation names; see [numeric fields](types-and-coercion.md#unions-and-optionals) for what a hand-assigned `int` in a `float` field does.
 - `config_hash` gives equal configs equal fingerprints across processes and hash seeds.
 
 
@@ -72,8 +72,8 @@ Schema:
 
 Types:
 
-- [`Any` fields keep list shape after a round trip](types-and-coercion.md#any-and-plain-data)
-- [Union members match in declaration order](types-and-coercion.md#unions-and-optionals)
+- [`ConfigValue` fields keep list shape after a round trip](types-and-coercion.md#open-data)
+- [Union members match in declaration order, with a numeric pair settled by the value's own class](types-and-coercion.md#unions-and-optionals)
 - [`bool` and `int` stay separate; whole floats coerce to int](types-and-coercion.md#scalars)
 - [Temporal fields keep `datetime` and `date` distinct](types-and-coercion.md#finite-numbers-and-temporal-exactness)
 - [`Literal` matches value and exact type together](types-and-coercion.md#enums-and-literals)
@@ -98,9 +98,9 @@ Identity:
 Arrays:
 
 - [Bare tensors rebuild with pinned dtypes; broad numpy families select their width by value](arrays-and-tensors.md)
-- [Arrays under `Any` serialize as plain scalars and lists](types-and-coercion.md#any-and-plain-data)
+- [An array annotation carries an array; `ConfigValue` carries plain data](types-and-coercion.md#open-data)
 
 
 ## Compatibility
 
-Python 3.11+. The one runtime dependency is PyYAML (`>=6.0`), which carries the YAML loaders; JSON and hashing use only the standard library. NumPy and PyTorch fields activate through presence detection when the application imports those packages itself.
+Python 3.12+. The one runtime dependency is PyYAML (`>=6.0`), which carries the YAML loaders; JSON and hashing use only the standard library. NumPy and PyTorch fields activate through presence detection when the application imports those packages itself.

@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 import pytest
 import yaml
 
-from confingo import (
-    ConfigError,
+from confingo import ConfigError
+from confingo.functional import (
     dumps_json,
     dumps_yaml,
     load_json,

@@ -9,7 +9,18 @@ This page covers structuring a program's configuration as a dataclass tree: impl
 
 One dataclass declaration serves three roles: the field names define the accepted keys, the annotations define the accepted types, and the defaults define the fallback values. Nested dataclasses define sections, and containers of dataclasses (`list[StageConfig]`, `dict[str, DatasetConfig]`) define repeated sections.
 
-Schema classes are ordinary `@dataclass` declarations. Any of them may subclass `ConfigNode` for load/save/hash methods and config-aware equality, summarized in [canonical equality](#canonical-equality) below; the rest are plain dataclasses the free functions cover.
+Schema classes are ordinary `@dataclass` declarations. Any of them may subclass `ConfigNode` for load/save/hash methods and config-aware equality, summarized in [canonical equality](#canonical-equality) below; the rest are plain dataclasses the `confingo.functional` free functions cover.
+
+
+## What a schema class may be
+
+A schema class is a record and nothing else. Two rules say what that means, and both are reported at preflight with the shape named.
+
+**A section is not also one of the kinds a walk dispatches on.** Every walk over a value asks what the value is, and it recognizes a section by its being a dataclass and a container, enum, path, or temporal value by its being an instance of that kind. A class that is both answers to two readings of one value, and which reading applies would follow from the order a particular walk happens to test in. So a schema class may not subclass `Mapping`, `Sequence`, `set`, `frozenset`, `Enum`, `Path`, `date`, or `time`. Carry that behavior on an object the section holds in an [`init=False`](#field-options) field.
+
+**The constructor takes the class's own fields.** confingo builds a config object by calling the class with its `init=True` field names, so `__init__` has to accept exactly that call: every one of those names, and nothing further that it requires. The generated `__init__` satisfies this by construction, which is what makes the rule invisible for an ordinary declaration. A class that binds an `__init__` of its own is reported by the field its constructor cannot receive, and a required `InitVar` is reported as an argument no config file can supply, since `dataclasses.fields` leaves an `InitVar` outside the loadable surface while the constructor still asks for it. An `InitVar` carrying a default is answered by that default and builds.
+
+Reading the signature is what settles the second rule, so it rests on what the constructor accepts rather than on telling a generated body from an authored one.
 
 
 ## Implicit sections and leaf-level requirements
@@ -22,7 +33,7 @@ The implicit build applies to direct dataclass annotations only. Every other fie
 
 - scalars (`int`, `str`, `Path`, ...)
 - unions, including `Section | None`
-- `Any`
+- `ConfigValue` and `ConfigScalar`
 - containers (`list[StageConfig]`, `dict[str, DatasetConfig]`, `tuple[int, ...]`)
 
 Containers stay required deliberately. An intentionally empty container is authored as `field(default_factory=list)`, which keeps an authored-empty container distinct from a required one. Elements the file does supply enforce their own required leaves (`stages.0.name`).
@@ -106,6 +117,8 @@ class ExperimentConfig(ConfigNode):
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=1e-3))
 ```
 
+A section an authored default supplies reaches the same lifecycle as one built from a file: the build that selects the default checks its `init=False` fields for completeness and reports what its `__validate__` returns, at that section's own path. Its `__post_init__` has already run inside the factory. So a baseline section is held to its own invariants, and the report is the same whether the file named the section or left it to the default.
+
 A section-valued default is always written as a factory, frozen sections included. `@dataclass` reads a default whose class is unhashable as a mutable default and directs you to `default_factory`, and confingo [makes a config class unhashable](equality-and-hashing.md#config-objects-are-unhashable) at its first schema processing, so a direct `section: FrozenSection = FrozenSection()` in a class declared after that first load fails at decoration time. The factory form is correct regardless of declaration order.
 
 Partial files fall out of the leaf-level model everywhere: a minimal experiment file overrides two leaves and takes everything else from defaults, implicit or authored:
@@ -119,7 +132,7 @@ An empty mapping (`{}`) builds the full default config whenever every leaf in th
 
 ## Config nodes
 
-Any dataclass in the tree may subclass `ConfigNode`, at any depth. A section that subclasses it gains the same methods over its own subtree; a section that stays a plain dataclass is walked by introspection, and the free functions operate on it.
+Any dataclass in the tree may subclass `ConfigNode`, at any depth. A section that subclasses it gains the same methods over its own subtree; a section that stays a plain dataclass is walked by introspection, and the `confingo.functional` free functions operate on it.
 
 The base class is a thin facade: each method delegates to the matching free function (`TrainingConfig.cfg.load_json(path)` calls `load_json(TrainingConfig, path)`), so both styles are equivalent public surfaces. The full mapping is in the [API reference](api-reference.md#confignode-method-map).
 
@@ -170,7 +183,7 @@ Before coercing any value, `from_dict` runs a recursive schema preflight over ev
 
 ## Canonical equality
 
-Two configs are `==` exactly when their compared fields serialize to the same canonical plain form, with `NotImplemented` for a different class. Equality compares the fields that are `init=True` and `compare=True` (the defaults); a [`field(compare=False)`](#field-options) still serializes through `to_dict`, and an `init=False` field holds runtime state. The relation works uniformly for every supported field type, [array-valued fields](arrays-and-tensors.md) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree.
+Two configs are `==` exactly when their compared fields serialize to the same canonical plain form, with `NotImplemented` for a different class. Equality compares the fields that are `init=True` and `compare=True` (the defaults); a [`field(compare=False)`](#field-options) still serializes through `to_dict`, and an `init=False` field holds runtime state. The relation works uniformly for every supported field type, [array-valued fields](arrays-and-tensors.md) included, so the round-trip invariant `from_dict(cls, to_dict(config)) == config` reads literally at every level of the tree. The invariant reads over a value that already carries the type its annotation names, which is what a load builds and what a validated authored default carries. A value assigned by hand renders as the object it is: Python's numeric tower lets a type checker accept `x: float = 1`, and the `int` that field then holds writes `1` and reloads as `1.0`, which the fingerprint tokenizes differently. A subclass instance behaves the same way, writing the plain form of the base class the annotation names and reloading as that base. Write the value the annotation names, and derive a subclass in an `init=False` field.
 
 A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives the same canonical `__eq__` at its first schema processing. confingo owns equality and hashing on config dataclasses, so a hand-written `__eq__` or `__hash__`, or a `@dataclass` flag that conflicts with that ownership (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`), is rejected; `frozen`, `slots`, and `weakref_slot` are supported. Config objects are [unhashable](equality-and-hashing.md#config-objects-are-unhashable), so [`config_hash`](equality-and-hashing.md#stable-run-identity) is the value-identity tool, and the `config_equal` free function exposes the same relation ahead of any engine call.
 

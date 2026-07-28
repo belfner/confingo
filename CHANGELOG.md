@@ -1,299 +1,127 @@
 # Changelog
 
-All notable changes to confingo are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres
-to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to confingo are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
 
-- `ConfigNode` replaces `ConfigRoot` as the name of the method facade, and any
-  dataclass in a config tree may subclass it rather than the root alone. Each
-  method is scoped to the node it is called on, so a nested node builds,
-  exports, fingerprints, and writes its own subtree, and issue paths from a
-  subtree load are relative to that node. Attaching the base to a section
-  changes its method surface alone: the engine reaches a nested section through
-  the same generic recursion either way, so an enclosing load produces identical
-  values, exported data, digests, and issue paths. Update imports and base
-  classes from `ConfigRoot` to `ConfigNode`.
-- **Breaking.** Config dataclasses are unhashable. From its first schema
-  processing a class carries `__hash__ = None`, so `hash(config)`, a config as a
-  mapping key, and a config in a set each raise `TypeError`;
-  `config_hash(config)` is the stable value-identity operation. This covers
-  frozen configs, where Python otherwise generates a field-tuple hash that
-  disagrees with canonical equality and raises on array fields. A `ConfigNode`
-  subclass holds the same contract from class creation through a `__hash__` that
-  raises `TypeError: unhashable type: 'RunConfig'; use config_hash(config) for
-  value identity`. Replace `hash(config)` and set or mapping membership with
-  `config_hash(config)`.
-- **Breaking.** A `set` or `frozenset` element annotation is admitted at schema
-  preflight when the plain form a file carries rebuilds hashable under it: a
-  scalar, or a `tuple` / `frozenset` whose own arguments
-  recursively satisfy that same rule. `set[str]`, `set[int | str]`,
-  `set[Color]`, `set[tuple[str, int]]`, `set[frozenset[str]]`, and deeper shapes
-  such as `set[tuple[tuple[int, str], frozenset[int]]]` all qualify. An `Enum`
-  qualifies when it leaves hashing to the implementation it inherits, so one that
-  binds `__hash__` itself is settled at preflight rather than while a set is
-  built. Anything else is reported naming the annotation as written, with a
-  scalar element, a tuple of scalars, or a list as the remedy: `set[Any]`, a bare
-  `set`, an argument-free `set[()]`, `set[list[int]]`, `set[int | list[int]]`,
-  `set[tuple[int, Any]]`, and an array element among them. Deciding this from the
-  annotation settles a saved config's ability to rebuild its own set, and it
-  leaves the authored value untouched. Rewrite `set[Any]` as `set[str]` or
-  whichever scalar the values carry, and hold anything else in a list.
-- **Breaking.** Set annotations whose elements carry a config section, whether
-  directly, through a union, or inside an immutable `tuple` / `frozenset` shape,
-  are rejected at schema preflight, naming the annotation as written and
-  pointing at a list or tuple for the collection plus `config_hash(section)` as
-  the value-identity key. Sets of hashable values are unaffected. Rewrite
-  `frozenset[Section]` as `list[Section]` or `tuple[Section, ...]`.
-- **Breaking.** Authored defaults are validated rather than trusted. A default
-  has to already carry the runtime type its annotation names and to have a plain
-  serializable form, so `output_dir: Path = "runs"` is reported as an authoring
-  error rather than promoted to `Path("runs")`, as are a list default for a tuple
-  field, an integral float for an `int` field, a mapping for a section, and a
-  value under `Any` with no plain form. A direct `field(default=...)` is checked
-  during schema preflight, whether or not the input supplies the field, so a
-  wrong default surfaces even where it is always overridden. A `default_factory`
-  runs once at the build that selects it; its one product is validated and passed
-  on unchanged, and a factory that raises reports as
-  `items: default_factory raised ValueError: <message>`. Write defaults in the
-  annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`. The
-  annotated type is required exactly, so a subclass instance for a base-class
-  annotation and a `MappingProxyType` for a `dict[str, int]` annotation are both
-  reported: each exports a shape its own annotation cannot reload.
-- A container annotation whose type arguments depart from the form the engine
-  builds from is reported at schema preflight naming the annotation as written:
-  a sequence or set carries one element type, a mapping carries a key and a
-  value type, and `...` marks the variadic form of `tuple[T, ...]` alone. So
-  `set[int, str]`, `list[int, str]`, `dict[str, int, int]`, `set[...]`,
-  `tuple[...]`, and `tuple[int, ..., str]` each report rather than reaching
-  construction, where only the leading arguments were read.
-- The type-boundary message names the supported annotation categories and the
-  `init=False` remedy: `unsupported field type Decimal; choose a supported
-  annotation (bool, int, float, str, Path, date/time, Enum/Literal, dataclass,
-  container/union, array/tensor, or Any) and derive other runtime values in an
-  init=False field`. One builder produces it, so schema preflight and
-  construction word the boundary identically.
-- A class named as a field type that declares its own annotations without being
-  a dataclass reports the decorator remedy at that field's path, `server: Forgot
-  is not a dataclass, so it carries no config schema. Declare it with
-  @dataclass.`, the same message an entry class of that shape reports.
-  It reaches the field through a section, a container, a union, or a mapping
-  value alike. A `TypedDict`, a `NamedTuple`, and a class with no annotations of
-  its own stay on the type-boundary message.
-- Documentation offers two routes through one set of pages. Essentials (getting
-  started, arrays and tensors, files and run identity, recipes) is the
-  task route, and getting started carries everything needed to build a real
-  config: choosing an annotation, sections and required leaves, writing defaults
-  and factories, fixed tuples and array fields, a discriminated union, computed
-  fields and `__validate__`, reading an error, and saving a resolved run.
-  Exact reference (schema design, types, validation, equality, API) is the
-  contract route, with each page leading on what an ordinary reader needs and
-  closing with the edge cases. Each route stands on its own.
-
-### Fixed
-
-- Classifying a class named as a field type reads raw class namespaces along the
-  MRO, so naming a class as an annotation is the only thing that happens to it.
-  Preflight reads a metaclass `__getattr__` and a side-effecting annotation
-  expression as inert data, and everything such a class reports arrives through
-  the issue collector.
-- A failed multi-member union reports which branch came closest and why. The
-  field carries a summary, `optimizer: expected AdamW | SGD; best match SGD
-  failed with 1 issue`, followed by that one member's own issues at their own
-  paths. The closest member is the one whose attempt collected the fewest
-  issues, an equal count going to the first declared member, so two discriminator
-  variants that each fail once on a typo report through the first. Selection
-  follows declaration order and takes the first member that coerces cleanly, and
-  `T | None` coerces straight through `T`.
+## [0.4.0] - 2026-07-26
 
 ### Added
 
-- `validate(config_cls, *, context="config schema")` checks a dataclass type's
-  schema without reading any config data, and `Config.cfg.validate()` does the
-  same through a node, taking the same `context` keyword. It
-  walks the whole declared tree, recursing into nested sections and into
-  sections held in lists, tuples, sets, and dict values, and raises
-  `ConfigError` listing every unsupported annotation and every authored default
-  that does not already carry its annotation's runtime type. No
-  `default_factory` runs. It is the check `from_dict` performs before it builds,
-  so a class that validates raises no schema issue at load time.
-- **Breaking.** `ConfigNode` carries its operations under one accessor, `cfg`.
-  `Config.cfg.load_json(path)`, `config.cfg.to_dict()`, and `config.cfg.hash()`
-  replace `Config.load_json`, `config.to_dict`, and `config.config_hash`. The
-  builders and `validate` answer on the class as well as on a value, and an
-  operation that reads a value names the instance form when it is reached from
-  the class. One reserved name leaves a config class free to declare a field or
-  method called `validate`, `to_dict`, `from_dict`, or anything else. The free
-  functions are unchanged, `config_hash(config)` among them. Rewrite
-  `Config.method(...)` as `Config.cfg.method(...)` and `config.config_hash()` as
-  `config.cfg.hash()`. The receiver decides which operations are offered:
-  `Config.cfg` carries the builders and `validate`, and `config.cfg` carries
-  those plus the operations that read a value, a split a type checker sees.
-- A `ConfigNode` subclass reserves the accessor name `cfg`. A node declares
-  nothing under it: an annotation or class-body binding named `cfg` is rejected
-  at class creation, as is one supplied by a base ahead of `ConfigNode` in the
-  MRO, inherited as a field, or supplied as a metaclass data descriptor.
-  Declarations are read rather than resolved, so a descriptor under the reserved
-  name is never run. `cfg` carries no restriction on a plain dataclass, and
-  every other name is free on a node.
-- A `ConfigNode` subclass that inherits a hand-written `__eq__` or `__hash__`
-  from a base is rejected at class creation, naming the base that owns it, since
-  the canonical methods land on the subclass ahead of the decorator.
-- A `ConfigNode` subclass that declares annotations without carrying
-  `@dataclass` is reported as a schema error at its schema path: its own names
-  stay outside the schema while the inherited fields load. `ClassVar`
-  annotations raise no such error.
-- An entry class that is not a dataclass is reported as a schema issue carrying
-  the calling operation's context.
+- `confingo.functional`, the module carrying every operation run over a schema: `from_dict`, `to_dict`, `config_equal`, `config_hash`, `validate_schema`, the JSON and YAML loaders and writers, and the extension-dispatch pair. The package root now carries the names a schema is written with -- `ConfigNode`, `ConfigValue`, `ConfigScalar`, `ConfigError`, `ConfigIssue`, `__version__` -- and nothing else. Update `from confingo import from_dict` to `from confingo.functional import from_dict`; the `cfg` accessor on a `ConfigNode` subclass is unchanged.
+- `ConfigValue` and `ConfigScalar`, the annotations for a field holding open-ended plain data, importable from the package root or from `confingo.typing`. `ConfigValue` names the whole plain-data domain a config file carries -- the JSON scalars, lists of them, and `str`-keyed mappings of them, nested up to 64 levels -- and `ConfigScalar` names its leaf half. Both are ordinary PEP 695 aliases, so a type checker reads them structurally and reports a value outside the domain at the assignment while confingo checks whatever the file supplied. A mutable open-data default is authored as a factory annotated `-> ConfigValue`.
 
-- Canonical equality on every schema dataclass: two configs are `==` exactly
-  when their compared fields (`init=True` and `compare=True`) serialize to the
-  same plain form at every tree level, array fields included. Array and tensor pairs compare through the backends'
-  vectorized equality wherever that comparison is provably exact (with a
-  tensor meeting a numpy array via `detach().cpu().numpy()`), and every
-  other pair compares by its serialized form, so `==` on large arrays runs
-  at native speed with exact value semantics. A `ConfigNode` subclass
-  carries the canonical `__eq__` from class-creation time, installed by
-  `__init_subclass__` ahead of the `@dataclass` decorator. Every other schema
-  dataclass receives canonical equality at its first schema processing. The
-  `config_equal(left, right)` free function exposes the same relation ahead of
-  any engine call.
-- confingo owns equality and hashing on config dataclasses: a class that
-  hand-writes `__eq__` or `__hash__` is rejected, a `ConfigNode` subclass at
-  class creation (both reported together when it defines both) and a section at
-  its first schema touch. A `@dataclass` flag confingo cannot honor
-  (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a
-  `ConfigError` at first schema processing, every violation on one class reported
-  together. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception:
-  it fails at class creation with the standard-library `TypeError` for
-  overwriting `__hash__`, since the node installs its own `__hash__` ahead of the
-  decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported;
-  a generated or inherited `__hash__` becomes `None` at first schema processing,
-  written on the touched class so an untouched base keeps its own.
-- NumPy array and PyTorch tensor fields, presence-detected: the backends
-  install with the application, confingo's core stays stdlib-only, and
-  `import confingo` loads neither. Supported annotations: bare `np.ndarray`,
-  `npt.NDArray[...]` with concrete dtypes or abstract families, shape-typed
-  `np.ndarray[tuple[int, int], np.dtype[...]]` with dimensionality
-  enforcement, bare `torch.Tensor` (rebuilt with value-stable pinned dtypes
-  bool / int64 / float64), and `Annotated[torch.Tensor, torch.dtype]`, where a
-  fixed-arity shape tuple in the metadata
-  (`Annotated[torch.Tensor, torch.float32, tuple[int, int]]`) enforces
-  dimensionality exactly as the numpy shape spelling does. Values
-  serialize as the validated `tolist()` form, detached and copied to the CPU
-  for tensors; plain input validates leaf by leaf with indexed issue paths
-  (`weights.2.0`), supplied arrays validate with vectorized masks, and every
-  array field is capped at one million elements. Arrays under `Any` validate
-  inbound and serialize as plain scalars and lists. Supported numpy scalars
-  feed ordinary
-  scalar fields as their exact Python equivalents.
-- Dataclass `field()` options, with `init` as the master switch. An
-  `init=False` field is runtime state: it is excluded from loading, export,
-  equality, and the `config_hash` fingerprint, its `compare` / `hash` flags are
-  inert, and its annotation is exempt from the supported-type boundary so it may
-  hold any resolvable runtime object. It is populated by its default or in
-  `__post_init__`, and every `init=False` field is checked for population after
-  construction (before `__validate__`), so one left unset is reported as
-  `init=False field was not set during __post_init__` rather than surfacing later
-  as an `AttributeError`. Supplying an `init=False` field's key in the input is
-  reported as `field is not configurable (init=False)`. On an `init=True` field,
-  `compare=False` drops the field from equality and therefore from the
-  fingerprint while `to_dict` still carries it, and `hash=False` drops it from
-  the fingerprint alone while equality keeps it. `field(hash=True, compare=False)`
-  is reported as a contradiction, since a field in the fingerprint must
-  participate in equality.
-- `config_hash` fingerprints the hashing fields (`init=True`, `compare=True`,
-  effective hash enabled) rather than the full `to_dict` output, so a
-  `compare=False` or `hash=False` field is serialized yet excluded from the
-  digest.
+
+- **Breaking.** A schema class that owns type parameters is reported at preflight, naming the parameters and the concrete types to write in their place. Both spellings are covered, `class Config[T]` and the legacy `Generic[T]` / `Protocol[T]` forms, as is a parameter a generic metaclass owns. A config file carries concrete values, so a load builds the type an annotation names and a parameter names none. The class that declares the parameters is the one reported, so a section inheriting from a generic base is reported against that base. A `TypeVar` reached through an annotation is unaffected, which is how numpy spells `npt.NDArray`.
+- `validate_schema(config_cls, *, context="config schema")` checks a dataclass type's schema without reading any config data, and `Config.cfg.validate_schema()` does the same through a node, taking the same `context` keyword. It walks the whole declared tree, recursing into nested sections and into sections held in lists, tuples, sets, and dict values, and raises `ConfigError` listing every unsupported annotation and every authored default that does not already carry its annotation's runtime type. No `default_factory` runs. It is the check `from_dict` performs before it builds, so a class that validates raises no schema issue at load time.
+- **Breaking.** `ConfigNode` carries its operations under one accessor, `cfg`. `Config.cfg.load_json(path)`, `config.cfg.to_dict()`, and `config.cfg.hash()` replace `Config.load_json`, `config.to_dict`, and `config.config_hash`. The builders and `validate_schema` answer on the class as well as on a value, and an operation that reads a value names the instance form when it is reached from the class. One reserved name leaves a config class free to declare a field or method called `validate_schema`, `to_dict`, `from_dict`, or anything else. The free functions are unchanged, `config_hash(config)` among them. Rewrite `Config.method(...)` as `Config.cfg.method(...)` and `config.config_hash()` as `config.cfg.hash()`. The receiver decides which operations are offered: `Config.cfg` carries the builders and `validate_schema`, and `config.cfg` carries those plus the operations that read a value, a split a type checker sees.
+- A `ConfigNode` subclass reserves the accessor name `cfg`. A node declares nothing under it: an annotation or class-body binding named `cfg` is rejected at class creation, as is one supplied by a base ahead of `ConfigNode` in the MRO, inherited as a field, or supplied as a metaclass data descriptor. Declarations are read rather than resolved, so a descriptor under the reserved name is never run. `cfg` carries no restriction on a plain dataclass, and every other name is free on a node.
+- A `ConfigNode` subclass that inherits a hand-written `__eq__` or `__hash__` from a base is rejected at class creation, naming the base that owns it, since the canonical methods land on the subclass ahead of the decorator.
+- A `ConfigNode` subclass that declares annotations without carrying `@dataclass` is reported as a schema error at its schema path: its own names stay outside the schema while the inherited fields load. `ClassVar` annotations raise no such error.
+- An entry class that is not a dataclass is reported as a schema issue carrying the calling operation's context.
+
+- Canonical equality on every schema dataclass: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form at every tree level, array fields included. Array and tensor pairs compare through the backends' vectorized equality wherever that comparison is provably exact (with a tensor meeting a numpy array via `detach().cpu().numpy()`), and every other pair compares by its serialized form, so `==` on large arrays runs at native speed with exact value semantics. A `ConfigNode` subclass carries the canonical `__eq__` from class-creation time, installed by `__init_subclass__` ahead of the `@dataclass` decorator. Every other schema dataclass receives canonical equality at its first schema processing. The `config_equal(left, right)` free function exposes the same relation ahead of any engine call.
+- confingo owns equality and hashing on config dataclasses: a class that hand-writes `__eq__` or `__hash__` is rejected, a `ConfigNode` subclass at class creation (both reported together when it defines both) and a section at its first schema touch. A `@dataclass` flag confingo cannot honor (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, every violation on one class reported together. A `ConfigNode` subclass declared `unsafe_hash=True` is the exception: it fails at class creation with the standard-library `TypeError` for overwriting `__hash__`, since the node installs its own `__hash__` ahead of the decorator. `frozen=True`, `slots=True`, and `weakref_slot=True` are supported; a generated or inherited `__hash__` becomes `None` at first schema processing, written on the touched class so an untouched base keeps its own.
+- NumPy array and PyTorch tensor fields, presence-detected: the backends install with the application, confingo's core stays stdlib-only, and `import confingo` loads neither. Supported annotations: bare `np.ndarray`, `npt.NDArray[...]` with concrete dtypes or abstract families, shape-typed `np.ndarray[tuple[int, int], np.dtype[...]]` with dimensionality enforcement, bare `torch.Tensor` (rebuilt with value-stable pinned dtypes bool / int64 / float64), and `Annotated[torch.Tensor, torch.dtype]`, where a fixed-arity shape tuple in the metadata (`Annotated[torch.Tensor, torch.float32, tuple[int, int]]`) enforces dimensionality exactly as the numpy shape spelling does. Values serialize as the validated `tolist()` form, detached and copied to the CPU for tensors; plain input validates leaf by leaf with indexed issue paths (`weights.2.0`), supplied arrays validate with vectorized masks, and every array field is capped at one million elements. Supported numpy scalars feed ordinary scalar fields as their exact Python equivalents.
+- Dataclass `field()` options, with `init` as the master switch. An `init=False` field is runtime state: it is excluded from loading, export, equality, and the `config_hash` fingerprint, its `compare` / `hash` flags are inert, and its annotation is exempt from the supported-type boundary so it may hold any resolvable runtime object. It is populated by its default or in `__post_init__`, and every `init=False` field is checked for population after construction (before `__validate__`), so one left unset is reported as `init=False field was not set during __post_init__` rather than surfacing later as an `AttributeError`. Supplying an `init=False` field's key in the input is reported as `field is not configurable (init=False)`. On an `init=True` field, `compare=False` drops the field from equality and therefore from the fingerprint while `to_dict` still carries it, and `hash=False` drops it from the fingerprint alone while equality keeps it. `field(hash=True, compare=False)` is reported as a contradiction, since a field in the fingerprint must participate in equality.
+- `config_hash` fingerprints the hashing fields (`init=True`, `compare=True`, effective hash enabled) rather than the full `to_dict` output, so a `compare=False` or `hash=False` field is serialized yet excluded from the digest.
+
 
 ### Changed
 
-- PyYAML (`>=6.0`) is now a core runtime dependency, so YAML file IO
-  (`load_yaml`, `save_yaml`, `dumps_yaml`, and the matching `ConfigNode`
-  methods) and extension dispatch work from the base install. The three YAML
-  helpers are importable directly from `confingo` and resolve at import time.
-  The `yaml` optional extra is removed; `pip install confingo` now carries YAML
-  support.
-- Python 3.11 is the minimum supported version.
-- `to_dict` collects every serialization problem in one pass, each tagged with
-  its dotted path, matching the collect-all model `from_dict` already follows.
-- Dataclass sections instantiate implicitly. A dataclass-typed field with no
-  default builds from an empty mapping when the input omits it, recursively
-  through nested sections, so a required value inside an omitted section is
-  reported at its nested dotted path (`optimizer.name: missing required value`).
-  Every other undefaulted field stays required when absent (scalars, unions,
-  `Any`, and containers), keeping a forgotten container distinct from an
-  intentionally empty one authored as `field(default_factory=list)`. A
-  self-referential section terminates with a missing-value issue at the point of
-  recursion. Explicit defaults and `default_factory` values take precedence and
-  are used as authored.
-- Internal restructure of the engine: the marshal / unmarshal core is split into
-  focused modules (`_errors`, `_schema`, `_core`, `_serialize`), the NumPy and
-  PyTorch array paths share one validation and indexed issue-reporting kernel,
-  scalar coercion routes through a shared ISO temporal parser, and equality and
-  hashing ownership resolves through one method-contract helper. Every docstring
-  follows the project's Google style. The free functions keep their names,
-  signatures, and behavior across the split.
+- **Breaking.** `config_hash` installs confingo's ownership of equality and hashing on the class it fingerprints, the way `from_dict` and `validate_schema` already do. It is the value-identity operation, and the claim that equal configs fingerprint equally rests on canonical equality reading the same plain form the digest reads: a class that had only ever been exported kept its generated `__eq__`, which holds `0.0` equal to `-0.0` and `True` equal to `1` where the canonical JSON keeps them apart, and stayed hashable. A class that hand-writes `__eq__` or `__hash__` is now reported here too. `to_dict` and the dump and save functions render the value they are given and install nothing.
+- **Breaking.** A section an authored default supplies reaches the same lifecycle as one built from supplied data: the build that selects the default checks its `init=False` fields for completeness and reports what its `__validate__` returns, at that section's own path. A baseline section written as `field(default_factory=lambda: Optimizer(lr=1e-3))` was previously held only to its annotated type and its plain form, so whether a section's invariants were enforced depended on whether the file happened to mention it.
+- **Breaking.** Two rules now say what a schema class may be, both reported at preflight. A section may not also be one of the kinds a walk dispatches on -- `Mapping`, `Sequence`, `set`, `frozenset`, `Enum`, `Path`, `date`, `time` -- since a class that is both answers to two readings of one value and which reading applies followed from the order a given walk tested in. And a schema class's constructor must accept every `init=True` field as a keyword while requiring nothing else, which is what the generated `__init__` does. The second rule covers an initializer the author bound in place of the generated one, whose every load previously failed at the root with a bare constructor `TypeError`, and a required `InitVar`, which `dataclasses.fields` leaves outside the loadable surface so that a supplied key read as an unknown key while the same build reported the argument as missing. An `InitVar` carrying a default is answered by that default and builds.
+- The subscripted empty shape tuple names zero dimensions, so `np.ndarray[tuple[()], np.dtype[np.float64]]` and `Annotated[torch.Tensor, torch.float64, tuple[()]]` each pin a scalar array and report a list as the dimensionality mismatch it is. A bare `tuple` and a variadic `tuple[int, ...]` continue to carry no dimensionality claim.
+- Array-annotation classification is cached per hint identity and per set of loaded backends, so a field's annotation is classified once rather than once per value it holds. Importing NumPy previously added roughly half again to the cost of loading a large container of scalars, which carries no array annotation and no array value.
+- **Breaking.** Python 3.12 is the floor. The recursive `ConfigValue` alias sets it: `get_type_hints` keeps a PEP 695 alias intact as a `TypeAliasType` from 3.12 on, which is what lets confingo match it by identity the way it matches an array annotation. The codebase uses PEP 695 syntax throughout.
+- **Breaking.** `validate` is now `validate_schema`, on the free-function route and on the class accessor alike (`Config.cfg.validate_schema()`). The name says what the operation reads: a schema, without any config data.
+- **Breaking.** `Any` is rejected as a field annotation, since it leaves the values it holds undescribed. The message names the replacement: annotate the field `ConfigValue` for plain data of any shape, or name the type the field holds.
+- **Breaking.** An argument-free container annotation is rejected, and the message names the parameterized form to write: `list[ConfigValue]`, `tuple[ConfigValue, ...]`, `dict[str, ConfigValue]`, `set[ConfigScalar]`, `frozenset[ConfigScalar]`, `Sequence[ConfigValue]`, `Mapping[str, ConfigValue]`. Every spelling of the same thing is covered: the builtin, the `collections.abc` form, the legacy `typing` alias, and an explicit empty subscript such as `list[()]`. `tuple[()]` stays admitted, since it names a tuple holding nothing rather than a tuple naming no element type.
+- **Breaking.** A subclass of `Path`, `datetime`, `date`, or `time` is rejected as a field annotation. A load builds the base class, so the annotation named a type the built value did not carry. Annotate the base, and derive the subclass in an `init=False` field.
+- **Breaking.** An `Enum` member value has to carry a runtime type of exactly `bool`, `int`, or `str`, matching the rule `Literal` options already hold. A load reads one of those three from a file and hands it to the member lookup, and exact typing is what keeps that lookup single-valued: two members whose values differ only by a subclass of one of those three write the same plain form, so a set of the two rebuilds as one member. Preflight names the member, its subclass, and the exact value to write instead.
+- **Breaking.** An `Enum` leaves the member lookup to `EnumType`. A class whose metaclass binds `__call__` decides for itself what a value reaches, so a member's own value can rebuild as a different member, and preflight reports it naming the metaclass. A `_missing_` hook is unaffected and remains the way to map spellings outside the member values, since a lookup reaches it only after those values miss.
+- A union naming two of `bool`, `int`, and `float` tries the member naming the class the plain form carries before the declared order. Two numeric members are what makes it apply, so `Number | int` reads `1` as the declared `Number` exactly as it reads every other value by declaration order. A file states each of the three as itself, and an `int` field reads an integral float so that `1e6` is accepted, so declaration order alone sent a `1.0` under `int | float` to the `int` member and read it back as `1`. Both declaration orders now round-trip, for a supplied value and for a validated authored default alike. Where one plain form fits two members the declared order still answers, as it does for `Path | str`.
+- **Breaking.** An array or a numpy scalar reaching a `ConfigValue` field is reported where it enters. `ConfigValue` names the plain data a config file carries, and neither is a member of it. Annotate the array type instead, which also carries the dtype claim through the round trip.
+- **Breaking.** A `np.ma.MaskedArray` is declined at both boundaries, with `np.asarray` named as the remedy. Its mask has no plain form, so the document it wrote could not be read back through the annotation it came from.
+- An array spends the levels its plain form writes, one per axis up to the first empty one, so loading, `to_dict`, `config_hash`, and equality charge it the way they charge the same nesting written as lists. An empty axis ends the encoding, so a 64-axis array whose first axis is empty writes `[]` and is carried.
+- An array class supplying its own plain form is followed at most 64 times into another array, counted apart from the nesting budget since a render hop writes no container level. The count is of transitions into a further array, so the render that reaches lists and numbers follows into nothing and costs no hop, and a chain making exactly 64 transitions before its number is carried. A chain that answers with a new array every time reports the hop limit and names the remedy, at the field's own path, across a supplied value, a selected `default_factory`, a direct default, `to_dict`, `config_hash`, and `config_equal` alike.
+- Every walk over a value is bounded, by one budget over the whole plain document. A structure that reaches itself is reported at the value that closes the loop, and one nested past 64 levels is reported at the level that passes it. Loading, authored-default validation, `to_dict`, `config_hash`, and `config_equal` all count the same way, so a value one accepts is a value they all accept, and a raw `RecursionError` no longer escapes any of them.
+- Every user callback confingo runs reports what it raises as one issue beside the issues its siblings reported: `__post_init__`, `__validate__`, a selected `default_factory`, an `Enum`'s `_missing_` hook, and an array subclass's `tolist`. An `Enum` resolution runs under one containment, so the member mapping the name fallback and the option list read is inside it as well. `MemoryError` and `SystemError` still travel to the caller, since they describe the interpreter rather than the config. `__validate__`'s return is read against its contract before it is consumed, so a bare string, which would otherwise iterate to one issue per character, and `None`, which an `if bad: return [...]` with no trailing return hands back, are each reported as the contract slip they are.
+- Authored defaults carry the `ConfigValue` and `ConfigScalar` domains, checked as written rather than coerced. A `Path`, a temporal value, a tuple, a set, a dataclass, and an array were previously accepted as open-data defaults and converted on the way out.
+- The `cfg` accessor is a data descriptor, so `config.cfg = ...` and `del config.cfg` raise an `AttributeError` naming the operations the name carries. An ordinary attribute assignment could previously shadow the whole facade on that instance, silently.
+- `config_hash` and the equality fallback encode what a plain projection produces and nothing else. The canonical JSON encoder no longer carries a fallback converter, which could only have turned a gap in the plain-data walk into a digest over text nothing could be rebuilt from.
+
+
+- `ConfigNode` replaces `ConfigRoot` as the name of the method facade, and any dataclass in a config tree may subclass it rather than the root alone. Each method is scoped to the node it is called on, so a nested node builds, exports, fingerprints, and writes its own subtree, and issue paths from a subtree load are relative to that node. Attaching the base to a section changes its method surface alone: the engine reaches a nested section through the same generic recursion either way, so an enclosing load produces identical values, exported data, digests, and issue paths. Update imports and base classes from `ConfigRoot` to `ConfigNode`.
+- **Breaking.** Config dataclasses are unhashable. From its first schema processing a class carries `__hash__ = None`, so `hash(config)`, a config as a mapping key, and a config in a set each raise `TypeError`; `config_hash(config)` is the stable value-identity operation. This covers frozen configs, where Python otherwise generates a field-tuple hash that disagrees with canonical equality and raises on array fields. A `ConfigNode` subclass holds the same contract from class creation through a `__hash__` that raises `TypeError: unhashable type: 'RunConfig'; use config_hash(config) for value identity`. Replace `hash(config)` and set or mapping membership with `config_hash(config)`.
+- **Breaking.** A `set` or `frozenset` element annotation is admitted at schema preflight when the plain form a file carries rebuilds hashable under it: a scalar, or a `tuple` / `frozenset` whose own arguments recursively satisfy that same rule. `set[str]`, `set[Color]`, `set[tuple[str, int]]`, `set[frozenset[str]]`, and deeper shapes such as `set[tuple[tuple[int, str], frozenset[int]]]` all qualify. An `Enum` qualifies when it leaves hashing to the implementation it inherits, so one that binds `__hash__` itself is settled at preflight rather than while a set is built. Anything else is reported naming the annotation as written, with a scalar element, a tuple of scalars, or a list as the remedy: a bare `set`, an argument-free `set[()]`, `set[list[int]]`, and an array element among them. Deciding this from the annotation settles a saved config's ability to rebuild its own set, and it leaves the authored value untouched. Hold anything else in a list.
+- **Breaking.** Set annotations whose elements carry a config section, whether directly, through a union, or inside an immutable `tuple` / `frozenset` shape, are rejected at schema preflight, naming the annotation as written and pointing at a list or tuple for the collection plus `config_hash(section)` as the value-identity key. Sets of hashable values are unaffected. Rewrite `frozenset[Section]` as `list[Section]` or `tuple[Section, ...]`.
+- **Breaking.** Authored defaults are validated rather than trusted. A default has to already carry the runtime type its annotation names and to have a plain serializable form, so `output_dir: Path = "runs"` is reported as an authoring error rather than promoted to `Path("runs")`, as are a list default for a tuple field, an integral float for an `int` field, a mapping for a section, and a value under `Any` with no plain form. A direct `field(default=...)` is checked during schema preflight, whether or not the input supplies the field, so a wrong default surfaces even where it is always overridden. A `default_factory` runs once at the build that selects it; its one product is validated and passed on unchanged, and a factory that raises reports as `items: default_factory raised ValueError: <message>`. Write defaults in the annotated type: `Path("runs")`, `("a", "b")`, `Optimizer(lr=1e-3)`. The annotated type is required exactly, so a subclass instance for a base-class annotation and a `MappingProxyType` for a `dict[str, int]` annotation are both reported: each exports a shape its own annotation cannot reload.
+- A container annotation whose type arguments depart from the form the engine builds from is reported at schema preflight naming the annotation as written: a sequence or set carries one element type, a mapping carries a key and a value type, and `...` marks the variadic form of `tuple[T, ...]` alone. So `set[int, str]`, `list[int, str]`, `dict[str, int, int]`, `set[...]`, `tuple[...]`, and `tuple[int, ..., str]` each report rather than reaching construction, where only the leading arguments were read.
+- The type-boundary message names the supported annotation categories and the `init=False` remedy: `unsupported field type Decimal; choose a supported annotation (bool, int, float, str, Path, date/time, Enum/Literal, dataclass, container/union, array/tensor, or ConfigValue/ConfigScalar for plain data) and derive other runtime values in an init=False field`. One builder produces it, so schema preflight and construction word the boundary identically.
+- A class named as a field type that declares its own annotations without being a dataclass reports the decorator remedy at that field's path, `server: Forgot is not a dataclass, so it carries no config schema. Declare it with @dataclass.`, the same message an entry class of that shape reports. It reaches the field through a section, a container, a union, or a mapping value alike. A `TypedDict`, a `NamedTuple`, and a class with no annotations of its own stay on the type-boundary message.
+- Documentation offers two routes through one set of pages. Essentials (getting started, arrays and tensors, files and run identity, recipes) is the task route, and getting started carries everything needed to build a real config: choosing an annotation, sections and required leaves, writing defaults and factories, fixed tuples and array fields, a discriminated union, computed fields and `__validate__`, reading an error, and saving a resolved run. Exact reference (schema design, types, validation, equality, API) is the contract route, with each page leading on what an ordinary reader needs and closing with the edge cases. Each route stands on its own.
+
+
+- PyYAML (`>=6.0`) is now a core runtime dependency, so YAML file IO (`load_yaml`, `save_yaml`, `dumps_yaml`, and the matching `ConfigNode` methods) and extension dispatch work from the base install. The three YAML helpers are importable from `confingo.functional` and resolve at import time. The `yaml` optional extra is removed; `pip install confingo` now carries YAML support.
+- `to_dict` collects every serialization problem in one pass, each tagged with its dotted path, matching the collect-all model `from_dict` already follows.
+- Dataclass sections instantiate implicitly. A dataclass-typed field with no default builds from an empty mapping when the input omits it, recursively through nested sections, so a required value inside an omitted section is reported at its nested dotted path (`optimizer.name: missing required value`). Every other undefaulted field stays required when absent (scalars, unions, open data, and containers), keeping a forgotten container distinct from an intentionally empty one authored as `field(default_factory=list)`. A self-referential section terminates with a missing-value issue at the point of recursion. Explicit defaults and `default_factory` values take precedence and are used as authored.
+- Internal restructure of the engine: the marshal / unmarshal core is split into focused modules (`_errors`, `_schema`, `_core`, `_serialize`), the NumPy and PyTorch array paths share one validation and indexed issue-reporting kernel, scalar coercion routes through a shared ISO temporal parser, and equality and hashing ownership resolves through one method-contract helper. Every docstring follows the project's Google style. The free functions keep their names, signatures, and behavior across the split.
+
+
+- **Breaking.** A `set` or `frozenset` element names one type. A union puts two readers behind one plain form, and a load hands that form to the first member accepting it, so `set[str | Path]` writes `"a"` for both `"a"` and `Path("a")` and rebuilds one element where the file carried two. `T | None` is the exception, and the only one, because `null` is a plain form no other reader accepts. The rule reaches into the `tuple` and `frozenset` positions an element can nest, so `set[tuple[int, str | Path]]` is reported while `set[tuple[int, str | None]]` is admitted. Rewrite `set[int | str]` as the one type the elements carry, `set[ConfigScalar]` when they are genuinely mixed plain scalars, or hold the values in a list. Every other position in a schema still takes a union, unchanged.
+
+- `config_hash(length=...)` takes an `int` from 1 to 64 and reports anything else, naming the range. The digest names a run directory, so a length other than the one asked for named a different directory than the caller intended; `length=0` returned an empty string and `length=-1` returned 63 characters.
+- A fixed-arity `tuple[X, Y]` declines a `set` or `frozenset`. Each position carries its own meaning and a set expresses no order, so the positions were filled from an order that varied from run to run. A variadic `tuple[T, ...]` and every other sequence annotation still accept one, and the ordering caveat is documented.
+- The three per-class results live on the class each one describes, so their lifetime is that class's own and a class defined in a notebook cell, a schema factory, or a plugin registry is collected once nothing else refers to it, a self-referential schema included. Each result is tagged with the class it was computed for, and the whole MRO is read before one is written, so a name a schema binds for itself anywhere along that MRO is left as the schema's and read back as the value it was declared with, a binding holding `None` and a slot descriptor a base declares included.
+- The ownership install holds a lock across both of its steps, so a class is never observed carrying canonical equality while still hashing. The GIL makes each bytecode atomic and makes no promise about a sequence of them.
+- A saved config reaches the disk as the whole file it was written as: the contents are flushed before the rename, so a file a reader opens is the whole file it was written as. The directory entry is flushed after the rename where the platform offers it, which is what carries a completed save across a power loss; a platform that declines the flush has still written the file, so the save succeeds and its durability is the filesystem's own. The mode of an existing target is read once rather than twice, so a concurrent unlink no longer turns a successful save into a `FileNotFoundError`.
+- The array element cap names where the data belongs: store it in its own file and configure that file's path.
+
+### Fixed
+
+- Equality answers a pair holding an array too deep to write the same way whichever order it arrives in. The guard projected the left operand alone, so `config_equal(shallow, deep)` returned a verdict about a value `to_dict` declines while `config_equal(deep, shallow)` reported it.
+- NumPy 2.5 changed `npt.NDArray` from a pre-substituted generic alias into a PEP 695 `TypeAliasType`, which made every `npt.NDArray[...]` annotation unrecognized: dtype claims, finiteness checks, the element cap, and array round trips all silently stopped applying. The annotation is resolved through the alias again, matched by identity against a loaded `numpy.typing` so an unrelated lazy alias stays unevaluated.
+- A mapping key that is not a `str` is reported by its type rather than by its text, so a key whose `__str__` raises is named instead of run.
+- The numpy `tolist()` call is wrapped the way the torch conversion already was, so an `ndarray` subclass whose `tolist` raises is reported at the field's path rather than escaping `to_dict`.
+
+
+
+- Classifying a class named as a field type reads raw class namespaces along the MRO, so naming a class as an annotation is the only thing that happens to it. Preflight reads a metaclass `__getattr__` and a side-effecting annotation expression as inert data, and everything such a class reports arrives through the issue collector.
+- A failed multi-member union reports which branch came closest and why. The field carries a summary, `optimizer: expected AdamW | SGD; best match SGD failed with 1 issue`, followed by that one member's own issues at their own paths. The closest member is the one whose attempt collected the fewest issues, an equal count going to the first declared member, so two discriminator variants that each fail once on a typo report through the first. Selection follows declaration order and takes the first member that coerces cleanly, and `T | None` coerces straight through `T`.
+- A class states its annotations one of two ways, as source text under a module's postponed evaluation or as a lazily evaluated declaration, and the guards that read a declaration read both. The reserved `cfg` name on a node and the missing-`@dataclass` remedy are reported identically on every supported version, Python 3.14 included.
+- A reserved-name collision is reported at schema preflight as well as at class creation. Preflight reads the completed class, so a node built through `dataclasses.make_dataclass`, which receives its annotations once its creation has finished, is named by the same message as one written as a class statement.
+- The package readme names its documentation and examples by absolute URL, so the project page renders those links from the published artifact.
+
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
 
-- Optional YAML file IO behind the `yaml` extra (`pip install confingo[yaml]`):
-  `load_yaml`, `save_yaml` (atomic write), and `dumps_yaml`, plus matching
-  `ConfigRoot.load_yaml` / `save_yaml` / `dumps_yaml` methods. The helpers move
-  through the same JSON-compatible data model as the JSON loaders, so a config
-  round-trips across both formats. PyYAML is imported lazily on first use, so
-  importing confingo needs only the standard library.
-- Extension-dispatching file IO: `from_file` / `to_file` (and matching
-  `ConfigRoot.from_file` / `to_file` methods) select JSON or YAML from the path
-  extension (`.json`, `.yaml`, `.yml`), raising `ConfigError` when the extension
-  names no supported format.
-- `datetime`, `date`, and `time` fields: ISO 8601 strings and native
-  `datetime` / `date` / `time` objects load into the annotated type, and
-  `to_dict` renders them back as ISO 8601 strings.
+- Optional YAML file IO behind the `yaml` extra (`pip install confingo[yaml]`): `load_yaml`, `save_yaml` (atomic write), and `dumps_yaml`, plus matching `ConfigRoot.load_yaml` / `save_yaml` / `dumps_yaml` methods. The helpers move through the same JSON-compatible data model as the JSON loaders, so a config round-trips across both formats. PyYAML is imported lazily on first use, so importing confingo needs only the standard library.
+- Extension-dispatching file IO: `from_file` / `to_file` (and matching `ConfigRoot.from_file` / `to_file` methods) select JSON or YAML from the path extension (`.json`, `.yaml`, `.yml`), raising `ConfigError` when the extension names no supported format.
+- `datetime`, `date`, and `time` fields: ISO 8601 strings and native `datetime` / `date` / `time` objects load into the annotated type, and `to_dict` renders them back as ISO 8601 strings.
 
 ### Changed
 
-- The supported field-type set is an explicit boundary, validated against the
-  schema itself so an unsupported annotation is reported even when the field is
-  omitted. Enforced: allowed leaf and container types only, `str` mapping keys
-  (including bare `dict`), primitive `Enum` / `Literal` values, finite floats,
-  constructor-settable (`init=True`) fields, and nested dataclasses recursively.
-  `to_dict` raises a `ConfigError` for a value it cannot render as plain data.
-- `config_hash` orders set elements by their canonical JSON text, so the digest is
-  stable across processes for mixed-type sets. Documented as stable across
-  processes and independent of mapping key order and set iteration order.
-- File loaders report a `ConfigError` (rather than a raw exception) for invalid
-  UTF-8, non-finite floats, unhashable set elements, and out-of-range numbers.
-  Atomic writes use a uniquely named temporary that preserves the destination's
-  file mode.
+- The supported field-type set is an explicit boundary, validated against the schema itself so an unsupported annotation is reported even when the field is omitted. Enforced: allowed leaf and container types only, `str` mapping keys (including bare `dict`), primitive `Enum` / `Literal` values, finite floats, constructor-settable (`init=True`) fields, and nested dataclasses recursively. `to_dict` raises a `ConfigError` for a value it cannot render as plain data.
+- `config_hash` orders set elements by their canonical JSON text, so the digest is stable across processes for mixed-type sets. Documented as stable across processes and independent of mapping key order and set iteration order.
+- File loaders report a `ConfigError` (rather than a raw exception) for invalid UTF-8, non-finite floats, unhashable set elements, and out-of-range numbers. Atomic writes use a uniquely named temporary that preserves the destination's file mode.
 
 ## [0.1.0] - 2026-07-22
 
 ### Added
 
-- Marshal / unmarshal core over dataclasses: `from_dict` builds a validated
-  dataclass tree from a nested mapping, and `to_dict` renders a config object
-  back to plain data in field-declaration order. The pair round-trips:
-  `from_dict(cls, to_dict(config)) == config`.
-- Type coercion toward each field's annotation: enums by value or name, `Literal`
-  membership, unions, fixed-length and variadic tuples, sets and frozensets,
-  `dict[str, X]`, `Path`, and integral-float-to-int, with `bool` held off `int`
-  and `float` fields.
-- Collect-all validation: one pass walks the whole tree and reports every issue,
-  each tagged with a dotted path such as `training.trainer.lr`, surfaced through
-  `ConfigError` and `ConfigIssue`. Custom `__validate__` messages and a
-  `ValueError` or `TypeError` from `__post_init__` fold into the same report.
+- Marshal / unmarshal core over dataclasses: `from_dict` builds a validated dataclass tree from a nested mapping, and `to_dict` renders a config object back to plain data in field-declaration order. The pair round-trips: `from_dict(cls, to_dict(config)) == config`.
+- Type coercion toward each field's annotation: enums by value or name, `Literal` membership, unions, fixed-length and variadic tuples, sets and frozensets, `dict[str, X]`, `Path`, and integral-float-to-int, with `bool` held off `int` and `float` fields.
+- Collect-all validation: one pass walks the whole tree and reports every issue, each tagged with a dotted path such as `training.trainer.lr`, surfaced through `ConfigError` and `ConfigIssue`. Custom `__validate__` messages and a `ValueError` or `TypeError` from `__post_init__` fold into the same report.
 - JSON file IO: `load_json`, `save_json` (atomic write), and `dumps_json`.
 - `config_hash` for a stable SHA-256 fingerprint over the canonical JSON form.
-- `ConfigRoot` mixin exposing the same operations as methods on a root config
-  dataclass (`Config.load_json(path)`, `config.save_json(path)`).
-- `py.typed` marker; the package ships with inline type annotations and runs on
-  the Python standard library alone, targeting Python 3.10 and newer.
+- `ConfigRoot` mixin exposing the same operations as methods on a root config dataclass (`Config.load_json(path)`, `config.save_json(path)`).
+- `py.typed` marker; the package ships with inline type annotations and runs on the Python standard library alone, targeting Python 3.10 and newer.
 
+[0.4.0]: https://github.com/belfner/confingo/releases/tag/v0.4.0
 [0.2.0]: https://github.com/belfner/confingo/releases/tag/v0.2.0
 [0.1.0]: https://github.com/belfner/confingo/releases/tag/v0.1.0

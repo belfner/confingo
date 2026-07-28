@@ -39,6 +39,7 @@ from typing import (
 )
 
 import confingo
+import confingo.functional
 
 
 if TYPE_CHECKING:
@@ -215,7 +216,7 @@ def correctness_gate(objs: list[ExperimentConfig]) -> None:
     """
     failures = 0
     for obj in objs:
-        if confingo.from_dict(ExperimentConfig, confingo.to_dict(obj)) != obj:
+        if confingo.functional.from_dict(ExperimentConfig, confingo.functional.to_dict(obj)) != obj:
             failures += 1
     if failures > 0:
         raise AssertionError(f"round-trip invariant failed for {failures} configs")
@@ -239,27 +240,27 @@ def build_ops(
 
     def op_from_dict() -> None:
         for c in configs:
-            confingo.from_dict(ExperimentConfig, c)
+            confingo.functional.from_dict(ExperimentConfig, c)
 
     def op_to_dict() -> None:
         for o in objs:
-            confingo.to_dict(o)
+            confingo.functional.to_dict(o)
 
     def op_round_trip() -> None:
         for o in objs:
-            confingo.from_dict(ExperimentConfig, confingo.to_dict(o))
+            confingo.functional.from_dict(ExperimentConfig, confingo.functional.to_dict(o))
 
     def op_config_hash() -> None:
         for o in objs:
-            confingo.config_hash(o)
+            confingo.functional.config_hash(o)
 
     def op_dumps_json() -> None:
         for o in objs:
-            confingo.dumps_json(o)
+            confingo.functional.dumps_json(o)
 
     def op_dumps_yaml() -> None:
         for o in objs:
-            confingo.dumps_yaml(o)
+            confingo.functional.dumps_yaml(o)
 
     return {
         "from_dict": op_from_dict,
@@ -358,7 +359,7 @@ def main() -> None:
         f"(~{nested / suite_size:.0f} per config)"
     )
 
-    objs = [confingo.from_dict(ExperimentConfig, c) for c in configs]
+    objs = [confingo.functional.from_dict(ExperimentConfig, c) for c in configs]
     correctness_gate(objs)
 
     ops = build_ops(configs, objs)

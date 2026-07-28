@@ -1,7 +1,7 @@
 """Base class exposing the marshal / unmarshal helpers under one accessor.
 
 A config dataclass that subclasses ``ConfigNode`` gains the free-function
-helpers under ``cfg``: the ``from_*`` / ``load_*`` builders and ``validate``
+helpers under ``cfg``: the ``from_*`` / ``load_*`` builders and ``validate_schema``
 answer on the class and on a value alike, and the ``to_*`` / ``dumps_*`` /
 ``save_*`` / ``hash`` operations read the value they are called on, each
 delegating to the matching free function. Any dataclass in a config tree may
@@ -25,13 +25,12 @@ from dataclasses import (
 from typing import (
     TYPE_CHECKING,
     Any,
-    Generic,
-    TypeVar,
+    NoReturn,
     overload,
 )
 
 from confingo._core import from_dict as _from_dict
-from confingo._core import validate as _validate
+from confingo._core import validate_schema as _validate_schema
 from confingo._equality import (
     _canonical_eq,
     _custom_eq_owner,
@@ -42,11 +41,13 @@ from confingo._equality import (
 )
 from confingo._errors import ConfigError as _ConfigError
 from confingo._errors import ConfigIssue as _ConfigIssue
+from confingo._errors import class_label as _class_label
 from confingo._file import from_file as _from_file
 from confingo._file import to_file as _to_file
 from confingo._json import dumps_json as _dumps_json
 from confingo._json import load_json as _load_json
 from confingo._json import save_json as _save_json
+from confingo._schema import own_annotations as _own_annotations
 from confingo._serialize import config_hash as _config_hash
 from confingo._serialize import to_dict as _to_dict
 from confingo._yaml import dumps_yaml as _dumps_yaml
@@ -99,7 +100,7 @@ def _facade_collisions(cls: type[Any]) -> list[str]:
     for name in _FACADE_NAMES:
         source = _collision_source(cls, name)
         if source is not None:
-            messages.append(facade_collision_message(cls.__name__, name, source))
+            messages.append(facade_collision_message(_class_label(cls), name, source))
     return messages
 
 
@@ -121,20 +122,19 @@ def _collision_source(cls: type[Any], name: str) -> str | None:
     Returns:
       str | None: A phrase completing "``Class.name`` ...", else None.
     """
-    if name in cls.__dict__.get("__annotations__", {}):
+    if name in _own_annotations(cls):
         return "is declared as a field"
     if name in cls.__dict__:
         return "is bound in the class body"
     field_owner = _inherited_field_owner(cls, name)
     if field_owner is not None:
-        return f"is inherited as a field from {field_owner.__name__}"
+        return f"is inherited as a field from {_class_label(field_owner)}"
     binding_owner = _preceding_binding_owner(cls, name)
     if binding_owner is not None:
-        return f"is supplied by base {binding_owner.__name__}"
-    if name in _FACADE_CLASSMETHOD_NAMES:
-        metaclass_owner = _metaclass_shadow_owner(cls, name)
-        if metaclass_owner is not None:
-            return f"is supplied as a data descriptor by metaclass {metaclass_owner.__name__}"
+        return f"is supplied by base {_class_label(binding_owner)}"
+    metaclass_owner = _metaclass_shadow_owner(cls, name)
+    if metaclass_owner is not None:
+        return f"is supplied as a data descriptor by metaclass {_class_label(metaclass_owner)}"
     return None
 
 
@@ -258,38 +258,35 @@ def _inherited_field_owner(cls: type[Any], name: str) -> type[Any] | None:
     )
 
 
-_NodeT = TypeVar("_NodeT")
-
-
-class _ConfigFacade(Generic[_NodeT]):
+class _ConfigFacade[NodeT]:
     """The operations a config class answers, bound to the class it was reached through.
 
-    Reached as ``Config.cfg``. The builders and ``validate`` read the class, so
+    Reached as ``Config.cfg``. The builders and ``validate_schema`` read the class, so
     a class is all they need. ``_ValueFacade`` extends this with the operations
     that read a config object, and is what instance access hands out.
     """
 
     __slots__ = ("_instance", "_owner")
 
-    def __init__(self, owner: type[_NodeT], instance: _NodeT | None) -> None:
+    def __init__(self, owner: type[NodeT], instance: NodeT | None) -> None:
         """Bind the facade to one class and, when reached from a value, that value.
 
         Args:
-          owner (type[_NodeT]): The config class the facade was reached through.
-          instance (_NodeT | None): The config object it was reached through, or
+          owner (type[NodeT]): The config class the facade was reached through.
+          instance (NodeT | None): The config object it was reached through, or
             None for class access.
         """
         self._owner = owner
         self._instance = instance
 
-    def _value(self, operation: str) -> _NodeT:
+    def _value(self, operation: str) -> NodeT:
         """Return the config object this facade is bound to.
 
         Args:
           operation (str): The operation being called, named in the message.
 
         Returns:
-          _NodeT: The bound config object.
+          NodeT: The bound config object.
 
         Raises:
           TypeError: When the facade was reached through the class, which carries
@@ -297,12 +294,12 @@ class _ConfigFacade(Generic[_NodeT]):
         """
         if self._instance is None:
             raise TypeError(
-                f"{self._owner.__name__}.cfg.{operation}() reads a config object; "
+                f"{_class_label(self._owner)}.cfg.{operation}() reads a config object; "
                 f"call it on an instance, as config.cfg.{operation}()"
             )
         return self._instance
 
-    def from_dict(self, data: Mapping[str, Any], *, context: str = "config") -> _NodeT:
+    def from_dict(self, data: Mapping[str, Any], *, context: str = "config") -> NodeT:
         """Build an instance from a nested mapping, reporting every problem at once.
 
         Issue paths are relative to this node, so a leaf that reports as
@@ -316,7 +313,7 @@ class _ConfigFacade(Generic[_NodeT]):
             error summary.
 
         Returns:
-          _NodeT: The constructed config object, typed as the class the facade
+          NodeT: The constructed config object, typed as the class the facade
             was reached through.
 
         Raises:
@@ -325,14 +322,14 @@ class _ConfigFacade(Generic[_NodeT]):
         """
         return _from_dict(self._owner, data, context=context)
 
-    def load_json(self, path: str | Path) -> _NodeT:
+    def load_json(self, path: str | Path) -> NodeT:
         """Load a JSON file into an instance.
 
         Args:
           path (str | Path): Path to the JSON file.
 
         Returns:
-          _NodeT: The constructed config object, typed as the class the facade
+          NodeT: The constructed config object, typed as the class the facade
             was reached through.
 
         Raises:
@@ -341,14 +338,14 @@ class _ConfigFacade(Generic[_NodeT]):
         """
         return _load_json(self._owner, path)
 
-    def load_yaml(self, path: str | Path) -> _NodeT:
+    def load_yaml(self, path: str | Path) -> NodeT:
         """Load a YAML file into an instance.
 
         Args:
           path (str | Path): Path to the YAML file.
 
         Returns:
-          _NodeT: The constructed config object, typed as the class the facade
+          NodeT: The constructed config object, typed as the class the facade
             was reached through.
 
         Raises:
@@ -357,7 +354,7 @@ class _ConfigFacade(Generic[_NodeT]):
         """
         return _load_yaml(self._owner, path)
 
-    def from_file(self, path: str | Path) -> _NodeT:
+    def from_file(self, path: str | Path) -> NodeT:
         """Load a config file into an instance, choosing the reader by extension.
 
         A ``.json`` path reads JSON; a ``.yaml`` or ``.yml`` path reads YAML.
@@ -366,7 +363,7 @@ class _ConfigFacade(Generic[_NodeT]):
           path (str | Path): Path to the config file.
 
         Returns:
-          _NodeT: The constructed config object, typed as the class the facade
+          NodeT: The constructed config object, typed as the class the facade
             was reached through.
 
         Raises:
@@ -375,7 +372,7 @@ class _ConfigFacade(Generic[_NodeT]):
         """
         return _from_file(self._owner, path)
 
-    def validate(self, *, context: str = "config schema") -> None:
+    def validate_schema(self, *, context: str = "config schema") -> None:
         """Check this class's schema without building anything from it.
 
         Walks the whole tree the class declares, recursing into nested sections
@@ -390,10 +387,10 @@ class _ConfigFacade(Generic[_NodeT]):
           ConfigError: When the schema carries any issue; the exception lists
             every issue found in the whole tree.
         """
-        _validate(self._owner, context=context)
+        _validate_schema(self._owner, context=context)
 
 
-class _ValueFacade(_ConfigFacade[_NodeT]):
+class _ValueFacade[NodeT](_ConfigFacade[NodeT]):
     """Every config operation, bound to the config object it was reached through.
 
     Reached as ``config.cfg``. It carries the class operations of
@@ -510,10 +507,10 @@ class _CfgAccessor:
     """
 
     @overload
-    def __get__(self, instance: None, owner: type[_NodeT]) -> _ConfigFacade[_NodeT]: ...
+    def __get__[NodeT](self, instance: None, owner: type[NodeT]) -> _ConfigFacade[NodeT]: ...
 
     @overload
-    def __get__(self, instance: _NodeT, owner: type[_NodeT] | None = None) -> _ValueFacade[_NodeT]: ...
+    def __get__[NodeT](self, instance: NodeT, owner: type[NodeT] | None = None) -> _ValueFacade[NodeT]: ...
 
     def __get__(self, instance: Any, owner: type[Any] | None = None) -> _ConfigFacade[Any]:
         """Bind the facade to whichever of the class and the instance was used.
@@ -535,6 +532,40 @@ class _CfgAccessor:
             owner = type(instance)
         return _ValueFacade(owner, instance)
 
+    def __set__(self, instance: Any, value: Any) -> NoReturn:
+        """Reject assigning over the accessor, naming what the name carries.
+
+        Defining this alongside ``__get__`` makes the accessor a data descriptor,
+        which is what puts it ahead of an instance attribute of the same name. An
+        instance-dict entry would otherwise win, and the node would silently stop
+        answering the surface every other guard on this name exists to protect.
+
+        Args:
+          instance (Any): The config object being assigned to.
+          value (Any): The value offered.
+
+        Raises:
+          AttributeError: Always, naming the accessor and the operations it carries.
+        """
+        raise AttributeError(
+            f"cfg carries {_class_label(type(instance))}'s config operations and cannot be assigned; "
+            f"call one of them, such as config.cfg.to_dict(), or name a field something other than cfg"
+        )
+
+    def __delete__(self, instance: Any) -> NoReturn:
+        """Reject deleting the accessor, naming what the name carries.
+
+        Args:
+          instance (Any): The config object the deletion was aimed at.
+
+        Raises:
+          AttributeError: Always, naming the accessor and the operations it carries.
+        """
+        raise AttributeError(
+            f"cfg carries {_class_label(type(instance))}'s config operations and cannot be deleted; "
+            f"call one of them, such as config.cfg.to_dict()"
+        )
+
 
 class ConfigNode:
     """Mixin adding marshal / unmarshal methods to a config dataclass.
@@ -549,7 +580,7 @@ class ConfigNode:
     field, class-body binding, or base-supplied member of that name is rejected
     at class creation, since it would resolve ahead of the accessor and leave the
     node's advertised surface unusable. Every other name a config class might
-    want, ``validate`` and ``to_dict`` among them, stays free.
+    want, ``validate_schema`` and ``to_dict`` among them, stays free.
 
     Subclassing also installs canonical equality from class-creation time:
     ``__init_subclass__`` plants the canonical ``__eq__`` and a raising
@@ -591,10 +622,10 @@ class ConfigNode:
         # class's own body and one it would otherwise mask on a base.
         eq_owner = _custom_eq_owner(cls)
         if eq_owner is not None:
-            messages.append(custom_eq_message(eq_owner.__name__))
+            messages.append(custom_eq_message(_class_label(eq_owner)))
         hash_owner = _custom_hash_owner(cls)
         if hash_owner is not None:
-            messages.append(custom_hash_message(hash_owner.__name__))
+            messages.append(custom_hash_message(_class_label(hash_owner)))
 
         if len(messages) > 0:
             raise _ConfigError(
@@ -616,31 +647,15 @@ class ConfigNode:
     """
 
 
-_FACADE_METHODS: dict[str, Any] = {
-    name: getattr(value, "__func__", value) for name, value in vars(ConfigNode).items() if not name.startswith("_")
-}
-"""Each reserved method name mapped to the function a subclass must still reach.
+_FACADE_NAMES: tuple[str, ...] = tuple(sorted(name for name in vars(ConfigNode) if not name.startswith("_")))
+"""The names a ``ConfigNode`` subclass reserves, in report order.
 
-Derived from the class so the reserved surface cannot drift from the methods it
-protects. Classmethods are unwrapped to their underlying function, which is what
-attribute access on a subclass resolves to.
-"""
-
-_FACADE_NAMES: tuple[str, ...] = tuple(sorted(_FACADE_METHODS))
-"""The method names a ``ConfigNode`` subclass reserves, in report order.
-
-Derived from the class so the reserved surface cannot drift from the methods it
+Derived from the class so the reserved surface cannot drift from what it
 protects. A field, attribute, or base-supplied member of the same name would
-resolve ahead of the method and leave the node's advertised surface unusable, so
-each is rejected at class creation.
-"""
-
-_FACADE_CLASSMETHOD_NAMES: frozenset[str] = frozenset(_FACADE_NAMES)
-"""The subset of the facade reached through the class rather than an instance.
-
-The accessor answers on the class as well as on a value, so it is exposed to
-metaclass data-descriptor precedence, which instance attribute lookup would
-otherwise leave out by consulting the instance's type and its MRO alone.
+resolve ahead of the facade and leave the node's advertised surface unusable, so
+each is rejected at class creation. Each name answers on the class as well as on
+a value, which also exposes it to metaclass data-descriptor precedence, so a
+metaclass binding of the same name is rejected alongside them.
 """
 
 
@@ -665,7 +680,7 @@ def _missing_dataclass_message(config_cls: type[Any]) -> str:
     Returns:
       str: The rejection message naming the class and the required remedy.
     """
-    name = config_cls.__name__
+    name = _class_label(config_cls)
     if is_dataclass(config_cls):
         return (
             f"{name} declares annotations and subclasses ConfigNode, and its declaration did not apply "

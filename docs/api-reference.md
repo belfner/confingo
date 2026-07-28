@@ -7,26 +7,36 @@ Compact reference for the public surface. Signatures come first and are exact; t
 
 ## Import surface
 
+The package root carries the names a schema is written with. `confingo.functional` carries the operations run over one.
+
 ```python
 from confingo import (
     ConfigError,
     ConfigIssue,
     ConfigNode,
+    ConfigScalar,
+    ConfigValue,
+)
+from confingo.functional import (
     config_equal,
     config_hash,
     dumps_json,
+    dumps_yaml,
     from_dict,
     from_file,
     load_json,
+    load_yaml,
     save_json,
+    save_yaml,
     to_dict,
     to_file,
-    validate,
+    validate_schema,
 )
-from confingo import dumps_yaml, load_yaml, save_yaml
 ```
 
 `confingo.__version__` carries the package version.
+
+`ConfigValue` and `ConfigScalar` are the annotations for a field holding open-ended plain data; see [open data](types-and-coercion.md#open-data).
 
 
 ## Construction and conversion
@@ -37,9 +47,11 @@ Learn more: [Schema design](schema-design.md), [Types and coercion](types-and-co
 
 Builds `config_cls` (a dataclass type) from a mapping, coercing each value toward its annotation and collecting every issue before raising `ConfigError`. `context` names the source in error messages.
 
-### `validate(config_cls, *, context="config schema") -> None`
+### `validate_schema(config_cls, *, context="config schema") -> None`
 
-Checks a dataclass type's schema without reading any config data. Walks the whole declared tree, recursing into nested sections and into sections held in lists, tuples, sets, and dict values, and raises `ConfigError` listing every unsupported annotation and every authored default that does not already carry its annotation's runtime type. No `default_factory` runs. This is the same check `from_dict` performs before it builds, so a class that validates here raises no schema issue at load time.
+Checks a dataclass type's schema, reading the declaration alone. Walks the whole declared tree, recursing into nested sections and into sections held in lists, tuples, sets, and dict values, and raises `ConfigError` listing every unsupported annotation and every authored default that does not already carry its annotation's runtime type. A `default_factory` is left to the one build that selects it. This is the same check `from_dict` performs before it builds, so a class that validates here loads cleanly on its schema.
+
+Reaching a class this way installs [canonical equality](#class-contracts) on it and withdraws its hashing, which is confingo's ownership contract and is what every other operation installs too. The install is permanent for the life of the process, so point this at classes you own: a `@dataclass(frozen=True)` that was usable as a mapping key stops being one, and `config_hash(value)` carries value identity in its place.
 
 ### `to_dict(value) -> Any`
 
@@ -47,7 +59,9 @@ Converts a config object to plain serializable data in field-declaration order. 
 
 ### `config_hash(config, *, length=12) -> str`
 
-SHA-256 fingerprint of the config's canonical JSON over its hashing fields (`init=True`, `compare=True`, effective hash enabled), so a `compare=False` or `hash=False` field is carried by `to_dict` while the digest covers the hashing fields: the digest's leading `length` hex characters (useful range 1-64; the full digest is 64). Stable across processes and hash seeds. Learn more: [stable run identity](files-and-identity.md#stable-run-identity).
+SHA-256 fingerprint of the config's canonical JSON over its hashing fields (`init=True`, `compare=True`, effective hash enabled), so a `compare=False` or `hash=False` field is carried by `to_dict` while the digest covers the hashing fields: the digest's leading `length` hex characters. `length` is an `int` from 1 to 64, and a value outside that range raises `ConfigError` naming it, since the digest names a run directory and a length other than the one asked for would name a different directory. Stable across processes and hash seeds. Learn more: [stable run identity](files-and-identity.md#stable-run-identity).
+
+This is the value-identity operation, so reaching a class here installs [canonical equality](#class-contracts) on it and withdraws its hashing, exactly as `from_dict` and `validate_schema` do. That is what makes equal configs fingerprint equally: both the digest and canonical equality read one plain form, where a generated `__eq__` reads Python `==` and holds `0.0` equal to `-0.0` and `True` equal to `1` where the canonical JSON keeps them apart. `to_dict` and the dump and save functions render the value they are given and install nothing.
 
 
 ## JSON functions
@@ -101,7 +115,7 @@ Frozen dataclass; one problem at one dotted path. `str(issue)` renders `path: me
 
 The receiver defines the operation scope: a method called on a nested node builds, exports, fingerprints, or writes that node's own subtree, and issue paths are relative to it.
 
-The receiver also decides which operations are offered. `Config.cfg` carries the builders and `validate`, which read the class. `config.cfg` carries those plus the operations that render, write, or fingerprint a value. A type checker sees the same split, so an operation that reads a config object is offered where a config object exists; reached from the class at run time it raises a `TypeError` naming the instance form.
+The receiver also decides which operations are offered. `Config.cfg` carries the builders and `validate_schema`, which read the class. `config.cfg` carries those plus the operations that render, write, or fingerprint a value. A type checker sees the same split, so an operation that reads a config object is offered where a config object exists; reached from the class at run time it raises a `TypeError` naming the instance form.
 
 Subclassing reserves one name, `cfg`, which carries the operations below. A node declares nothing under it: an annotation or class-body binding named `cfg` is rejected at class creation with a `config schema` error, as is one supplied by a base ahead of `ConfigNode` in the MRO, inherited as a field, or supplied as a metaclass data descriptor. `cfg` carries no restriction on a plain dataclass.
 
@@ -111,7 +125,7 @@ Subclassing reserves one name, `cfg`, which carries the operations below. A node
 | `Config.cfg.load_json(path)` | `load_json(Config, path)` |
 | `Config.cfg.load_yaml(path)` | `load_yaml(Config, path)` |
 | `Config.cfg.from_file(path)` | `from_file(Config, path)` |
-| `Config.cfg.validate(*, context="config schema")` | `validate(Config, *, context="config schema")` |
+| `Config.cfg.validate_schema(*, context="config schema")` | `validate_schema(Config, *, context="config schema")` |
 | `config.cfg.to_dict()` | `to_dict(config)` |
 | `config.cfg.dumps_json(*, indent=2)` | `dumps_json(config, *, indent=2)` |
 | `config.cfg.save_json(path, *, indent=2)` | `save_json(config, path, *, indent=2)` |
@@ -123,7 +137,7 @@ Subclassing reserves one name, `cfg`, which carries the operations below. A node
 
 ## Choosing a surface
 
-The method style suits a root class that owns its schema (`TrainingConfig.cfg.load_json(path)` reads naturally at call sites). The free functions suit plain dataclass roots and library code that receives the config class as a parameter. Both surfaces are equivalent and stay in sync by construction.
+The method style suits a root class that owns its schema (`TrainingConfig.cfg.load_json(path)` reads naturally at call sites). The `confingo.functional` free functions suit plain dataclass roots and library code that receives the config class as a parameter. Both surfaces are equivalent and stay in sync by construction.
 
 A helper written over any node class takes the class itself, `def build(config_cls: type[NodeT]) -> NodeT`, and reaches the builder through `config_cls.cfg.from_dict(...)` or `from_dict(config_cls, ...)`. Both routes carry the caller's own class into the return type, so the helper answers with the subclass it was handed. Helpers written over a node value keep the value operations, whose results (`str` from `hash`, `Path` from `save_json`, plain data from `to_dict`) stand on their own.
 
@@ -132,7 +146,7 @@ A helper written over any node class takes the class itself, `def build(config_c
 
 What confingo installs on a schema class, and what it rejects. Learn more: [canonical equality](schema-design.md#canonical-equality).
 
-Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations. A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. Config objects are unhashable and `config_hash` carries value identity: a class carries `__hash__ = None` from its first schema processing, and a `ConfigNode` subclass holds the same contract from class creation through a `__hash__` that raises `TypeError` naming `config_hash`. confingo owns equality and hashing. A class that hand-writes `__eq__` or `__hash__` is rejected: a `ConfigNode` subclass at class creation, including one that inherits a hand-written definition from a base, and a plain dataclass at first schema touch. A conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigNode` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported.
+Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations. A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. Config objects are unhashable and `config_hash` carries value identity: a class carries `__hash__ = None` from its first schema processing, and a `ConfigNode` subclass holds the same contract from class creation through a `__hash__` that raises `TypeError` naming `config_hash`. confingo owns equality and hashing. A class that hand-writes `__eq__` or `__hash__` is rejected: a `ConfigNode` subclass at class creation, including one that inherits a hand-written definition from a base, and a plain dataclass at first schema touch. A conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigNode` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported. Two further rules say what a schema class may be, both reported at preflight and both covered in [what a schema class may be](schema-design.md#what-a-schema-class-may-be): a section may not also be one of the kinds a walk dispatches on (`Mapping`, `Sequence`, `set`, `frozenset`, `Enum`, `Path`, `date`, `time`), and its constructor must accept every `init=True` field as a keyword while requiring nothing else, which is what the generated `__init__` does and what a required `InitVar` breaks.
 
 ### `config_equal(left, right) -> bool`
 

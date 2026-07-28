@@ -2,59 +2,39 @@
 
 Define settings once as typed dataclasses, then marshal them to plain data and
 unmarshal config files back into validated dataclass trees.
+
+The root carries the names a schema is written with: ``ConfigNode`` for a class
+that answers its own operations under ``cfg``, ``ConfigValue`` and
+``ConfigScalar`` for a field holding open-ended plain data, and ``ConfigError``
+with ``ConfigIssue`` for what a rejection carries. The operations run over a
+schema live in ``confingo.functional``::
+
+    from confingo import ConfigNode, ConfigValue
+    from confingo.functional import from_dict, to_dict
 """
 
 from __future__ import annotations
 
-from confingo._core import (
-    from_dict,
-    validate,
-)
-from confingo._equality import config_equal
 from confingo._errors import (
     ConfigError,
     ConfigIssue,
 )
-from confingo._file import (
-    from_file,
-    to_file,
-)
-from confingo._json import (
-    dumps_json,
-    load_json,
-    save_json,
-)
 from confingo._node import ConfigNode
-from confingo._serialize import (
-    config_hash,
-    to_dict,
-)
-from confingo._yaml import (
-    dumps_yaml,
-    load_yaml,
-    save_yaml,
+from confingo.typing import (
+    ConfigScalar,
+    ConfigValue,
 )
 
 
 # Kept in sync with the version declared in pyproject.toml.
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 __all__ = [
     "ConfigError",
     "ConfigIssue",
     "ConfigNode",
-    "config_equal",
-    "config_hash",
-    "dumps_json",
-    "dumps_yaml",
-    "from_dict",
-    "from_file",
-    "load_json",
-    "load_yaml",
-    "save_json",
-    "save_yaml",
-    "to_dict",
-    "to_file",
-    "validate",
+    "ConfigScalar",
+    "ConfigValue",
+    "__version__",
 ]

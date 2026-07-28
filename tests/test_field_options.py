@@ -24,6 +24,9 @@ import pytest
 from confingo import (
     ConfigError,
     ConfigNode,
+    ConfigValue,
+)
+from confingo.functional import (
     config_equal,
     config_hash,
     from_dict,
@@ -449,15 +452,17 @@ def test_compare_false_recurses_through_a_section_collection():
 
 @dataclass
 class HoldsAnyMapping:
-    mapping: Any = None
+    mapping: ConfigValue = None
 
 
 def test_compare_false_drops_through_the_serialized_comparison_fallback():
     # A dataclass reached inside a mapping with non-str keys compares by its
     # COMPARE-projection plain form rather than by structural recursion, and that
     # projection drops the compare=False field the EXPORT projection keeps.
-    left = HoldsAnyMapping(mapping={1: Section(a=1, note="p")})
-    right = HoldsAnyMapping(mapping={1: Section(a=1, note="q")})
+    # An int key and a section value both sit outside ConfigValue; the fallback
+    # under test is reached only by a value the annotation declines.
+    left = HoldsAnyMapping(mapping={1: Section(a=1, note="p")})  # pyrefly: ignore[bad-argument-type]
+    right = HoldsAnyMapping(mapping={1: Section(a=1, note="q")})  # pyrefly: ignore[bad-argument-type]
     assert config_equal(left, right)
     assert config_hash(left) == config_hash(right)
     assert to_dict(left) == {"mapping": {1: {"a": 1, "note": "p"}}}
@@ -503,7 +508,7 @@ def test_hash_false_recurses_into_sections():
 
 @dataclass
 class AnyBox:
-    x: Any
+    x: ConfigValue
 
 
 @pytest.mark.parametrize(

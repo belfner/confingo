@@ -1,6 +1,6 @@
 """Tests for the schema check that runs without any config data.
 
-``validate`` walks the tree a class declares, recursing into nested sections and
+``validate_schema`` walks the tree a class declares, recursing into nested sections and
 into sections held in containers, and reports every annotation outside the
 supported set along with every authored default that does not already carry its
 annotation's runtime type. No config data is read and no ``default_factory``
@@ -24,8 +24,10 @@ import pytest
 from confingo import (
     ConfigError,
     ConfigNode,
+)
+from confingo.functional import (
     from_dict,
-    validate,
+    validate_schema,
 )
 
 
@@ -48,7 +50,7 @@ class Good:
 
 
 def test_a_supported_schema_validates_quietly():
-    assert validate(Good) is None
+    assert validate_schema(Good) is None
 
 
 @dataclass
@@ -96,7 +98,7 @@ class Nested:
 def test_a_section_reached_through_a_container_is_inspected(config_cls: type[Any], path: str):
     """A container holding a dataclass still carries that dataclass's schema."""
     with pytest.raises(ConfigError) as info:
-        validate(config_cls)
+        validate_schema(config_cls)
     assert [issue.path for issue in info.value.issues] == [path]
 
 
@@ -107,7 +109,7 @@ class WrongDefault:
 
 def test_an_authored_default_is_judged_without_any_data():
     with pytest.raises(ConfigError) as info:
-        validate(WrongDefault)
+        validate_schema(WrongDefault)
     assert "invalid authored default" in info.value.issues[0].message
 
 
@@ -131,22 +133,22 @@ class HasFactory:
 
 def test_validating_a_schema_runs_no_factory():
     FACTORY_RUNS.clear()
-    validate(HasFactory)
+    validate_schema(HasFactory)
     assert FACTORY_RUNS == []
 
 
 def test_the_context_names_the_schema():
     with pytest.raises(ConfigError) as info:
-        validate(WrongDefault)
+        validate_schema(WrongDefault)
     assert info.value.context == "config schema"
     with pytest.raises(ConfigError) as info:
-        validate(WrongDefault, context="sweep template")
+        validate_schema(WrongDefault, context="sweep template")
     assert info.value.context == "sweep template"
 
 
 def test_a_non_dataclass_entry_is_reported():
     with pytest.raises(ConfigError):
-        validate(int)
+        validate_schema(int)
 
 
 @dataclass
@@ -161,23 +163,23 @@ class BadNode(ConfigNode):
 
 
 def test_the_accessor_validates_the_class_it_is_reached_through():
-    assert GoodNode.cfg.validate() is None
+    assert GoodNode.cfg.validate_schema() is None
     with pytest.raises(ConfigError):
-        BadNode.cfg.validate()
+        BadNode.cfg.validate_schema()
 
 
 def test_the_accessor_carries_the_context_the_free_function_takes():
     with pytest.raises(ConfigError) as info:
-        BadNode.cfg.validate()
+        BadNode.cfg.validate_schema()
     assert info.value.context == "config schema"
     with pytest.raises(ConfigError) as info:
-        BadNode.cfg.validate(context="sweep template")
+        BadNode.cfg.validate_schema(context="sweep template")
     assert info.value.context == "sweep template"
 
 
 def test_the_accessor_validates_from_an_instance_too():
     built = GoodNode.cfg.from_dict({})
-    assert built.cfg.validate() is None
+    assert built.cfg.validate_schema() is None
 
 
 def test_a_nested_node_validates_its_own_subtree():
@@ -185,13 +187,13 @@ def test_a_nested_node_validates_its_own_subtree():
     class Section(ConfigNode):
         lr: float = 1e-3
 
-    assert validate(Section) is None
+    assert validate_schema(Section) is None
 
 
 def test_validation_reports_what_a_build_would_report():
     """The check a build runs before it builds is the check this exposes."""
     with pytest.raises(ConfigError) as from_validate:
-        validate(InList)
+        validate_schema(InList)
     with pytest.raises(ConfigError) as from_build:
         from_dict(InList, {})
     assert [(issue.path, issue.message) for issue in from_validate.value.issues] == [
@@ -202,12 +204,12 @@ def test_validation_reports_what_a_build_would_report():
 if TYPE_CHECKING:
 
     def _validate_typing_probe() -> None:
-        """Pin what ``validate`` answers, checked by the type checker alone.
+        """Pin what ``validate_schema`` answers, checked by the type checker alone.
 
         The wider public surface is pinned in ``test_typing_surface.py``; this
         body is never executed.
         """
-        assert_type(validate(Good), None)
-        assert_type(validate(Good, context="sweep template"), None)
-        assert_type(GoodNode.cfg.validate(), None)
-        assert_type(GoodNode.cfg.validate(context="sweep template"), None)
+        assert_type(validate_schema(Good), None)
+        assert_type(validate_schema(Good, context="sweep template"), None)
+        assert_type(GoodNode.cfg.validate_schema(), None)
+        assert_type(GoodNode.cfg.validate_schema(context="sweep template"), None)

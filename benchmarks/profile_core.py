@@ -23,6 +23,7 @@ from stress import (  # pyrefly: ignore[missing-import]  # sibling benchmark mod
 )
 
 import confingo
+import confingo.functional
 
 
 if TYPE_CHECKING:
@@ -59,16 +60,16 @@ def main() -> None:
     """Generate the suite and profile from_dict and to_dict."""
     suite_size = int(sys.argv[1]) if len(sys.argv) > 1 else 500
     configs = generate_suite(suite_size)
-    objs = [confingo.from_dict(ExperimentConfig, c) for c in configs]
+    objs = [confingo.functional.from_dict(ExperimentConfig, c) for c in configs]
     print(f"confingo {confingo.__version__}  suite_size={suite_size:,}")
 
     def run_from_dict() -> None:
         for c in configs:
-            confingo.from_dict(ExperimentConfig, c)
+            confingo.functional.from_dict(ExperimentConfig, c)
 
     def run_to_dict() -> None:
         for o in objs:
-            confingo.to_dict(o)
+            confingo.functional.to_dict(o)
 
     profile("from_dict", run_from_dict)
     profile("to_dict", run_to_dict)
