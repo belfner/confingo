@@ -267,6 +267,8 @@ def test_completeness_skips_validate_no_attributeerror_leak():
         from_dict(ValidateReadsUnset, {"a": 5})
     # The completeness issue is reported; __validate__ was not invoked.
     assert [str(i) for i in info.value.issues] == ["b: init=False field was not set during __post_init__"]
+    # __validate__ is what the next load reaches, so the root is named as pending.
+    assert info.value.pending_lifecycle_paths == ("",)
 
 
 @dataclass
@@ -326,6 +328,9 @@ def test_completeness_not_reported_with_loadable_coercion_failure():
     messages = [str(i) for i in info.value.issues]
     assert not any("was not set during __post_init__" in m for m in messages)
     assert len(messages) == 1
+    # The completeness check runs on the load that gets past the field issue, and
+    # the root is named as carrying it.
+    assert info.value.pending_lifecycle_paths == ("",)
 
 
 @dataclass

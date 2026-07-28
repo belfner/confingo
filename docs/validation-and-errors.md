@@ -43,6 +43,25 @@ Paths use dots for fields, indexes for sequence elements, and keys for mapping e
 Paths are relative to the object the operation was entered on, and `<root>` names that object. Loading through the whole config reports a leaf as `optimizer.lr`; loading the same section through `OptimizerConfig.cfg.from_dict(...)` reports it as `lr`, since the mapping supplied to that call is the document the path locates values in. Pass `context="optimizer override"` to label which source a subtree load was reading.
 
 
+## Pending lifecycle work
+
+A build reaches a node's lifecycle after its fields build, so an issue in a field leaves that node's `__post_init__`, `init=False` completeness check, and `__validate__` for a later load. `ConfigError.pending_lifecycle_paths` names where that work waits, and a closing line states it:
+
+```
+confingo.ConfigError: config file train.json has 1 issue:
+  - model.optimizer.lr: expected float, got str
+  Pending lifecycle work at model.optimizer, model, <root>: fix the issues above, then load the config again to run the applicable callbacks and checks.
+```
+
+The attribute is a `tuple[str, ...]` in discovery order, deepest node first, with the root as the empty string and `<root>` in the rendering. The rendered sentence names the first five paths and counts the rest; the attribute carries them all.
+
+An entry is one of two things. A node entry names a node with stages still ahead of it. A barrier entry names a path where an authored default was set aside with its lifecycle unvisited, and covers that path together with anything beneath it.
+
+The reading is deliberately generous: a listed callback may run and return an empty list, and a barrier may cover a subtree whose sections are all quiet. An entry marks work a repair reaches. Naming a path that turns out quiet costs one entry, and staying quiet about a path that later reports is the surprise the signal exists to end. Hook discovery reads statically visible class declarations along the MRO, taking the nearest binding, so a `__validate__ = None` in a subclass answers for the base method it shadows. A hook that an instance `__getattr__` supplies becomes visible once an instance exists, which is past the point this reading is taken.
+
+Trials stay private: a union member is probed with its own collector, so the report carries the pending paths of the member it names, alongside that member's issues.
+
+
 ## Handling errors in a training CLI
 
 Catch `ConfigError` at startup and fail fast, before allocating accelerators:
@@ -176,7 +195,9 @@ The context on the raised error tells you where the problem came from:
 
 Collection is exhaustive across siblings: every field, sequence element, and mapping entry is visited even after earlier ones fail. Two boundaries shape what appears in a single report:
 
-- A dataclass node whose fields have issues stays unconstructed for that load, so its `__post_init__` / `__validate__` hooks run on the next load, once the field issues are fixed. Fixing a config can therefore surface a second, deeper round of invariant messages.
+- A dataclass node whose fields have issues stays unconstructed for that load, so its `__post_init__` / `__validate__` hooks run on the next load, once the field issues are fixed. Fixing a config can therefore surface a deeper round of messages. [`pending_lifecycle_paths`](#pending-lifecycle-work) names where that work waits, so the later round is stated ahead of time.
+- The same holds wherever a node is set aside before its lifecycle: a constructor that raised, a completeness check that failed, a section receiving another runtime shape, a nesting or cycle limit, and an authored default whose product was declined. Each leaves the stages after it for a later load.
+- A union member is taken when its trial converts cleanly, so a member that builds and then reports an invariant leaves the whole union unmatched and the enclosing node unconstructed. A config can therefore take three loads to settle: one for a field type, one for the member's invariant, one for the enclosing node's own.
 - A multi-member union tries each member privately. When every member fails, the field reports a summary, `expected AdamW | SGD; best match SGD failed with 1 issue`, followed by that one member's own issues at their own paths. The closest member is the one whose attempt collected the fewest issues, with an equal count going to the first declared member. A single-type optional (`T | None`) coerces straight through `T`, preserving detailed child paths and running hooks exactly once.
 
 

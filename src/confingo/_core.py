@@ -86,6 +86,7 @@ from confingo._errors import (
 from confingo._schema import (
     _SEQUENCE_BUILDERS,
     MAX_PLAIN_DEPTH,
+    _class_namespaces,
     _ClassifiedField,
     _classify_dataclass_fields,
     _classify_hint,
@@ -196,7 +197,7 @@ def from_dict[T](config_cls: type[T], data: Mapping[str, Any], *, context: str =
     collector = _IssueCollector()
     instance = _build(config_cls, data, "", collector)
     if not collector.clean():
-        raise ConfigError(collector.issues, context=context)
+        raise ConfigError(collector.issues, context=context, pending_lifecycle_paths=collector.pending_lifecycle_paths)
     return typing.cast("T", instance)
 
 
@@ -234,11 +235,16 @@ def _build(
       Any: The constructed instance, or the ``_UNSET`` sentinel when this node
         failed to build.
     """
+    # Each of these three ends the node before its fields are read, so the whole
+    # lifecycle is still ahead of it and the node records every stage it declares.
     if not isinstance(data, Mapping):
+        _record_pending_lifecycle(config_cls, path, collector)
         return _reject(collector, path, f"expected a mapping for {class_label(config_cls)}, got {_typename(data)}")
     if depth >= MAX_PLAIN_DEPTH:
+        _record_pending_lifecycle(config_cls, path, collector)
         return _reject(collector, path, plain_depth_message())
     if id(data) in data_chain:
+        _record_pending_lifecycle(config_cls, path, collector)
         return _reject(collector, path, plain_cycle_message())
     node_chain = (*data_chain, id(data))
 
@@ -282,15 +288,152 @@ def _build(
     # Walk every field before bailing so one build surfaces all of a node's
     # problems at once; kwargs would be incomplete once any field failed.
     if node_failed:
+        _record_pending_lifecycle(config_cls, path, collector)
         return _UNSET
 
     instance = _run_callback(lambda: config_cls(**kwargs), "constructing", config_cls, path, collector)
     if instance is _UNSET:
+        # The call names one step from the outside, so a constructor that raised
+        # before reaching ``__post_init__`` reads the same here as one that raised
+        # inside it. ``__post_init__`` stays among the stages ahead for that reason:
+        # a hook that already raised runs again once the issue it reported is fixed.
+        _record_pending_lifecycle(config_cls, path, collector)
         return _UNSET
 
     if not _check_node_lifecycle(instance, config_cls, path, collector):
+        # Construction and the completeness check are behind it; ``__validate__``
+        # is what the next load reaches.
+        _record_pending_lifecycle(config_cls, path, collector, post_init=False, completeness=False)
         return _UNSET
     return instance
+
+
+_NO_BINDING = object()
+"""Sentinel answering a lookup that reached the end of a class's MRO."""
+
+
+def _nearest_binding(config_cls: type[Any], name: str) -> Any:
+    """Read what a name binds to on a class, taking the most derived namespace.
+
+    The raw namespaces themselves answer, whatever a metaclass supplies under
+    ``__getattribute__``, matching how the rest of the schema machinery inspects a
+    class. Taking the nearest binding is what makes
+    a derived ``__validate__ = None`` answer for the base method it shadows.
+
+    Args:
+      config_cls (type[Any]): The class to inspect.
+      name (str): The attribute name to resolve.
+
+    Returns:
+      Any: The binding found, or the ``_NO_BINDING`` sentinel.
+    """
+    for namespace in _class_namespaces(config_cls):
+        if name in namespace:
+            return namespace[name]
+    return _NO_BINDING
+
+
+def _declares_hook(config_cls: type[Any], name: str) -> bool:
+    """Report whether a class declares a lifecycle hook a later load would run.
+
+    A hook reaches the engine as a callable read off an instance, so a callable
+    binding counts and so does a descriptor, which supplies its callable once an
+    instance exists. Any other binding, ``None`` among them, is the shadow it looks
+    like, matching the ``callable`` test the lifecycle itself applies.
+
+    The descriptor reading goes through the raw namespaces of the binding's own
+    type for the same reason the binding itself does: that type belongs to the
+    config author too, so an ordinary attribute read there would run a metaclass
+    ``__getattribute__`` and let a report about a config be replaced by a failure
+    inside the machinery describing it.
+
+    Args:
+      config_cls (type[Any]): The class to inspect.
+      name (str): The hook name, ``__post_init__`` or ``__validate__``.
+
+    Returns:
+      bool: True when a later load would find a hook of that name.
+    """
+    binding = _nearest_binding(config_cls, name)
+    if binding is _NO_BINDING:
+        return False
+    if callable(binding):
+        return True
+    return _nearest_binding(type(binding), "__get__") is not _NO_BINDING
+
+
+def _record_pending_lifecycle(
+    config_cls: type[Any],
+    path: str,
+    collector: _IssueCollector,
+    *,
+    post_init: bool = True,
+    completeness: bool = True,
+    validate: bool = True,
+) -> None:
+    """Record a node whose remaining lifecycle stages run on a later load.
+
+    The flags name the stages still ahead of the node at the point it was set
+    aside, so a node that failed after construction carries fewer of them than one
+    that stopped ahead of its constructor.
+
+    Args:
+      config_cls (type[Any]): The class whose declarations decide the stages.
+      path (str): Dotted path of the node.
+      collector (_IssueCollector): Destination for the pending path.
+      post_init (bool = True): Whether ``__post_init__`` is still ahead.
+      completeness (bool = True): Whether the ``init=False`` check is still ahead.
+      validate (bool = True): Whether ``__validate__`` is still ahead.
+    """
+    if post_init and _declares_hook(config_cls, "__post_init__"):
+        collector.add_pending_lifecycle(path)
+        return
+    if completeness and len(_classify_dataclass_fields(config_cls).non_init) > 0:
+        collector.add_pending_lifecycle(path)
+        return
+    if validate and _declares_hook(config_cls, "__validate__"):
+        collector.add_pending_lifecycle(path)
+
+
+def _holds_sections(value: Any, hint: Any = None) -> bool:
+    """Report whether a barrier set aside something whose lifecycle a later load can run.
+
+    Read at an authored-default barrier, where a product is put down with its
+    lifecycle unvisited. Two readings answer, since each covers a case the other
+    leaves open. The product answers for what is there: a section carries its own
+    hooks and a container may hold sections anywhere inside it, so a container
+    answers True on shape alone. The annotation answers for what a repaired default
+    builds: a product rejected against a section annotation is a leaf precisely
+    because it failed, and the section the annotation names reaches its hooks once
+    the default is fixed. The annotation is also the whole reading when a factory
+    raised, where the product it would have made stays unbuilt.
+
+    A container or union annotation whose repaired default carries leaves alone
+    answers True here, naming a path that stays quiet. That direction is
+    deliberate: naming a path that turns out quiet costs a reader one entry, and
+    staying silent about a path that later reports is the surprise this whole
+    signal exists to end.
+
+    Args:
+      value (Any): The product the barrier set aside.
+      hint (Any = None): The annotation the field declares, when one is in hand.
+
+    Returns:
+      bool: True when lifecycle work may remain at or beneath the path.
+    """
+    if not isinstance(value, type) and _is_dataclass_type(type(value)):
+        return True
+    # ``Sequence`` covers the concrete builders and every other sequence a default
+    # may hold, each able to carry sections. ``str`` and ``bytes`` are sequences of
+    # themselves and hold leaves, which container coercion reads the same way.
+    if isinstance(value, (Mapping, set, frozenset)):
+        return True
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return True
+    if hint is None:
+        return False
+    kind = _classify_hint(hint).kind
+    return kind in (_HintKind.DATACLASS, _HintKind.CONTAINER, _HintKind.UNION)
 
 
 def _check_node_lifecycle(instance: Any, config_cls: type[Any], path: str, collector: _IssueCollector) -> bool:
@@ -359,6 +502,10 @@ def _check_authored_sections(value: Any, path: str, collector: _IssueCollector, 
     if not isinstance(value, type) and _is_dataclass_type(type(value)):
         section_cls = type(value)
         if not _check_node_lifecycle(value, section_cls, path, collector):
+            # The walk stops here, so this section's ``__validate__`` and every
+            # section it holds stay unvisited. One entry names the path the walk
+            # put down, covering what sits beneath it.
+            collector.add_pending_lifecycle(path)
             return
         for classified in _classify_dataclass_fields(section_cls).init_fields:
             name = classified.definition.name
@@ -559,6 +706,10 @@ def _absent_field_value(
         # the schema path does not name. The value's own depth was measured with
         # the rest of its class, so the budget is spent here without walking it.
         if depth + classified.default_depth > MAX_PLAIN_DEPTH:
+            # The budget runs out before the lifecycle walk reaches the authored
+            # value, so whatever sections it holds stay unvisited.
+            if _holds_sections(field.default, hint):
+                collector.add_pending_lifecycle(path)
             return _reject(collector, path, f"{DEFAULT_LABEL}: {plain_depth_message()}")
         _check_authored_sections(field.default, path, collector)
         return _KEEP_DECLARED
@@ -595,9 +746,19 @@ def _selected_factory_value(
         raise
     except Exception as exc:
         # The factory belongs to the config author, so whatever it raises describes
-        # the config and arrives beside the issues its siblings reported.
+        # the config and arrives beside the issues its siblings reported. The
+        # annotation is the whole reading here, since the factory raised ahead of
+        # making the product, and it names the section a repaired factory builds.
+        if _holds_sections(_UNSET, hint):
+            collector.add_pending_lifecycle(path)
         return _reject(collector, path, f"default_factory raised {_exception_label(exc)}: {_describe(exc)}")
     if not validate_authored_value(produced, hint, path, collector, label=FACTORY_LABEL, depth=depth):
+        # The product is put down before the lifecycle walk reaches it. What the
+        # factory made answers for the sections already built, and the annotation
+        # answers for the section a repaired factory goes on to build, which is the
+        # reading a rejected leaf under a section annotation needs.
+        if _holds_sections(produced, hint):
+            collector.add_pending_lifecycle(path)
         return _UNSET
     _check_authored_sections(produced, path, collector)
     return produced
@@ -861,7 +1022,11 @@ def _coerce_union(
     count = len(best.issues)
     noun = "issue" if count == 1 else "issues"
     collector.add(path, f"expected {_hint_name(hint)}; best match {_hint_name(candidate)} failed with {count} {noun}")
-    collector.extend(best.issues)
+    # A member that converted cleanly returned above; this is the best of the
+    # members that failed, and its diagnostics are the ones the report names, so
+    # its pending paths travel with its issues. Every other member stays private,
+    # pending paths included.
+    collector.adopt(best)
     return _UNSET
 
 

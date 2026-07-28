@@ -4,6 +4,10 @@ All notable changes to confingo are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+
+- `ConfigError.pending_lifecycle_paths`, a `tuple[str, ...]` naming where `__post_init__`, an `init=False` completeness check, or `__validate__` can run on a later load, marking work a repair reaches. A build reaches a node's lifecycle after its fields build, so an issue in a field leaves that node's hooks for the load that follows, and the suppression reaches that node together with every ancestor above it. The attribute states those paths in discovery order with the root as the empty string, and a report carrying them ends with `Pending lifecycle work at <paths>: fix the issues above, then load the config again to run the applicable callbacks and checks.`, naming the first five paths and counting the rest. Paths are recorded wherever a node is set aside before its lifecycle: a section receiving another runtime shape, the nesting and cycle limits, a field that failed to coerce, a constructor that raised, a completeness check that failed, and an authored default whose product was declined. Hook discovery reads statically visible declarations along the MRO, taking the nearest binding, so a subclass `__validate__ = None` answers for the base method it shadows. Union members are probed privately, so the report carries the pending paths of the member it names, alongside that member's issues. `ConfigError(issues, *, context)` keeps working unchanged, and schema-preflight, file-read, parse, and serialization errors carry the empty default.
+
 
 ## [2.0.0] - 2026-07-27
 

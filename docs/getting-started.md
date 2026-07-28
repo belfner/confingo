@@ -350,6 +350,8 @@ class SplitConfig:
 
 `__validate__` returns an iterable of messages, and an empty list when the config is valid. Returning a bare string or `None` is reported as the contract slip it is rather than acted on, and an exception raised inside the hook becomes one issue beside the rest of the report. The same holds for `__post_init__` and for a `default_factory`: whatever they raise describes the config, so it arrives with every other problem in one `ConfigError`.
 
+`from_dict` reaches a node's lifecycle after its fields build, so an issue in a field leaves that node's hooks for the load that follows, and the error names those paths under `Pending lifecycle work`. [Aggregation boundaries](validation-and-errors.md#aggregation-boundaries) describes how a report divides between the two.
+
 
 ## Save the resolved run and assign an identity
 

@@ -27,7 +27,7 @@ from confingo.typing import (
 
 
 # Kept in sync with the version declared in pyproject.toml.
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 
 __all__ = [

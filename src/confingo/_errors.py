@@ -75,25 +75,71 @@ class ConfigIssue:
         return f"{label}: {self.message}"
 
 
+PENDING_RENDER_LIMIT = 5
+"""Paths named in the pending-lifecycle line before the remainder becomes a count.
+
+The attribute carries every path it collected; this bounds only the rendered
+sentence, which sits under an issue list that is already long.
+"""
+
+
+def _render_pending_lifecycle(paths: tuple[str, ...]) -> str:
+    """Word the pending-lifecycle line for the paths a build deferred.
+
+    Args:
+      paths (tuple[str, ...]): Dotted paths carrying deferred lifecycle work, in
+        discovery order. The root is the empty string.
+
+    Returns:
+      str: The rendered line, indented to sit beneath the issue list.
+    """
+    labels = ["<root>" if path == "" else path for path in paths]
+    shown = ", ".join(labels[:PENDING_RENDER_LIMIT])
+    remainder = len(labels) - PENDING_RENDER_LIMIT
+    more = f" and {remainder} more" if remainder > 0 else ""
+    return (
+        f"  Pending lifecycle work at {shown}{more}: fix the issues above, then load the config "
+        f"again to run the applicable callbacks and checks."
+    )
+
+
 class ConfigError(ValueError):
     """Raised when a config fails to build, carrying every issue found.
 
     Args:
       issues (Iterable[ConfigIssue]): The problems collected during the build.
       context (str): Description of the config source, used in the summary line.
+      pending_lifecycle_paths (Iterable[str] = ()): Paths whose lifecycle work this
+        attempt deferred, in discovery order.
 
     Attributes:
       issues (tuple[ConfigIssue, ...]): The problems collected during the build, in discovery order.
       context (str): Description of the config source.
+      pending_lifecycle_paths (tuple[str, ...]): Paths where a ``__post_init__``, ``init=False``
+        completeness check, or ``__validate__`` can run on a later load, in discovery order. Each
+        entry names a node with lifecycle stages still ahead of it, or an authored-default subtree
+        this attempt set aside, covering that path and anything beneath it. The reading is
+        deliberately generous, so an entry marks work a repair can reach. The root is the empty
+        string.
     """
 
-    def __init__(self, issues: Iterable[ConfigIssue], *, context: str) -> None:
+    def __init__(
+        self,
+        issues: Iterable[ConfigIssue],
+        *,
+        context: str,
+        pending_lifecycle_paths: Iterable[str] = (),
+    ) -> None:
         self.issues = tuple(issues)
         self.context = context
+        self.pending_lifecycle_paths = tuple(pending_lifecycle_paths)
         count = len(self.issues)
         noun = "issue" if count == 1 else "issues"
         detail = "\n".join(f"  - {issue}" for issue in self.issues)
-        super().__init__(f"{context} has {count} {noun}:\n{detail}")
+        summary = f"{context} has {count} {noun}:\n{detail}"
+        if len(self.pending_lifecycle_paths) > 0:
+            summary = f"{summary}\n{_render_pending_lifecycle(self.pending_lifecycle_paths)}"
+        super().__init__(summary)
 
     @classmethod
     def single(cls, message: str, *, context: str, path: str = "") -> ConfigError:
@@ -121,6 +167,10 @@ class _IssueCollector:
     def __init__(self, backend: BackendSnapshot | None = None) -> None:
         self.issues: list[ConfigIssue] = []
         self.backend: BackendSnapshot = backend if backend is not None else capture_backend_snapshot()
+        self.pending_lifecycle_paths: list[str] = []
+        # Membership set beside the ordered list: discovery order is the reported
+        # order, and a wide tree would make a scan of the list quadratic.
+        self._pending_seen: set[str] = set()
 
     def add(self, path: str, message: str) -> None:
         """Record one issue.
@@ -140,8 +190,47 @@ class _IssueCollector:
         """
         self.issues.extend(issues)
 
+    def add_pending_lifecycle(self, path: str) -> None:
+        """Record one path whose lifecycle work this build deferred.
+
+        Args:
+          path (str): Dotted path to the node or authored subtree, the empty string
+            for the root. A path already recorded keeps its first position.
+        """
+        if path not in self._pending_seen:
+            self._pending_seen.add(path)
+            self.pending_lifecycle_paths.append(path)
+
+    def extend_pending_lifecycle(self, paths: Iterable[str]) -> None:
+        """Record several deferred-lifecycle paths, keeping discovery order.
+
+        Args:
+          paths (Iterable[str]): The paths to record.
+        """
+        for path in paths:
+            self.add_pending_lifecycle(path)
+
+    def adopt(self, other: _IssueCollector) -> None:
+        """Take over everything a trial collector gathered, issues and pending paths alike.
+
+        A union member is probed with its own collector, so the diagnostics of the
+        member the report goes on to name are adopted together through here.
+        ``extend`` stays the issue-only operation, which is what the authored-default
+        array path calls.
+
+        Args:
+          other (_IssueCollector): The trial collector to adopt from.
+        """
+        self.extend(other.issues)
+        self.extend_pending_lifecycle(other.pending_lifecycle_paths)
+
     def clean(self) -> bool:
         """Report whether the build has stayed issue-free so far.
+
+        Ordinary issues determine this reading. Pending lifecycle paths describe
+        work a later load runs, where an issue describes the value itself, and a
+        union member is selected on whether its trial stayed clean, so keeping this
+        reading to issues keeps member selection with the config.
 
         Returns:
           bool: True while no issue has been recorded.

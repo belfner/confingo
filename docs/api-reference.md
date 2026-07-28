@@ -104,9 +104,11 @@ Learn more: [Validation and errors](validation-and-errors.md).
 
 Frozen dataclass; one problem at one dotted path. `str(issue)` renders `path: message`, with an empty path shown as `<root>`.
 
-### `ConfigError(issues, *, context)`
+### `ConfigError(issues, *, context, pending_lifecycle_paths=())`
 
 `ValueError` subclass carrying `.issues` (tuple, discovery order) and `.context` (str). The rendered message summarizes the count and lists every issue. `ConfigError.single(message, *, context, path="")` builds a one-issue error.
+
+`.pending_lifecycle_paths` is a `tuple[str, ...]` in discovery order naming where `__post_init__`, an `init=False` completeness check, or `__validate__` can run on a later load, with the root as the empty string. An entry marks work a repair reaches. It is empty by default, which is what schema preflight, file-read, parse, and serialization errors carry. When it holds paths, one line follows the issue list naming the first five and counting the rest, and the issue count stays as it is. Learn more: [pending lifecycle work](validation-and-errors.md#pending-lifecycle-work).
 
 
 ## `ConfigNode` method map

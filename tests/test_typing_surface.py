@@ -179,6 +179,12 @@ if TYPE_CHECKING:
         assert_type(config_hash(config, length=8), str)
         assert_type(config_equal(config, config), bool)
 
+    def _the_error_surface() -> None:
+        """A build failure carries its issues and its pending paths as tuples."""
+        error = ConfigError([], context="config")
+        assert_type(error.pending_lifecycle_paths, tuple[str, ...])
+        assert_type(ConfigError([], context="config", pending_lifecycle_paths=("a",)), ConfigError)
+
     def _the_class_route() -> None:
         """A builder reached through the class answers with that class."""
         assert_type(Node.cfg.from_dict({}), Node)
