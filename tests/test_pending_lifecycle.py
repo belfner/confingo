@@ -683,26 +683,30 @@ class BetaMember:
 
 @dataclass
 class UnionRoot:
-    """A root whose one field names two sections."""
+    """A root whose one field names two lists of sections.
 
-    choice: AlphaMember | BetaMember
+    Each member descends into sections of its own, which is what makes both
+    trials record pending paths and the adopted ones say which trial was taken.
+    """
+
+    choice: list[AlphaMember] | list[BetaMember]
 
 
 def test_union_adopts_only_the_best_failed_member():
     # Each member reaches a differently named nested section, so the adopted paths
     # say which trial was taken; equal paths would hide a leak behind dedup.
-    pending = _pending(UnionRoot, {"choice": {"inner": {"a": "bad"}}})
-    assert pending == ("choice.inner", "choice")
-    assert "choice.other" not in pending
+    pending = _pending(UnionRoot, {"choice": [{"inner": {"a": "bad"}}]})
+    assert pending == ("choice.0.inner", "choice.0")
+    assert "choice.0.other" not in pending
 
 
 def test_pending_paths_stay_out_of_member_selection():
     # The first member fails and records pending paths while it is tried. The
     # second converts cleanly and is what builds, which is the property that keeps
     # a diagnostic from deciding which member a config gets.
-    built = from_dict(UnionRoot, {"choice": {"other": {"b": 2}}})
-    assert isinstance(built.choice, BetaMember)
-    assert built.choice.other.b == 2
+    built = from_dict(UnionRoot, {"choice": [{"other": {"b": 2}}]})
+    assert isinstance(built.choice[0], BetaMember)
+    assert built.choice[0].other.b == 2
 
 
 def test_pending_paths_leave_a_collector_clean():
@@ -723,8 +727,8 @@ def test_pending_paths_stay_out_of_the_best_match_count():
     # ranking that summed issues and pending paths would score it 2 against
     # TiedBeta's 1 and name TiedBeta instead.
     with pytest.raises(ConfigError) as info:
-        from_dict(TiedUnionRoot, {"choice": {"a": "bad", "shared": 1}})
-    assert "best match TiedAlpha" in str(info.value.issues[0])
+        from_dict(TiedUnionRoot, {"choice": [{"a": "bad", "shared": 1}]})
+    assert "best match list[TiedAlpha]" in str(info.value.issues[0])
 
 
 def test_collector_collapses_a_repeated_path():
@@ -767,7 +771,7 @@ class TiedBeta:
 class TiedUnionRoot:
     """A root whose members fail with an equal issue count."""
 
-    choice: TiedAlpha | TiedBeta
+    choice: list[TiedAlpha] | list[TiedBeta]
 
 
 @dataclass

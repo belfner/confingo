@@ -33,7 +33,7 @@ Each route stands on its own: Essentials carries every rule its own examples dep
 
 **Exact reference**
 
-- [Schema design](schema-design.md): dataclass schemas, implicit sections, leaf-level requirements, defaults, factories, `ConfigNode`, field options, invariants.
+- [Schema design](schema-design.md): dataclass schemas, implicit sections, leaf-level requirements, defaults, factories, `ConfigNode`, variant groups, field options, invariants.
 - [Types and coercion](types-and-coercion.md): a "choose an annotation" table, the accepted annotations, and exact conversion rules.
 - [Validation and errors](validation-and-errors.md): reading an error, the collect-all model, custom invariants, and every built-in issue source.
 - [Equality and hashing](equality-and-hashing.md): canonical equality, unhashable config objects, stable run identity.
@@ -74,6 +74,7 @@ Types:
 
 - [`ConfigValue` fields keep list shape after a round trip](types-and-coercion.md#open-data)
 - [Union members match in declaration order, with a numeric pair settled by the value's own class](types-and-coercion.md#unions-and-optionals)
+- [A variant group lets the file name which section to build; a union names at most one section](types-and-coercion.md#variant-groups)
 - [`bool` and `int` stay separate; whole floats coerce to int](types-and-coercion.md#scalars)
 - [Temporal fields keep `datetime` and `date` distinct](types-and-coercion.md#finite-numbers-and-temporal-exactness)
 - [`Literal` matches value and exact type together](types-and-coercion.md#enums-and-literals)

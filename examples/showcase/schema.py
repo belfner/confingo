@@ -4,7 +4,7 @@ The tree is a plausible training configuration, and each section concentrates on
 one part of the type boundary so a reader can find a feature by its section:
 
 - ``OptimizerConfig``: scalars, ``Literal``, enums, and the union rules.
-- ``ScheduleConfig``: a frozen, slotted section.
+- ``ScheduleConfig``: a variant group, one of whose variants is frozen and slotted.
 - ``DataConfig``: paths, temporal scalars, and every container shape.
 - ``TensorConfig``: the numpy and torch annotation forms.
 - ``TelemetryConfig``: open data, and the set element rules.
@@ -39,6 +39,7 @@ import numpy.typing as npt
 import torch
 
 from confingo import (
+    ConfigChoice,
     ConfigNode,
     ConfigScalar,
     ConfigValue,
@@ -114,19 +115,46 @@ class OptimizerConfig(ConfigNode):
         return problems
 
 
+@dataclass(frozen=True)
+class ScheduleConfig(ConfigChoice, tag_key="kind"):
+    """A variant group: one annotation standing for the schedules a run may pick.
+
+    A field annotated with this group takes any of the variants below, and the
+    ``kind`` key in the config section names which one to build. The key is this
+    group's own, chosen here, and the fields declared on the group are shared by
+    every variant.
+    """
+
+    total_steps: int = 10_000
+
+
 @dataclass(frozen=True, slots=True, weakref_slot=True)
-class ScheduleConfig:
-    """A frozen, slotted section that also carries a weakref slot.
+class CosineSchedule(ScheduleConfig, tag="cosine"):
+    """The variant a file selects with ``kind: cosine``, frozen and slotted.
 
     ``frozen``, ``slots``, and ``weakref_slot`` are all supported, and this
-    section declares all three. Freezing a config class makes ``config_hash`` the
+    variant declares all three. Freezing a config class makes ``config_hash`` the
     way to carry its value identity, since confingo owns hashing on a schema
     class.
     """
 
-    kind: Literal["cosine", "linear", "constant"] = "cosine"
-    total_steps: int = 10_000
     min_lr_ratio: float = 0.1
+
+
+@dataclass(frozen=True)
+class LinearSchedule(ScheduleConfig, tag="linear"):
+    """The variant a file selects with ``kind: linear``, decaying to a floor."""
+
+    end_lr_ratio: float = 0.0
+
+
+@dataclass(frozen=True)
+class ConstantSchedule(ScheduleConfig, tag="constant"):
+    """The variant a file selects with ``kind: constant``.
+
+    It declares fields of its own nowhere, so it carries the group's shared
+    ``total_steps`` alone, which is a complete variant.
+    """
 
 
 @dataclass

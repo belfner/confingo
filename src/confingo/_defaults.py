@@ -32,7 +32,14 @@ from typing import (
 )
 
 from confingo import _arrays
-from confingo._errors import _IssueCollector
+from confingo._choice import (
+    group_record,
+    variant_tag,
+)
+from confingo._errors import (
+    _IssueCollector,
+    class_label,
+)
 from confingo._schema import (
     MAX_PLAIN_DEPTH,
     _classify_dataclass_fields,
@@ -166,6 +173,9 @@ def _check_runtime_form(
         return
     if kind is _HintKind.UNION:
         _check_union(value, plan.stripped, plan.args, path, collector, seen, depth)
+        return
+    if kind is _HintKind.CHOICE:
+        _check_choice(value, plan.choice_group, hint, path, collector, seen, depth)
         return
     if kind is _HintKind.DATACLASS:
         _check_section(value, plan.dataclass_type, hint, path, collector, seen, depth)
@@ -325,6 +335,62 @@ def _check_section(
         name = classified.definition.name
         held = getattr(value, name, None)
         _check_runtime_form(held, hints[name], _join(path, name), collector, branch, depth + 1)
+
+
+def _check_choice(
+    value: Any,
+    group: type[Any] | None,
+    hint: Any,
+    path: str,
+    collector: _IssueCollector,
+    seen: set[int],
+    depth: int = 0,
+) -> None:
+    """Check an authored default declared under a variant group.
+
+    A group annotation admits any of its registered variants, so the class the
+    value carries decides which section it is checked against. Its own fields are
+    then judged exactly as any other authored section's are, which is what keeps
+    a factory product like ``AdamW(lr="bad")`` from being put down unchecked and
+    failing only on the next load.
+
+    Args:
+      value (Any): The authored object.
+      group (type[Any] | None): The variant-group base the annotation names.
+      hint (Any): The resolved type hint, used in the mismatch message.
+      path (str): Dotted path of the value.
+      collector (_IssueCollector): Destination for any issues found.
+      seen (set[int]): Ids of the config objects on the current branch.
+      depth (int = 0): How deep in the plain document this section sits.
+    """
+    if group is None:
+        collector.add(path, _mismatch(hint, value))
+        return
+    resolved = variant_tag(type(value))
+    if resolved is None or resolved[0] is not group:
+        collector.add(path, _not_a_variant_message(group, value))
+        return
+    _check_section(value, type(value), hint, path, collector, seen, depth)
+
+
+def _not_a_variant_message(group: type[Any], value: Any) -> str:
+    """Build the rejection for a default that is not a variant of its group.
+
+    Args:
+      group (type[Any]): The variant-group base the annotation names.
+      value (Any): The authored object.
+
+    Returns:
+      str: The rejection naming the value's class and the variants to build.
+    """
+    record = group_record(group)
+    variants = "no registered variants"
+    if record is not None and len(record.by_tag) > 0:
+        variants = ", ".join(class_label(record.by_tag[tag]) for tag in sorted(record.by_tag))
+    return (
+        f"expected a variant of the group {class_label(group)}, got {_typename(value)}; build one of "
+        f"{variants}, since a config section names the variant it carries and the group itself names none"
+    )
 
 
 def _check_container(

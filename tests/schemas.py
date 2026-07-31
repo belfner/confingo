@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from confingo import (
+    ConfigChoice,
     ConfigNode,
     ConfigValue,
 )
@@ -168,10 +169,21 @@ class PlainSlotsLeaf:
 
 
 @dataclass
-class PlainAlt:
-    """Second union member of the plain parallel tree."""
+class PlainChoice(ConfigChoice, tag_key="kind"):
+    """Variant group reached through the plain parallel tree."""
 
-    kind: Literal["alt"] = "alt"
+
+@dataclass
+class PlainChoiceBase(PlainChoice, tag="base"):
+    """Variant of the plain parallel tree's group."""
+
+    width: int = 1
+
+
+@dataclass
+class PlainAlt(PlainChoice, tag="alt"):
+    """Second variant of the plain parallel tree's group."""
+
     scale: float = 1.0
 
 
@@ -183,7 +195,7 @@ class PlainTree(ConfigNode):
     items: list[PlainLeaf] = field(default_factory=list)
     lookup: dict[str, PlainLeaf] = field(default_factory=dict)
     maybe: PlainLeaf | None = None
-    choice: PlainLeaf | PlainAlt | None = None
+    choice: PlainChoice | None = None
     extra: ConfigValue = None
     frozen_leaf: PlainFrozenLeaf = field(default_factory=PlainFrozenLeaf)
     slots_leaf: PlainSlotsLeaf = field(default_factory=PlainSlotsLeaf)
@@ -235,10 +247,21 @@ class NodeSlotsLeaf(ConfigNode):
 
 
 @dataclass
-class NodeAlt(ConfigNode):
-    """Second union member of the node parallel tree."""
+class NodeChoice(ConfigChoice, tag_key="kind"):
+    """Variant group reached through the node parallel tree."""
 
-    kind: Literal["alt"] = "alt"
+
+@dataclass
+class NodeChoiceBase(NodeChoice, tag="base"):
+    """Variant of the node parallel tree's group."""
+
+    width: int = 1
+
+
+@dataclass
+class NodeAlt(NodeChoice, tag="alt"):
+    """Second variant of the node parallel tree's group."""
+
     scale: float = 1.0
 
 
@@ -250,7 +273,7 @@ class NodeTree(ConfigNode):
     items: list[NodeLeaf] = field(default_factory=list)
     lookup: dict[str, NodeLeaf] = field(default_factory=dict)
     maybe: NodeLeaf | None = None
-    choice: NodeLeaf | NodeAlt | None = None
+    choice: NodeChoice | None = None
     extra: ConfigValue = None
     frozen_leaf: NodeFrozenLeaf = field(default_factory=NodeFrozenLeaf)
     slots_leaf: NodeSlotsLeaf = field(default_factory=NodeSlotsLeaf)

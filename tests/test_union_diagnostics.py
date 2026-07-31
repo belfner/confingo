@@ -4,6 +4,10 @@ Selection is unchanged: declaration order, first member that coerces cleanly. Wh
 no member fits, the report carries one branch's detail -- the branch whose trial
 collected the fewest issues, declaration order breaking a tie -- under a summary
 naming the whole union and the branch the detail came from.
+
+A union names at most one config section, so the shapes here reach sections
+through containers and beside scalars. Choosing among sections is what a variant
+group answers, covered in ``test_choice_groups``.
 """
 
 from __future__ import annotations
@@ -48,7 +52,7 @@ class SGD:
 
 @dataclass
 class Root:
-    optimizer: AdamW | SGD = field(default_factory=AdamW)
+    optimizer: list[AdamW] | list[SGD] = field(default_factory=list)
     seed: int = 0
 
 
@@ -71,20 +75,20 @@ def _issues(data: dict[str, Any], config_cls: type[Any] = Root) -> list[tuple[st
 
 
 def test_the_first_declared_member_that_fits_wins():
-    built = from_dict(Root, {"optimizer": {"kind": "adamw", "lr": 0.1}})
-    assert isinstance(built.optimizer, AdamW)
-    assert built.optimizer.lr == 0.1
+    built = from_dict(Root, {"optimizer": [{"kind": "adamw", "lr": 0.1}]})
+    assert isinstance(built.optimizer[0], AdamW)
+    assert built.optimizer[0].lr == 0.1
 
 
 def test_a_later_member_is_selected_when_the_first_does_not_fit():
-    built = from_dict(Root, {"optimizer": {"kind": "sgd", "momentum": 0.5}})
-    assert isinstance(built.optimizer, SGD)
-    assert built.optimizer.momentum == 0.5
+    built = from_dict(Root, {"optimizer": [{"kind": "sgd", "momentum": 0.5}]})
+    assert isinstance(built.optimizer[0], SGD)
+    assert built.optimizer[0].momentum == 0.5
 
 
 def test_the_winning_member_is_built_once():
     POST_INIT_CALLS.clear()
-    from_dict(Root, {"optimizer": {"kind": "sgd"}})
+    from_dict(Root, {"optimizer": [{"kind": "sgd"}]})
     # AdamW's trial fails on the discriminator before its constructor is reached,
     # and SGD's trial value is kept rather than rebuilt, so the selected member is
     # constructed exactly once and the rejected one not at all.
@@ -103,10 +107,10 @@ def test_an_optional_single_member_union_reports_its_own_detail():
 
 
 def test_the_summary_names_the_union_and_the_branch_the_detail_came_from():
-    assert _issues({"optimizer": {"kind": "adamww", "lr": "fast"}}) == [
-        ("optimizer", "expected AdamW | SGD; best match AdamW failed with 2 issues"),
-        ("optimizer.kind", "expected one of 'adamw', got 'adamww'"),
-        ("optimizer.lr", "expected float, got str"),
+    assert _issues({"optimizer": [{"kind": "adamww", "lr": "fast"}]}) == [
+        ("optimizer", "expected list[AdamW] | list[SGD]; best match list[AdamW] failed with 2 issues"),
+        ("optimizer.0.kind", "expected one of 'adamw', got 'adamww'"),
+        ("optimizer.0.lr", "expected float, got str"),
     ]
 
 
@@ -114,23 +118,26 @@ def test_the_branch_with_the_fewest_issues_supplies_the_detail():
     # AdamW fails three times here (discriminator, the momentum key it has no
     # field for, and lr); SGD fails on lr alone, so SGD supplies the detail
     # despite being declared second.
-    reported = _issues({"optimizer": {"kind": "sgd", "momentum": 0.5, "lr": "fast"}})
+    reported = _issues({"optimizer": [{"kind": "sgd", "momentum": 0.5, "lr": "fast"}]})
     assert reported == [
-        ("optimizer", "expected AdamW | SGD; best match SGD failed with 1 issue"),
-        ("optimizer.lr", "expected float, got str"),
+        ("optimizer", "expected list[AdamW] | list[SGD]; best match list[SGD] failed with 1 issue"),
+        ("optimizer.0.lr", "expected float, got str"),
     ]
 
 
 def test_an_equal_count_tie_goes_to_the_first_declared_member():
     # Each member fails once on the discriminator typo alone.
-    reported = _issues({"optimizer": {"kind": "rmsprop"}})
-    assert reported[0] == ("optimizer", "expected AdamW | SGD; best match AdamW failed with 1 issue")
-    assert reported[1] == ("optimizer.kind", "expected one of 'adamw', got 'rmsprop'")
+    reported = _issues({"optimizer": [{"kind": "rmsprop"}]})
+    assert reported[0] == (
+        "optimizer",
+        "expected list[AdamW] | list[SGD]; best match list[AdamW] failed with 1 issue",
+    )
+    assert reported[1] == ("optimizer.0.kind", "expected one of 'adamw', got 'rmsprop'")
 
 
 def test_one_issue_is_singular_and_several_are_plural():
-    singular = _issues({"optimizer": {"kind": "rmsprop"}})[0][1]
-    plural = _issues({"optimizer": {"kind": "rmsprop", "lr": "fast"}})[0][1]
+    singular = _issues({"optimizer": [{"kind": "rmsprop"}]})[0][1]
+    plural = _issues({"optimizer": [{"kind": "rmsprop", "lr": "fast"}]})[0][1]
     assert singular.endswith("failed with 1 issue")
     assert plural.endswith("failed with 2 issues")
 
@@ -148,14 +155,30 @@ def test_a_scalar_union_keeps_its_type_summary():
 
 @dataclass
 class OptionalUnion:
-    optimizer: AdamW | SGD | None = None
+    optimizer: list[AdamW] | list[SGD] | None = None
 
 
 def test_an_optional_multi_member_union_accepts_none_and_still_reports_a_branch():
     assert from_dict(OptionalUnion, {"optimizer": None}).optimizer is None
-    reported = _issues({"optimizer": {"kind": "rmsprop"}}, OptionalUnion)
-    assert reported[0] == ("optimizer", "expected AdamW | SGD | None; best match AdamW failed with 1 issue")
-    assert reported[1] == ("optimizer.kind", "expected one of 'adamw', got 'rmsprop'")
+    reported = _issues({"optimizer": [{"kind": "rmsprop"}]}, OptionalUnion)
+    assert reported[0] == (
+        "optimizer",
+        "expected list[AdamW] | list[SGD] | None; best match list[AdamW] failed with 1 issue",
+    )
+    assert reported[1] == ("optimizer.0.kind", "expected one of 'adamw', got 'rmsprop'")
+
+
+# --- a section beside a scalar ------------------------------------------------
+
+
+@dataclass
+class Mixed:
+    optimizer: AdamW | int = 0
+
+
+def test_a_section_beside_a_scalar_selects_by_the_form_the_file_carried():
+    assert from_dict(Mixed, {"optimizer": 4}).optimizer == 4
+    assert from_dict(Mixed, {"optimizer": {"kind": "adamw", "lr": 0.5}}).optimizer == AdamW(lr=0.5)
 
 
 # --- paths and aggregation ----------------------------------------------------
@@ -163,51 +186,12 @@ def test_an_optional_multi_member_union_accepts_none_and_still_reports_a_branch(
 
 @dataclass
 class Listed:
-    items: list[AdamW | SGD] = field(default_factory=list)
+    items: list[AdamW | int] = field(default_factory=list)
     seed: int = 0
 
 
 def test_a_failed_union_inside_a_list_carries_the_element_index():
     reported = _issues({"items": [{"kind": "adamw"}, {"kind": "nope"}], "seed": "bad"}, Listed)
-    assert reported[0] == ("items.1", "expected AdamW | SGD; best match AdamW failed with 1 issue")
+    assert reported[0] == ("items.1", "expected AdamW | int; best match AdamW failed with 1 issue")
     assert reported[1] == ("items.1.kind", "expected one of 'adamw', got 'nope'")
     assert reported[2] == ("seed", "expected int, got str")
-
-
-# --- structurally identical variants ------------------------------------------
-
-
-@dataclass
-class WarmupCosine:
-    schedule: Literal["cosine"] = "cosine"
-    warmup_steps: int = 500
-    total_steps: int = 10_000
-
-
-@dataclass
-class WarmupLinear:
-    schedule: Literal["linear"] = "linear"
-    warmup_steps: int = 500
-    total_steps: int = 10_000
-
-
-@dataclass
-class Scheduled:
-    schedule: WarmupCosine | WarmupLinear = field(default_factory=WarmupCosine)
-
-
-def test_identical_variants_differing_only_by_discriminator_report_through_the_first():
-    # Both members carry the same fields, so a typo in the discriminator fails
-    # each exactly once and nothing distinguishes them by issue count. The
-    # summary still names the whole union, so the reader sees both options.
-    reported = _issues({"schedule": {"schedule": "cosinus"}}, Scheduled)
-    assert reported == [
-        ("schedule", "expected WarmupCosine | WarmupLinear; best match WarmupCosine failed with 1 issue"),
-        ("schedule.schedule", "expected one of 'cosine', got 'cosinus'"),
-    ]
-
-
-def test_a_valid_second_identical_variant_still_selects_cleanly():
-    built = from_dict(Scheduled, {"schedule": {"schedule": "linear", "warmup_steps": 100}})
-    assert isinstance(built.schedule, WarmupLinear)
-    assert built.schedule.warmup_steps == 100

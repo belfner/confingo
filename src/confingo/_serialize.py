@@ -20,11 +20,17 @@ from pathlib import Path
 from typing import Any
 
 from confingo import _arrays
+from confingo._choice import (
+    group_record,
+    is_group,
+    variant_tag,
+)
 from confingo._errors import (
     _UNSET,
     ConfigError,
     _IssueCollector,
     _reject,
+    class_label,
 )
 from confingo._schema import (
     MAX_PLAIN_DEPTH,
@@ -190,6 +196,53 @@ def _array_plain_form(
     return _to_plain(rendered, path, collector, projection=projection, depth=depth, seen=seen, renders=renders - 1)
 
 
+def _opened_node(value_type: type[Any]) -> dict[str, Any] | None:
+    """Open the mapping one config section renders into.
+
+    A variant's selection string comes from the object's own class rather than
+    from the annotation it was reached through, so a variant rendered on its own
+    carries the string that reads it back. It leads the mapping, which is where a
+    file states which section the rest of the keys describe.
+
+    Args:
+      value_type (type[Any]): The class of the section being rendered.
+
+    Returns:
+      dict[str, Any] | None: The mapping to fill, carrying the selection when the
+        class is a variant, or None when the class is a group base and names no
+        variant for a section to carry.
+    """
+    selection = variant_tag(value_type)
+    if selection is None:
+        return None if is_group(value_type) else {}
+    group, tag = selection
+    record = group_record(group)
+    return {} if record is None else {record.tag_key: tag}
+
+
+def _group_instance_message(group: type[Any]) -> str:
+    """Build the rejection for a variant-group base rendered as a config section.
+
+    A group base is an ordinary dataclass, so constructing one is valid Python
+    that a type checker accepts. It names no variant, so the section it would
+    render carries no selection and the next load rejects what this one wrote.
+
+    Args:
+      group (type[Any]): The group base the value is an instance of.
+
+    Returns:
+      str: The rejection naming the group and the variants to build instead.
+    """
+    record = group_record(group)
+    variants = "no registered variants"
+    if record is not None and len(record.by_tag) > 0:
+        variants = ", ".join(class_label(record.by_tag[tag]) for tag in sorted(record.by_tag))
+    return (
+        f"{class_label(group)} is a variant group standing for the sections behind it, and a config section "
+        f"names one of them; build {variants} so the section carries the selection a load reads it back by"
+    )
+
+
 def _to_plain(
     value: Any,
     path: str,
@@ -244,7 +297,9 @@ def _to_plain(
     # a class object carried in an open-data field is reported rather than left to
     # raise.
     if not isinstance(value, type) and _is_dataclass_type(value_type):
-        node: dict[str, Any] = {}
+        node = _opened_node(value_type)
+        if node is None:
+            return _reject(collector, path, _group_instance_message(value_type))
         node_failed = False
         for classified in _projected_fields(type(value), projection):
             field_name = classified.definition.name

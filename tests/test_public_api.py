@@ -31,6 +31,7 @@ def test_config_error_init_type_hints_resolve() -> None:
 def test_the_root_carries_the_names_a_schema_is_written_with() -> None:
     """Every name a schema declaration needs is reachable from the package root."""
     assert set(confingo.__all__) == {
+        "ConfigChoice",
         "ConfigError",
         "ConfigIssue",
         "ConfigNode",

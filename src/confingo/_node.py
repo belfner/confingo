@@ -29,6 +29,22 @@ from typing import (
     overload,
 )
 
+from confingo._choice import both_keywords_message as _both_keywords_message
+from confingo._choice import declare_group as _declare_group
+from confingo._choice import duplicate_tag_message as _duplicate_tag_message
+from confingo._choice import group_record as _group_record
+from confingo._choice import groups_in_mro as _groups_in_mro
+from confingo._choice import inherited_variant as _inherited_variant
+from confingo._choice import keyword_type_message as _keyword_type_message
+from confingo._choice import missing_tag_key_message as _missing_tag_key_message
+from confingo._choice import nested_group_message as _nested_group_message
+from confingo._choice import owning_group as _owning_group
+from confingo._choice import recorded_tag as _recorded_tag
+from confingo._choice import register_variant as _register_variant
+from confingo._choice import superseded_holder as _superseded_holder
+from confingo._choice import two_groups_message as _two_groups_message
+from confingo._choice import untagged_variant_message as _untagged_variant_message
+from confingo._choice import variant_of_variant_message as _variant_of_variant_message
 from confingo._core import from_dict as _from_dict
 from confingo._core import validate_schema as _validate_schema
 from confingo._equality import (
@@ -657,6 +673,116 @@ each is rejected at class creation. Each name answers on the class as well as on
 a value, which also exposes it to metaclass data-descriptor precedence, so a
 metaclass binding of the same name is rejected alongside them.
 """
+
+
+class ConfigChoice(ConfigNode):
+    """Base for a variant group: one name standing for a closed set of sections.
+
+    A group is declared by subclassing this directly and naming the mapping key
+    its config sections select a variant under::
+
+        @dataclass
+        class Optimizer(ConfigChoice, tag_key="algorithm"):
+            lr: float = 1e-3
+
+    Each variant subclasses the group and carries the selection string a config
+    file writes under that key::
+
+        @dataclass
+        class AdamW(Optimizer, tag="adamw"):
+            betas: tuple[float, float] = (0.9, 0.999)
+
+    A field annotated with the group accepts any registered variant, and the key
+    in the section decides which one is built. Fields the whole group shares are
+    declared on the group base and inherited, and every dataclass subclass of a
+    group carries a ``tag=`` of its own.
+
+    Each group names its own key, so confingo reserves no word across schemas and
+    two groups in one tree select under keys of their own choosing. A group
+    inherits everything ``ConfigNode`` provides, so a variant answers ``cfg``
+    operations over its own subtree like any other node.
+
+    Membership is recorded as classes are created, so a group knows the variants
+    whose modules have been imported; declaring a group's variants beside it
+    keeps that set complete.
+    """
+
+    def __init_subclass__(cls, *, tag_key: Any = None, tag: Any = None, **kwargs: Any) -> None:
+        """Declare a group or register a variant, rejecting every other shape.
+
+        Args:
+          tag_key (Any = None): For a group base, the mapping key its sections
+            select a variant under.
+          tag (Any = None): For a variant, the selection string a config file
+            writes under its group's key.
+          **kwargs (Any): Keyword arguments forwarded to ``super().__init_subclass__``.
+
+        Raises:
+          ConfigError: When the declaration names neither role, names both, puts
+            a group inside a group, reuses a selection string another variant
+            carries, or writes a keyword that is not a non-empty string.
+        """
+        super().__init_subclass__(**kwargs)
+        message = _resolve_choice_declaration(cls, tag_key, tag)
+        if message is not None:
+            raise _ConfigError([_ConfigIssue(path="", message=message)], context="config schema")
+
+
+def _resolve_choice_declaration(cls: type[Any], tag_key: Any, tag: Any) -> str | None:
+    """Apply one ``ConfigChoice`` declaration, or report why it cannot stand.
+
+    A class carrying a group record of its own is a recreation of a group base:
+    ``@dataclass(slots=True)`` builds a replacement class from a copy of the
+    original's namespace, so the record describing the group arrives already
+    made and the declaration is complete.
+
+    Args:
+      cls (type[Any]): The subclass being created.
+      tag_key (Any): The ``tag_key=`` keyword the declaration supplied.
+      tag (Any): The ``tag=`` keyword the declaration supplied.
+
+    Returns:
+      str | None: The rejection message, or None when the declaration stands.
+    """
+    if _group_record(cls) is not None:
+        return None
+    group = _owning_group(cls)
+    if tag_key is not None and tag is not None:
+        return _both_keywords_message(cls)
+    if tag_key is not None:
+        if group is not None:
+            return _nested_group_message(cls, group)
+        # The exact class, since a config file carries a plain str and a load
+        # compares what it read against what the declaration wrote.
+        if type(tag_key) is not str or len(tag_key) == 0:
+            return _keyword_type_message(cls, "tag_key", tag_key)
+        _declare_group(cls, tag_key)
+        return None
+    if group is None:
+        return _missing_tag_key_message(cls)
+    groups = _groups_in_mro(cls)
+    if len(groups) > 1:
+        return _two_groups_message(cls, groups)
+    between = _inherited_variant(cls)
+    if between is not None:
+        return _variant_of_variant_message(cls, group, between)
+    # A recreated variant arrives with no keyword and the recording the copied
+    # namespace carried, which is what tells it apart from an untagged subclass.
+    # A declaration that writes tag= is a new claim on the string whatever name
+    # it carries, so a recreation and a superseded holder are what free an entry.
+    recreated = tag is None
+    resolved = tag if tag is not None else _recorded_tag(cls)
+    if resolved is None:
+        return _untagged_variant_message(cls, group)
+    if type(resolved) is not str or len(resolved) == 0:
+        return _keyword_type_message(cls, "tag", resolved)
+    record = _group_record(group)
+    if record is not None:
+        holder = record.by_tag.get(resolved)
+        if holder is not None and holder is not cls and not recreated and not _superseded_holder(holder):
+            return _duplicate_tag_message(cls, group, resolved, holder)
+    _register_variant(group, cls, resolved)
+    return None
 
 
 def _is_config_node(config_cls: Any) -> bool:

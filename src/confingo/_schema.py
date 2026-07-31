@@ -46,6 +46,12 @@ from typing import (
 )
 
 from confingo import _arrays
+from confingo._choice import (
+    group_record,
+    is_group,
+    registry_generation,
+    variant_tag,
+)
 from confingo._errors import (
     ConfigError,
     ConfigIssue,
@@ -96,10 +102,16 @@ class _CachedResult:
     Attributes:
       owner (type): The class this result describes.
       value (Any): The computed result.
+      generation (int | None): The variant-registration generation the result was
+        computed at, for a result that reads the registry; None for one that does
+        not. A stored generation older than the current one marks the result
+        stale, which is what keeps a whole-tree schema result honest while
+        variants register as their modules import.
     """
 
     owner: type
     value: Any
+    generation: int | None = None
 
 
 def forget_schema_issues(config_cls: type[Any]) -> None:
@@ -118,24 +130,30 @@ def forget_schema_issues(config_cls: type[Any]) -> None:
         delattr(config_cls, _SCHEMA_SLOT)
 
 
-def _cached_on(config_cls: type[Any], slot: str) -> Any:
+def _cached_on(config_cls: type[Any], slot: str, *, generation: int | None = None) -> Any:
     """Read a class's own cached result, ignoring anything a base carries.
 
     Args:
       config_cls (type[Any]): The class whose result to read.
       slot (str): The attribute the result is stored under.
+      generation (int | None = None): The registration generation the caller
+        requires, for a result that reads the variant registry. A result stored
+        at any other generation is stale and reads as absent.
 
     Returns:
-      Any: The cached result, or None when this class has none of its own and
-        when the name holds something the class bound for itself.
+      Any: The cached result, or None when this class has none of its own, when
+        the name holds something the class bound for itself, and when the stored
+        result predates the registry the caller is asking about.
     """
     entry = type.__getattribute__(config_cls, "__dict__").get(slot)
     if isinstance(entry, _CachedResult) and entry.owner is config_cls:
+        if generation is not None and entry.generation != generation:
+            return None
         return entry.value
     return None
 
 
-def _store_on(config_cls: type[Any], slot: str, result: Any) -> None:
+def _store_on(config_cls: type[Any], slot: str, result: Any, *, generation: int | None = None) -> None:
     """Store a class's own cached result on the class itself.
 
     The store is a cache rather than a contract, so it yields to the class in
@@ -148,11 +166,13 @@ def _store_on(config_cls: type[Any], slot: str, result: Any) -> None:
       config_cls (type[Any]): The class the result describes.
       slot (str): The attribute to store it under.
       result (Any): The computed result.
+      generation (int | None = None): The registration generation the result was
+        computed at, for a result that reads the variant registry.
     """
     if _binds_its_own(config_cls, slot):
         return
     with contextlib.suppress(TypeError, AttributeError):
-        setattr(config_cls, slot, _CachedResult(config_cls, result))
+        setattr(config_cls, slot, _CachedResult(config_cls, result, generation))
 
 
 def _binds_its_own(config_cls: type[Any], slot: str) -> bool:
@@ -374,6 +394,7 @@ class _HintKind(Enum):
     CONTAINER = "container"
     UNSUPPORTED_GENERIC = "unsupported_generic"
     DATACLASS = "dataclass"
+    CHOICE = "choice"
     CONFIG_VALUE = "config_value"
     SCALAR = "scalar"
 
@@ -393,6 +414,10 @@ class _HintClass:
       origin (Any): ``get_origin(stripped)`` for containers/unions/literals, else None.
       args (tuple[Any, ...]): ``get_args(stripped)`` for containers/unions/literals.
       dataclass_type (type[Any] | None): The dataclass type for a DATACLASS hint.
+      choice_group (type[Any] | None): The variant-group base for a CHOICE hint.
+        The group's membership is deliberately absent: it moves as modules
+        import, and holding it here would pin one moment's registry into a cache
+        keyed by the hint alone.
     """
 
     kind: _HintKind
@@ -400,6 +425,7 @@ class _HintClass:
     origin: Any
     args: tuple[Any, ...]
     dataclass_type: type[Any] | None = None
+    choice_group: type[Any] | None = None
 
 
 def _classify_hint_uncached(hint: Any) -> _HintClass:
@@ -431,6 +457,11 @@ def _classify_hint_uncached(hint: Any) -> _HintClass:
         if origin in _CONTAINER_ORIGINS:
             return _HintClass(_HintKind.CONTAINER, stripped, origin, args)
         return _HintClass(_HintKind.UNSUPPORTED_GENERIC, stripped, origin, args)
+    if is_group(stripped):
+        # A group base is a dataclass too, so it is matched ahead of the section
+        # branch: the annotation names the set, and the file's tag names which
+        # member of it to build.
+        return _HintClass(_HintKind.CHOICE, stripped, None, (), choice_group=stripped)
     if isinstance(stripped, type) and _is_dataclass_type(stripped):
         return _HintClass(_HintKind.DATACLASS, stripped, None, (), dataclass_type=stripped)
     return _HintClass(_HintKind.SCALAR, stripped, None, ())
@@ -668,20 +699,33 @@ def _validate_schema(config_cls: type[Any]) -> tuple[ConfigIssue, ...]:
       tuple[ConfigIssue, ...]: The schema issues found, annotation issues first,
         empty when the schema is fully supported.
     """
-    cached = _cached_on(config_cls, _SCHEMA_SLOT)
+    # Read before the walk and stored with the result: a walk that reached a
+    # variant group saw this membership, so a later registration marks it stale.
+    generation = registry_generation()
+    cached = _cached_on(config_cls, _SCHEMA_SLOT, generation=generation)
     if cached is not None:
         return cached
     issues: list[ConfigIssue] = []
     defaults: list[ConfigIssue] = []
     entry_message = _entry_type_message(config_cls)
     if entry_message is None:
-        _validate_dataclass_schema(config_cls, "", issues, defaults, set())
+        if is_group(config_cls):
+            # A group reached as the entry class is the same annotation a field
+            # would name, so the walk that covers its variants runs here too.
+            _validate_choice_schema(config_cls, "", issues, defaults, set())
+        else:
+            _validate_dataclass_schema(config_cls, "", issues, defaults, set())
     else:
         # Field classification reads dataclasses.fields, so a non-dataclass entry
         # is reported here rather than walked.
         issues.append(ConfigIssue("", entry_message))
     result = (*issues, *defaults)
-    _store_on(config_cls, _SCHEMA_SLOT, result)
+    if registry_generation() != generation:
+        # A variant registered while this walk ran, which the walk may have
+        # passed before it arrived. The result describes a registry that no
+        # longer holds, so it is recomputed rather than returned or cached.
+        return _validate_schema(config_cls)
+    _store_on(config_cls, _SCHEMA_SLOT, result, generation=generation)
     return result
 
 
@@ -1234,6 +1278,13 @@ def _validate_dataclass_schema(
         if message is not None
     )
     issues.extend(ConfigIssue(path, message) for message in _facade_collision_messages(config_cls))
+    # Checked on every class carrying a selection key rather than only through
+    # the group, so a variant named directly by a field, or reached as the entry
+    # class, is held to it too. A field of that name would overwrite the
+    # selection the marshal writes, leaving a section that rejects its own output.
+    collision = _selection_key_collision_message(config_cls)
+    if collision is not None:
+        issues.append(ConfigIssue(path, collision))
     for classified in _classify_dataclass_fields(config_cls).declared:
         field = classified.definition
         field_path = _join(path, field.name)
@@ -1439,44 +1490,15 @@ def _validate_hint_schema(
         return
 
     if origin is typing.Union or origin is types.UnionType:
-        for member in args:
-            _validate_hint_schema(member, path, issues, defaults, seen)
+        _validate_union_schema(hint, args, path, issues, defaults, seen)
         return
 
     if origin is not None:
-        if origin in _BARE_CONTAINER_FORMS and not hasattr(hint, "__args__"):
-            # A legacy typing alias written without arguments spells the same
-            # argument-free container the builtin does, so it reads the same remedy.
-            # Carrying no ``__args__`` at all is what marks it, which is how it
-            # stays distinct from the explicit empty tuple ``tuple[()]``.
-            issues.append(ConfigIssue(path, open_data_message(origin)))
-            return
-        if origin not in _CONTAINER_ORIGINS:
-            issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
-            return
-        malformed = _malformed_specialization(hint, origin, args)
-        if malformed is not None:
-            issues.append(ConfigIssue(path, malformed))
-            return
-        if origin in (dict, Mapping):
-            key_hint = args[0] if len(args) == 2 else str
-            value_hint = args[1] if len(args) == 2 else Any
-            if key_hint is not str:
-                message = f"unsupported dict key type {_hint_name(key_hint)}; only str keys are supported"
-                issues.append(ConfigIssue(path, message))
-            _validate_hint_schema(value_hint, path, issues, defaults, seen)
-            return
-        if origin in (set, frozenset):
-            # An argument-free set carries Any elements, the same as a bare one.
-            element_hints = args if len(args) > 0 else (Any,)
-            for element_hint in element_hints:
-                if element_hint is Ellipsis:
-                    continue
-                _validate_set_element(hint, element_hint, path, issues, defaults, seen)
-            return
-        for element_hint in args:
-            if element_hint is not Ellipsis:
-                _validate_hint_schema(element_hint, path, issues, defaults, seen)
+        _validate_generic_schema(hint, origin, args, path, issues, defaults, seen)
+        return
+
+    if is_group(hint):
+        _validate_choice_schema(hint, path, issues, defaults, seen)
         return
 
     if _is_dataclass_type(hint):
@@ -1499,6 +1521,258 @@ def _validate_hint_schema(
             return
 
     issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
+
+
+def _validate_generic_schema(
+    hint: Any,
+    origin: Any,
+    args: tuple[Any, ...],
+    path: str,
+    issues: list[ConfigIssue],
+    defaults: list[ConfigIssue],
+    seen: set[type[Any]],
+) -> None:
+    """Collect schema issues for a parameterized generic annotation.
+
+    Args:
+      hint (Any): The whole generic hint.
+      origin (Any): ``get_origin(hint)``, the container or other generic origin.
+      args (tuple[Any, ...]): ``get_args(hint)``, the arguments it was written with.
+      path (str): Dotted schema path of the field carrying this hint.
+      issues (list[ConfigIssue]): Destination for any schema issues found.
+      defaults (list[ConfigIssue]): Destination for authored-default issues.
+      seen (set[type[Any]]): Dataclasses already visited on this path.
+    """
+    if origin in _BARE_CONTAINER_FORMS and not hasattr(hint, "__args__"):
+        # A legacy typing alias written without arguments spells the same
+        # argument-free container the builtin does, so it reads the same remedy.
+        # Carrying no ``__args__`` at all is what marks it, which is how it
+        # stays distinct from the explicit empty tuple ``tuple[()]``.
+        issues.append(ConfigIssue(path, open_data_message(origin)))
+        return
+    if origin not in _CONTAINER_ORIGINS:
+        issues.append(ConfigIssue(path, unsupported_hint_message(hint)))
+        return
+    malformed = _malformed_specialization(hint, origin, args)
+    if malformed is not None:
+        issues.append(ConfigIssue(path, malformed))
+        return
+    if origin in (dict, Mapping):
+        key_hint = args[0] if len(args) == 2 else str
+        value_hint = args[1] if len(args) == 2 else Any
+        if key_hint is not str:
+            message = f"unsupported dict key type {_hint_name(key_hint)}; only str keys are supported"
+            issues.append(ConfigIssue(path, message))
+        _validate_hint_schema(value_hint, path, issues, defaults, seen)
+        return
+    if origin in (set, frozenset):
+        # An argument-free set carries Any elements, the same as a bare one.
+        element_hints = args if len(args) > 0 else (Any,)
+        for element_hint in element_hints:
+            if element_hint is Ellipsis:
+                continue
+            _validate_set_element(hint, element_hint, path, issues, defaults, seen)
+        return
+    for element_hint in args:
+        if element_hint is not Ellipsis:
+            _validate_hint_schema(element_hint, path, issues, defaults, seen)
+
+
+def _validate_union_schema(
+    hint: Any,
+    args: tuple[Any, ...],
+    path: str,
+    issues: list[ConfigIssue],
+    defaults: list[ConfigIssue],
+    seen: set[type[Any]],
+) -> None:
+    """Collect schema issues for a union, and hold it to one config section.
+
+    A file gives one mapping for the field, so two sections in one union leave
+    which of them it names to be decided by trying each in turn. A variant group
+    is the annotation that settles it, and it counts as the union's one section
+    however many variants stand behind it.
+
+    Args:
+      hint (Any): The whole union hint.
+      args (tuple[Any, ...]): The union's members.
+      path (str): Dotted schema path of the field carrying this hint.
+      issues (list[ConfigIssue]): Destination for any schema issues found.
+      defaults (list[ConfigIssue]): Destination for authored-default issues.
+      seen (set[type[Any]]): Dataclasses already visited on this path.
+    """
+    sections = [member for member in args if _names_section(member)]
+    if len(sections) > 1:
+        issues.append(ConfigIssue(path, _union_sections_message(hint, sections)))
+    for member in args:
+        _validate_hint_schema(member, path, issues, defaults, seen)
+
+
+def _names_section(hint: Any) -> bool:
+    """Report whether a union member names a config section.
+
+    A variant group counts as one member however many variants stand behind it,
+    since the group is the single annotation a file answers with one tagged
+    mapping.
+
+    Args:
+      hint (Any): The resolved union member to inspect.
+
+    Returns:
+      bool: True when the member names a dataclass section or a variant group.
+    """
+    stripped = _strip_annotated(hint)
+    return isinstance(stripped, type) and (is_group(stripped) or _is_dataclass_type(stripped))
+
+
+def _union_sections_message(hint: Any, sections: list[Any]) -> str:
+    """Build the rejection for a union naming more than one config section.
+
+    Args:
+      hint (Any): The whole union hint being rejected.
+      sections (list[Any]): The members naming a section.
+
+    Returns:
+      str: The rejection naming the union, the count, and the group to declare.
+    """
+    named = ", ".join(_hint_name(section) for section in sections)
+    return (
+        f"{_hint_name(hint)} names {len(sections)} config sections in one union ({named}), and a config file "
+        f"gives one mapping for the field, so which section it names is decided by trying each in turn. "
+        f'Declare a variant group -- class Group(ConfigChoice, tag_key="..."), each section written as '
+        f'class Section(Group, tag="...") -- and annotate the field with that group, so the mapping names '
+        f"which section to build."
+    )
+
+
+def _validate_choice_schema(
+    group: type[Any],
+    path: str,
+    issues: list[ConfigIssue],
+    defaults: list[ConfigIssue],
+    seen: set[type[Any]],
+) -> None:
+    """Collect schema issues for a variant group and every variant behind it.
+
+    The group is the only class a field annotation names, so its variants are
+    reachable for validation through the registry alone. Walking them here is
+    what puts a variant's own annotations, defaults, and constructor under the
+    same preflight the rest of the tree gets, ahead of any value being built.
+
+    Each variant carries the group's fields too, so one walk per variant reaches
+    a shared field once per variant; the issues this raises are deduplicated so
+    the report names a shared problem once.
+
+    Args:
+      group (type[Any]): The variant-group base being validated.
+      path (str): Dotted schema path of the field carrying the group.
+      issues (list[ConfigIssue]): Destination for any schema issues found.
+      defaults (list[ConfigIssue]): Destination for authored-default issues.
+      seen (set[type[Any]]): Dataclasses already visited on this path, to break
+        reference cycles.
+    """
+    record = group_record(group)
+    if record is None:
+        return
+    if group in seen:
+        return
+    if len(record.by_tag) == 0:
+        issues.append(ConfigIssue(path, _empty_group_message(group)))
+
+    # The group's own fields are walked once, and each variant inherits them, so
+    # a variant's walk restates whatever the group's walk already reported. Only
+    # those restatements are dropped: a field the variant declares itself is a
+    # declaration of its own to fix, whatever the group says about the field of
+    # that name, and two variants each declaring a defect are two fixes.
+    shared: list[ConfigIssue] = []
+    shared_defaults: list[ConfigIssue] = []
+    _validate_dataclass_schema(group, path, shared, shared_defaults, seen)
+    issues.extend(shared)
+    defaults.extend(shared_defaults)
+    inherited = {(issue.path, issue.message) for issue in (*shared, *shared_defaults)}
+
+    for tag in sorted(record.by_tag):
+        variant_cls = record.by_tag[tag]
+        declared = set(own_annotations(variant_cls))
+        variant: list[ConfigIssue] = []
+        variant_defaults: list[ConfigIssue] = []
+        _validate_dataclass_schema(variant_cls, path, variant, variant_defaults, seen)
+        issues.extend(issue for issue in variant if _is_own_report(issue, path, declared, inherited))
+        defaults.extend(issue for issue in variant_defaults if _is_own_report(issue, path, declared, inherited))
+
+
+def _is_own_report(issue: ConfigIssue, path: str, declared: set[str], inherited: set[tuple[str, str]]) -> bool:
+    """Report whether one variant issue says something the group's walk left unsaid.
+
+    Args:
+      issue (ConfigIssue): The issue the variant's walk produced.
+      path (str): Dotted schema path of the field carrying the group.
+      declared (set[str]): The field names the variant declares in its own body.
+      inherited (set[tuple[str, str]]): Path and message of every issue the
+        group's own walk already reported.
+
+    Returns:
+      bool: True when the issue belongs in the report.
+    """
+    if (issue.path, issue.message) not in inherited:
+        return True
+    relative = issue.path[len(path) :].lstrip(".")
+    # A field the variant declares itself carries its own defect, so an identical
+    # report from the group describes a second declaration rather than this one.
+    return len(relative) > 0 and relative.split(".", 1)[0] in declared
+
+
+def _empty_group_message(group: type[Any]) -> str:
+    """Build the rejection for a variant group carrying no variants.
+
+    Args:
+      group (type[Any]): The group base being validated.
+
+    Returns:
+      str: The rejection naming the group and how to add a variant.
+    """
+    return (
+        f"the variant group {class_label(group)} has no variants, so no config file can select one; write "
+        f'class Section({group.__name__}, tag="...") for each section the group stands for, and import the '
+        f"module declaring them alongside the schema that names the group."
+    )
+
+
+def _selection_key_collision_message(config_cls: type[Any]) -> str | None:
+    """Report a field whose name is the key its group selects variants under.
+
+    Args:
+      config_cls (type[Any]): The class to inspect, a group base or a variant.
+
+    Returns:
+      str | None: The rejection naming both uses of the key, or None when the
+        class belongs to no group or declares no field of that name.
+    """
+    group = config_cls if is_group(config_cls) else None
+    if group is None:
+        resolved = variant_tag(config_cls)
+        if resolved is None:
+            return None
+        group = resolved[0]
+    record = group_record(group)
+    if record is None:
+        return None
+    tag_key = record.tag_key
+    if tag_key not in _classify_dataclass_fields(config_cls).by_name:
+        return None
+    # The class named is the one whose body declares the field, so a field the
+    # group declares reads the same from the group's walk and from every variant
+    # that inherits it, which is what leaves one report for the one declaration
+    # to fix.
+    declaring = next(
+        (base for base in config_cls.__mro__ if tag_key in own_annotations(base)),
+        config_cls,
+    )
+    return (
+        f"{class_label(declaring)} declares a field named {tag_key!r}, which is the key the variant group "
+        f"{class_label(group)} selects a variant under, so one key in the section would name both. Rename "
+        f"the field, or declare the group with a different tag_key=."
+    )
 
 
 _EXACT_SCALAR_TYPES: frozenset[Any] = frozenset({bool, int, float, str, Path, dt.datetime, dt.date, dt.time})

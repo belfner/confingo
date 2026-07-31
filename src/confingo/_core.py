@@ -70,6 +70,12 @@ from typing import (
 )
 
 from confingo import _arrays
+from confingo._choice import (
+    ChoiceGroup,
+    group_record,
+    is_group,
+    variant_tag,
+)
 from confingo._defaults import (
     DEFAULT_LABEL,
     FACTORY_LABEL,
@@ -79,6 +85,7 @@ from confingo._errors import (
     _UNSET,
     RESOURCE_ERRORS,
     ConfigError,
+    ConfigIssue,
     _IssueCollector,
     _reject,
     class_label,
@@ -195,7 +202,12 @@ def from_dict[T](config_cls: type[T], data: Mapping[str, Any], *, context: str =
     if len(schema_issues) > 0:
         raise ConfigError(schema_issues, context=context)
     collector = _IssueCollector()
-    instance = _build(config_cls, data, "", collector)
+    if is_group(config_cls):
+        # A group entry dispatches on the selection the mapping carries, so
+        # ``Group.cfg.load_json(path)`` builds whichever variant the file names.
+        instance = _coerce_choice(data, config_cls, "", collector)
+    else:
+        instance = _build(config_cls, data, "", collector)
     if not collector.clean():
         raise ConfigError(collector.issues, context=context, pending_lifecycle_paths=collector.pending_lifecycle_paths)
     return typing.cast("T", instance)
@@ -251,14 +263,25 @@ def _build(
     hints = _resolved_hints(config_cls)
     classification = _classify_dataclass_fields(config_cls)
     loadable_names = {item.definition.name for item in classification.init_fields}
+    # A variant carries a selection string, which its group's key holds in the
+    # mapping. The key is no field of the class, so it is consumed here rather
+    # than reported unknown: that is what lets a section this class marshalled be
+    # read back through the class itself, and what catches a mapping naming one
+    # variant handed to another.
+    selection_key, selection_issue = _selection_in_data(config_cls, data, path)
+    if selection_issue is not None:
+        collector.add(selection_issue.path, selection_issue.message)
+
     for key in data:
+        if key == selection_key:
+            continue
         if key in classification.by_name and key not in loadable_names:
             collector.add(_join(path, str(key)), "field is not configurable (init=False)")
         elif key not in loadable_names:
             collector.add(_join(path, str(key)), f"unknown key (known keys: {', '.join(sorted(loadable_names))})")
 
     kwargs: dict[str, Any] = {}
-    node_failed = False
+    node_failed = selection_issue is not None
     for classified in classification.init_fields:
         field = classified.definition
         field_path = _join(path, field.name)
@@ -306,6 +329,225 @@ def _build(
         _record_pending_lifecycle(config_cls, path, collector, post_init=False, completeness=False)
         return _UNSET
     return instance
+
+
+def _selection_in_data(
+    config_cls: type[Any], data: Mapping[str, Any], path: str
+) -> tuple[str | None, ConfigIssue | None]:
+    """Resolve the selection key a variant's own mapping carries, and check it.
+
+    A registered variant carries a selection key; every other class answers with
+    None. A variant reached through its own annotation may leave the key to the
+    annotation, which already names the class, so a mapping carrying the key and
+    one leaving it out are both that variant's.
+
+    Args:
+      config_cls (type[Any]): The class being built.
+      data (Mapping[str, Any]): The mapping of values for this node.
+      path (str): Dotted path of this node.
+
+    Returns:
+      tuple[str | None, ConfigIssue | None]: The key to consume rather than
+        report as unknown, and the issue raised when the mapping names a
+        different variant than the class being built.
+    """
+    resolved = variant_tag(config_cls)
+    if resolved is None:
+        return None, None
+    group, tag = resolved
+    record = group_record(group)
+    if record is None or record.tag_key not in data:
+        return None, None
+    key = record.tag_key
+    carried = data[key]
+    # The class leads the match, which is the order the group's own dispatch
+    # reads a selection in: a config file carries a plain str, so the class is
+    # what says whether comparing the two strings is the question to ask.
+    if type(carried) is str and carried == tag:
+        return key, None
+    message = (
+        f"expected {tag!r}, the selection string {class_label(config_cls)} carries, got {carried!r}; "
+        f"annotate the field with {class_label(group)} to let a config file choose among "
+        f"{record.tags()}"
+    )
+    return key, ConfigIssue(_join(path, key), message)
+
+
+def _coerce_choice(
+    value: Any,
+    group: type[Any],
+    path: str,
+    collector: _IssueCollector,
+    data_chain: tuple[int, ...] = (),
+    depth: int = 0,
+) -> Any:
+    """Build the one variant a mapping's selection string names.
+
+    Exactly one variant is constructed, so the section's ``__post_init__`` and
+    ``__validate__`` run once for the class the file selected. Each rejection
+    here lands ahead of ``_build``, so the lifecycle work it leaves for a later
+    load is recorded here instead.
+
+    Args:
+      value (Any): The raw value from the config mapping.
+      group (type[Any]): The variant-group base the annotation names.
+      path (str): Dotted path of this node.
+      collector (_IssueCollector): Destination for any issues found.
+      data_chain (tuple[int, ...] = ()): Ids of the supplied mappings open on this branch.
+      depth (int = 0): How deep in the plain document this node sits.
+
+    Returns:
+      Any: The constructed variant, or the ``_UNSET`` sentinel when the selection
+        or the section it named failed.
+    """
+    record = group_record(group)
+    if record is None:
+        return _reject(collector, path, f"expected a mapping for {class_label(group)}, got {_typename(value)}")
+    # The three checks that end a section before its keys are read, in the order
+    # ``_build`` applies them, so a mapping that reaches itself or runs past the
+    # nesting budget reports that rather than the selection it also lacks.
+    if not isinstance(value, Mapping):
+        _record_pending_choice(group, record, path, collector)
+        return _reject(collector, path, f"expected a mapping for {class_label(group)}, got {_typename(value)}")
+    if depth >= MAX_PLAIN_DEPTH:
+        _record_pending_choice(group, record, path, collector)
+        return _reject(collector, path, plain_depth_message())
+    if id(value) in data_chain:
+        _record_pending_choice(group, record, path, collector)
+        return _reject(collector, path, plain_cycle_message())
+
+    if record.tag_key not in value:
+        return _reject_selection(
+            group,
+            record,
+            value,
+            path,
+            collector,
+            data_chain,
+            depth,
+            f"missing required value (expected one of {record.tags()})",
+        )
+
+    carried = value[record.tag_key]
+    # The exact class, the same match ``_selection_in_data`` applies on the way
+    # into a variant, since a config file carries a plain str and a load compares
+    # what it read against what the declaration wrote.
+    variant = record.by_tag.get(carried) if type(carried) is str else None
+    if variant is None:
+        return _reject_selection(
+            group,
+            record,
+            value,
+            path,
+            collector,
+            data_chain,
+            depth,
+            f"expected one of {record.tags()}, got {carried!r}",
+        )
+    return _build(variant, value, path, collector, (), data_chain, depth)
+
+
+def _reject_selection(
+    group: type[Any],
+    record: ChoiceGroup,
+    value: Mapping[str, Any],
+    path: str,
+    collector: _IssueCollector,
+    data_chain: tuple[int, ...],
+    depth: int,
+    message: str,
+) -> Any:
+    """Report a selection this section failed to name, and walk what stays known.
+
+    The selection leads the report, since it is what a fix starts from, and the
+    fields the group declares follow it: those are inherited by every variant, so
+    a value under one of their names is judged against the same annotation
+    whichever variant the corrected selection turns out to name.
+
+    Args:
+      group (type[Any]): The variant-group base the annotation names.
+      record (ChoiceGroup): The group's registry record.
+      value (Mapping[str, Any]): The mapping of values for this node.
+      path (str): Dotted path of this node.
+      collector (_IssueCollector): Destination for any issues found.
+      data_chain (tuple[int, ...]): Ids of the supplied mappings open on this branch.
+      depth (int): How deep in the plain document this node sits.
+      message (str): What the selection at this node reports.
+
+    Returns:
+      Any: The ``_UNSET`` sentinel.
+    """
+    _record_pending_choice(group, record, path, collector)
+    collector.add(_join(path, record.tag_key), message)
+    _coerce_shared_fields(group, record, value, path, collector, data_chain, depth)
+    return _UNSET
+
+
+def _coerce_shared_fields(
+    group: type[Any],
+    record: ChoiceGroup,
+    value: Mapping[str, Any],
+    path: str,
+    collector: _IssueCollector,
+    data_chain: tuple[int, ...],
+    depth: int,
+) -> None:
+    """Walk the values the group's own fields hold, so their issues join this pass.
+
+    A field the group declares and every variant inherits carries one annotation
+    across the whole group, so a value under that name is judged the same way
+    whichever variant the corrected selection turns out to name. Walking those
+    values here is what keeps one pass reporting every issue the tree carries
+    when the selection itself failed, and every issue it reports is one the fixed
+    selection still has to answer for.
+
+    Each variant answers for the annotation a name carries on it, and the walk
+    reads that answer off the variant's own resolved hints rather than off the
+    body it declares, so a reading a variant takes from a base it mixes in counts
+    the same as one it writes. A name any variant reads another way is that
+    selection's to settle, and the walk leaves it. Names outside the group's own
+    fields are left for the same reason: which further names the section carries
+    is the selected variant's to say, as is a value it requires and this mapping
+    omits.
+
+    Args:
+      group (type[Any]): The variant-group base the annotation names.
+      record (ChoiceGroup): The group's registry record.
+      value (Mapping[str, Any]): The mapping of values for this node.
+      path (str): Dotted path of this node.
+      collector (_IssueCollector): Destination for any issues found.
+      data_chain (tuple[int, ...]): Ids of the supplied mappings open on this branch.
+      depth (int): How deep in the plain document this node sits.
+    """
+    node_chain = (*data_chain, id(value))
+    hints = _resolved_hints(group)
+    variant_hints = [_resolved_hints(variant) for variant in record.by_tag.values()]
+    for classified in _classify_dataclass_fields(group).init_fields:
+        name = classified.definition.name
+        if any(carried.get(name, _UNSET) != hints.get(name, _UNSET) for carried in variant_hints):
+            continue
+        if name not in value or name not in hints:
+            continue
+        _coerce(value[name], hints[name], _join(path, name), collector, data_chain=node_chain, depth=depth + 1)
+
+
+def _record_pending_choice(group: type[Any], record: ChoiceGroup, path: str, collector: _IssueCollector) -> None:
+    """Record the lifecycle work a group section leaves when no variant is selected.
+
+    No variant is chosen at this point, so any of them could be the one a fixed
+    config selects. The path is named when the group or any variant behind it
+    declares a stage, which keeps a hook only one variant carries from going
+    unreported.
+
+    Args:
+      group (type[Any]): The variant-group base.
+      record (ChoiceGroup): The group's registry record.
+      path (str): Dotted path of the node.
+      collector (_IssueCollector): Destination for the pending path.
+    """
+    _record_pending_lifecycle(group, path, collector)
+    for tag in sorted(record.by_tag):
+        _record_pending_lifecycle(record.by_tag[tag], path, collector)
 
 
 _NO_BINDING = object()
@@ -433,7 +675,7 @@ def _holds_sections(value: Any, hint: Any = None) -> bool:
     if hint is None:
         return False
     kind = _classify_hint(hint).kind
-    return kind in (_HintKind.DATACLASS, _HintKind.CONTAINER, _HintKind.UNION)
+    return kind in (_HintKind.DATACLASS, _HintKind.CHOICE, _HintKind.CONTAINER, _HintKind.UNION)
 
 
 def _check_node_lifecycle(instance: Any, config_cls: type[Any], path: str, collector: _IssueCollector) -> bool:
@@ -714,6 +956,12 @@ def _absent_field_value(
         _check_authored_sections(field.default, path, collector)
         return _KEEP_DECLARED
     stripped = _strip_annotated(hint)
+    if is_group(stripped):
+        # An absent group section builds implicitly from an empty mapping too, so
+        # the selection it needs is reported at the key's own nested path rather
+        # than as a bare section this file omitted. It terminates on its own: the
+        # empty mapping names no variant, so nothing recurses.
+        return _coerce_choice({}, stripped, path, collector, data_chain, depth)
     if not _is_dataclass_type(stripped):
         return _reject(collector, path, "missing required value")
     # An absent dataclass section builds implicitly from an empty mapping, so its
@@ -818,6 +1066,8 @@ def _coerce(
         return _coerce_scalar(value, plan.stripped, path, collector)
     if kind is _HintKind.DATACLASS:
         return _build(typing.cast("type[Any]", plan.dataclass_type), value, path, collector, (), data_chain, depth)
+    if kind is _HintKind.CHOICE:
+        return _coerce_choice(value, typing.cast("type[Any]", plan.choice_group), path, collector, data_chain, depth)
     if kind is _HintKind.CONTAINER:
         return _coerce_container(value, plan.stripped, plan.origin, plan.args, path, collector, data_chain, depth)
     if kind is _HintKind.UNION:

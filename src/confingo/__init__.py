@@ -19,7 +19,10 @@ from confingo._errors import (
     ConfigError,
     ConfigIssue,
 )
-from confingo._node import ConfigNode
+from confingo._node import (
+    ConfigChoice,
+    ConfigNode,
+)
 from confingo.typing import (
     ConfigScalar,
     ConfigValue,
@@ -27,10 +30,11 @@ from confingo.typing import (
 
 
 # Kept in sync with the version declared in pyproject.toml.
-__version__ = "2.1.0"
+__version__ = "3.0.0"
 
 
 __all__ = [
+    "ConfigChoice",
     "ConfigError",
     "ConfigIssue",
     "ConfigNode",

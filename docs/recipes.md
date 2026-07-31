@@ -181,6 +181,70 @@ class ScheduleConfig:
 Building `ScheduleConfig` with `warmup_steps=100, total_steps=10` reports `warmup_steps must be <= total_steps` at the section's path. See [dataclass invariants](validation-and-errors.md#dataclass-invariants).
 
 
+### Let the file pick one implementation
+
+Declare a variant group when a section's shape depends on which implementation a run uses:
+
+```python
+from dataclasses import (
+    dataclass,
+    field,
+)
+
+from confingo import (
+    ConfigChoice,
+    ConfigNode,
+)
+
+
+@dataclass
+class Sampler(ConfigChoice, tag_key="strategy"):
+    batch_size: int = 32
+
+
+@dataclass
+class Uniform(Sampler, tag="uniform"):
+    seed: int = 0
+
+
+@dataclass
+class Weighted(Sampler, tag="weighted"):
+    weights: dict[str, float] = field(default_factory=dict)
+    replacement: bool = True
+
+
+@dataclass
+class DataConfig(ConfigNode):
+    sampler: Sampler
+```
+
+```yaml
+sampler:
+  strategy: weighted
+  batch_size: 64
+  weights: {rare: 3.0, common: 1.0}
+```
+
+Loading builds `Weighted(batch_size=64, weights={...}, replacement=True)`. Dispatch on the built class where the run uses it:
+
+```python
+match config.sampler:
+    case Weighted(weights=weights, replacement=replacement):
+        sampler = WeightedRandomSampler(weights, replacement=replacement)
+    case Uniform(seed=seed):
+        sampler = RandomSampler(generator=torch.Generator().manual_seed(seed))
+```
+
+To sweep implementations, overlay the selection along with the fields it brings:
+
+```python
+for section in ({"strategy": "uniform", "seed": 0}, {"strategy": "weighted", "weights": {"rare": 3.0}}):
+    config = DataConfig.cfg.from_dict({**base, "sampler": section})
+```
+
+See [variant groups](types-and-coercion.md#variant-groups) for the exact rules, and [schema design](schema-design.md#variant-groups) for how to shape one.
+
+
 ---
 
 Essentials: [Getting started](getting-started.md) | [Arrays and tensors](arrays-and-tensors.md) | [Files, formats, and run identity](files-and-identity.md) | [Documentation home](README.md)

@@ -14,13 +14,15 @@ uv run python run.py
 | `schema.py` | The schema. One section per part of the type boundary. |
 | `boundary.py` | The first shape each boundary rule declines, one per rule. |
 | `showcase.yaml` | A config file supplying every field, with comments on the values that demonstrate a rule. |
-| `run.py` | Loads the schema and prints what each feature produced, in thirteen sections. Calls all 13 `confingo.functional` operations, and every one that also has a `cfg` form through both surfaces, comparing the two. |
+| `run.py` | Loads the schema and prints what each feature produced, in fourteen sections. Calls all 13 `confingo.functional` operations, and every one that also has a `cfg` form through both surfaces, comparing the two. |
 
 ## What the schema covers
 
 **Scalars and choices** (`OptimizerConfig`, `DataConfig`): `bool`, `int`, `float`, `str`, `Path`, `datetime`, `date`, `time`, `Literal[...]`, and enums with `str` and `int` member values, matched by member value, by member name, and through a `_missing_` hook that maps a spelling the members lack. Unions cover `T | None` and both orders of a numeric union.
 
-**Sections** (`ScheduleConfig`, `CheckpointConfig`): a `frozen=True, slots=True, weakref_slot=True` section, sub-config fields carrying bare annotations so an omitted section builds from an empty mapping, and one section selected through an explicit `default_factory` baseline whose values differ from its own field defaults.
+**Sections** (`CheckpointConfig`): sub-config fields carrying bare annotations so an omitted section builds from an empty mapping, and one section selected through an explicit `default_factory` baseline whose values differ from its own field defaults.
+
+**Variant groups** (`ScheduleConfig`): one annotation standing for the three schedules a run may pick, selected by the `kind` key the group names. `total_steps` is declared once on the group and shared, each variant adds fields of its own, and `ConstantSchedule` carries the shared field alone. `CosineSchedule` is also the `frozen=True, slots=True, weakref_slot=True` section, so the variant a file selects is the one a weak reference is taken to.
 
 **Containers** (`DataConfig`): `list[T]`, `tuple[X, Y]`, `tuple[T, ...]`, `tuple[()]`, `dict[str, T]`, `Sequence[T]`, `Mapping[str, T]`.
 

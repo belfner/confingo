@@ -35,7 +35,7 @@ SHOWCASE_EXPECTED_LINES = (
     "YAML equals original   True",
     "one fingerprint        True",
     "root round trip        True",
-    "issues:  16",
+    "issues:  17",
     "Run fingerprint:   5f05d51256bf",
 )
 
@@ -72,6 +72,11 @@ SHOWCASE_EXPECTED_FRAGMENTS = (
     "amsgrad             True",
     "_missing_ maps a spelling the members lack",
     "weakref.ref(schedule)  True   weakref_slot=True on a slotted section",
+    # The variant group: the key the group names selects one class, the shared
+    # field comes from the group, and the selection leads the exported section.
+    "class built            CosineSchedule",
+    "kind: constant  builds ConstantSchedule",
+    "schedule.kind: expected one of 'constant' | 'cosine' | 'linear', got 'cosinus'",
     # Every operation confingo.functional carries, called through both surfaces
     # and compared, so dropping either form fails this test.
     "  to_dict                agree: True",

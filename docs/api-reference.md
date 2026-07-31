@@ -11,6 +11,7 @@ The package root carries the names a schema is written with. `confingo.functiona
 
 ```python
 from confingo import (
+    ConfigChoice,
     ConfigError,
     ConfigIssue,
     ConfigNode,
@@ -37,6 +38,8 @@ from confingo.functional import (
 `confingo.__version__` carries the package version.
 
 `ConfigValue` and `ConfigScalar` are the annotations for a field holding open-ended plain data; see [open data](types-and-coercion.md#open-data).
+
+`ConfigChoice` is the base a [variant group](types-and-coercion.md#variant-groups) is declared on, for a field whose section the config file chooses.
 
 
 ## Construction and conversion
@@ -149,6 +152,14 @@ A helper written over any node class takes the class itself, `def build(config_c
 What confingo installs on a schema class, and what it rejects. Learn more: [canonical equality](schema-design.md#canonical-equality).
 
 Schema classes are ordinary `@dataclass` declarations. Every schema class carries canonical equality: two configs are `==` exactly when their compared fields (`init=True` and `compare=True`) serialize to the same plain form (`NotImplemented` for a different class), with array and tensor fields compared through the backends' vectorized operations. A `ConfigNode` subclass carries canonical equality from class-creation time; every other schema dataclass receives it at first schema processing, replacing the generated `__eq__` it carried. Config objects are unhashable and `config_hash` carries value identity: a class carries `__hash__ = None` from its first schema processing, and a `ConfigNode` subclass holds the same contract from class creation through a `__hash__` that raises `TypeError` naming `config_hash`. confingo owns equality and hashing. A class that hand-writes `__eq__` or `__hash__` is rejected: a `ConfigNode` subclass at class creation, including one that inherits a hand-written definition from a base, and a plain dataclass at first schema touch. A conflicting `@dataclass` flag (`init=False`, `unsafe_hash=True`, `eq=False`, `order=True`) raises a `ConfigError` at first schema processing, with the one exception that a `ConfigNode` subclass declared `unsafe_hash=True` fails at class creation with the standard-library `TypeError` for overwriting `__hash__`. `frozen`, `slots`, and `weakref_slot` are supported. Two further rules say what a schema class may be, both reported at preflight and both covered in [what a schema class may be](schema-design.md#what-a-schema-class-may-be): a section may not also be one of the kinds a walk dispatches on (`Mapping`, `Sequence`, `set`, `frozenset`, `Enum`, `Path`, `date`, `time`), and its constructor must accept every `init=True` field as a keyword while requiring nothing else, which is what the generated `__init__` does and what a required `InitVar` breaks.
+
+### `ConfigChoice`
+
+The base a [variant group](types-and-coercion.md#variant-groups) is declared on. `class Group(ConfigChoice, tag_key="...")` declares the group and the mapping key its sections select a variant under; `class Section(Group, tag="...")` adds one variant under the string a config file writes there. `ConfigChoice` extends `ConfigNode`, so a group and every variant answer `cfg` operations over their own subtree, and `Group.cfg.from_dict(...)` dispatches on the mapping's key and returns the variant it names.
+
+The class contracts, each checked at class creation and each naming its remedy. A `ConfigChoice` subclass declares exactly one of `tag_key=` or `tag=`, and the value is a non-empty `str` of that exact class, since a config file carries a plain string and a load compares what it read against what the declaration wrote. `tag_key=` declares a group and is written on a direct `ConfigChoice` subclass. `tag=` declares a variant, is written on a dataclass subclass of exactly one group, is unique within that group, and names a class that subclasses the group directly, since a variant is a leaf.
+
+Two further contracts are checked at preflight: a group carries at least one registered variant, and the field names of a group and of every variant stay clear of the group's key, which the export writes there. Every registered variant's own schema is checked through the group annotation, so a variant reachable only through the registry is preflighted with the rest of the tree, whether the group is reached as a field's annotation or as the entry class.
 
 ### `config_equal(left, right) -> bool`
 

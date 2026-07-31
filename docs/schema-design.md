@@ -145,6 +145,80 @@ Subclassing reserves one name, `cfg`, which carries every operation. A node decl
 Each subclass that declares its own fields carries the `@dataclass` decorator. A subclass that declares annotations without it inherits the base's fields alone, so confingo reports it as a schema error naming the class.
 
 
+## Variant groups
+
+When a field should hold any of several sections, declare a variant group: a base carrying the key its sections select under, and one class per member carrying the string a file writes there.
+
+```python
+from dataclasses import (
+    dataclass,
+    field,
+)
+
+from confingo import (
+    ConfigChoice,
+    ConfigNode,
+)
+
+
+@dataclass
+class Optimizer(ConfigChoice, tag_key="algorithm"):
+    lr: float = 3e-4                      # every variant carries this
+
+
+@dataclass
+class AdamW(Optimizer, tag="adamw"):
+    betas: tuple[float, float] = (0.9, 0.999)
+
+
+@dataclass
+class SGD(Optimizer, tag="sgd"):
+    momentum: float = 0.9
+
+
+@dataclass
+class TrainingConfig(ConfigNode):
+    optimizer: Optimizer
+```
+
+Design rules:
+
+- **Shared fields go on the group.** Every variant inherits them, and a variant carrying only those inherited fields is complete.
+- **The group's fields lead every variant's signature.** Inheritance puts them first, so a group declaring a defaulted field pairs with `@dataclass(kw_only=True)` on the group and on each variant, which leaves each variant free to declare required fields of its own:
+
+  ```python
+  @dataclass(kw_only=True)
+  class Optimizer(ConfigChoice, tag_key="algorithm"):
+      lr: float = 3e-4
+
+
+  @dataclass(kw_only=True)
+  class SGD(Optimizer, tag="sgd"):
+      momentum: float               # required, and declared after a defaulted field
+  ```
+- **Every dataclass subclass of a group carries a `tag=`, and subclasses the group directly.** One rule covers the hierarchy, so a group's variants are exactly its subclasses and each is a leaf. A layer of shared fields belongs on the group itself.
+- **Each group names its own key.** `tag_key=` is required at the group, so each group's key belongs to that group alone and two groups in one tree select under keys of their own choosing. A field named for the key is reported at preflight on the group and on every variant, since that field would overwrite the selection the export writes.
+- **Selection is required.** A group section always names its variant. A fallback belongs at the field: `optimizer: Optimizer = field(default_factory=lambda: AdamW(lr=1e-3))`, the same [authored factory](#authored-factories-and-partial-files) any section uses.
+- **Declare a group's variants beside it.** Variants register as their classes are created, which is when the declaring module is imported, so a group knows the variants whose modules have been imported. One module holding the group and its variants keeps that set complete and keeps registration on the importing thread, where the schema is read.
+
+`ConfigChoice` extends `ConfigNode`, so a group and its variants answer `cfg` operations over their own subtree, and `Optimizer.cfg.load_json(path)` dispatches on the file's key and returns the variant it names.
+
+The dataclass flags carry their usual rules across the hierarchy. `slots=True` works on a variant on its own. A frozen variant sits under a frozen group, since `dataclasses` holds a frozen class to a frozen base, and `weakref_slot=True` is paired with `slots=True`:
+
+```python
+@dataclass(frozen=True)
+class Schedule(ConfigChoice, tag_key="kind"):
+    total_steps: int = 10_000
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class Cosine(Schedule, tag="cosine"):
+    min_lr_ratio: float = 0.1
+```
+
+The exact coercion, reporting, and round-trip rules are in [variant groups](types-and-coercion.md#variant-groups).
+
+
 ## Runtime-resolvable annotations
 
 Define schema classes at module scope. Annotations are resolved at load time from the defining module's namespace, so module-level classes make forward references (including `from __future__ import annotations` strings) resolvable. `Annotated[T, ...]` fields behave as their base type `T`.

@@ -18,6 +18,7 @@ Start from the value a field holds and read down to the rules that govern it:
 | a nullable value | `T \| None` | [Unions and optionals](#unions-and-optionals) |
 | a first-match choice of types | `X \| Y` in declaration order, with a numeric pair settled by the value's own class | [Unions and optionals](#unions-and-optionals) |
 | a nested section | a dataclass type | [Nested dataclasses](#nested-dataclasses); builds implicitly from its own leaves |
+| one section chosen from several | a [variant group](#variant-groups) base | [Variant groups](#variant-groups); the file names which variant to build |
 | an ordered collection | `list[T]`, `tuple[T, ...]`, `tuple[X, Y]`, `Sequence[T]` | [Sequences and tuples](#sequences-and-tuples) |
 | a unique collection | `set[T]`, `frozenset[T]` | [Sequences and tuples](#sequences-and-tuples) |
 | a keyed collection | `dict[str, T]`, `Mapping[str, T]` | [Mappings](#mappings); keys are strings |
@@ -93,6 +94,59 @@ A bare-annotated dataclass field defaults to an implicit build from an empty map
 The annotation drives construction, so a section annotated with a [config node](schema-design.md#config-nodes) class rebuilds as that class, in a direct field, in a container, or as a union member. Construction runs through the same recursion that builds a plain dataclass section, so each section's `__post_init__` and `__validate__` run once for the value that is kept.
 
 
+## Variant groups
+
+A variant group is one annotation standing for a closed set of sections. The field names the group, and the config section names which variant to build, under a key the group chooses:
+
+```python
+from dataclasses import dataclass
+
+from confingo import ConfigChoice
+
+
+@dataclass
+class Optimizer(ConfigChoice, tag_key="algorithm"):
+    lr: float = 3e-4                    # shared by every variant
+
+
+@dataclass
+class AdamW(Optimizer, tag="adamw"):
+    betas: tuple[float, float] = (0.9, 0.999)
+
+
+@dataclass
+class SGD(Optimizer, tag="sgd"):
+    momentum: float = 0.9
+
+
+@dataclass
+class TrainingConfig:
+    optimizer: Optimizer
+```
+
+```yaml
+optimizer:
+  algorithm: sgd
+  lr: 0.1
+  momentum: 0.8
+```
+
+That section builds `SGD(lr=0.1, momentum=0.8)`. The rules:
+
+- The key is the group's own, named by `tag_key=` at the group and written by each variant as `tag=`. Two groups in one tree select under keys of their own choosing, and a group or variant declaring a field of that name is reported at preflight, since that field would overwrite the selection on export.
+- Selection is required. A section that leaves the key out reports at the key's own dotted path (`optimizer.algorithm: missing required value`), and an absent group section reports the same way, since it builds implicitly from an empty mapping like any other section. A default section is written at the field with `field(default_factory=lambda: AdamW(lr=1e-3))`.
+- One variant is constructed. The key names a single class, so that section's `__post_init__` and `__validate__` run once, for the class the file selected.
+- Fields declared on the group are inherited by every variant, and a variant carrying only those inherited fields is complete. A variant is a leaf: every dataclass subclass of a group carries a `tag=` and subclasses the group directly, so a group's variants are exactly its subclasses.
+- The selection leads the exported mapping, and it comes from the object's own class, so `to_dict(AdamW(lr=0.2))` carries `algorithm` for a variant rendered on its own as much as for one reached through a group-annotated field.
+- Because the selection is part of the exported data, two variants holding equal field values fingerprint apart.
+
+A field may also name one variant directly (`optimizer: AdamW`), which fixes the class. Such a field accepts both `{algorithm: "adamw", lr: 0.5}` and the field-only `{lr: 0.5}`, and a section naming a different variant is reported.
+
+Variants are registered as their classes are created, which is when the declaring module is imported, so a group knows the variants whose modules have been imported. Declaring a group's variants beside it, in one module, is what keeps that set complete and puts registration on the importing thread.
+
+A union names at most one section. `AdamW | SGD` is reported at preflight, naming the group to declare, since a file gives one mapping for the field and which section it names would be settled by trying each in turn. A group counts as that one section however many variants stand behind it, so `Optimizer | int`, `Optimizer | None`, and `AdamW | int` are all accepted. See [unions and optionals](#unions-and-optionals).
+
+
 ## Sequences and tuples
 
 A sequence-container annotation whose positions carry one shared meaning accepts a sequence, a `set`, or a `frozenset` as input. A fixed-arity `tuple[X, Y]` gives each position its own meaning, so it takes an ordered sequence:
@@ -134,7 +188,9 @@ Typical ML shapes: `hidden_widths: tuple[int, ...]` for layer sizes, `tuple[int,
 
 ## Unions and optionals
 
-Union members are tried in declaration order and the first member that coerces cleanly wins, so order unions deliberately: `int | str` sends `5` to `int` and `"5"` to `str`, while `OptimizerConfig | SchedulerConfig` tries `OptimizerConfig` first for every mapping.
+Union members are tried in declaration order and the first member that coerces cleanly wins, so order unions deliberately: `int | str` sends `5` to `int` and `"5"` to `str`, and `AdamW | int` tries `AdamW` first for every mapping.
+
+A union names at most one config section, counting a [variant group](#variant-groups) as the one section it stands for. Trying members in turn settles a union by the plain form each was written as, and two sections are two readers of the one form a file gives, so `AdamW | SGD` is reported at preflight with the group to declare instead. `Optimizer | int`, `Optimizer | None`, `AdamW | int`, and `AdamW | None` all name one section and are accepted, and so is a union of containers such as `list[AdamW] | list[SGD]`, where the container is what each member names.
 
 One rule runs ahead of that order, and it applies to a union naming **two distinct classes** from `bool`, `int`, and `float`. A file states each of the three as itself, so a value's own class names which one the file carried, and the member naming that class is tried first. This is what makes `int | float` and `float | int` both round-trip: an `int` field reads an integral float so that `1e6` is accepted, which by declaration order alone would send a `1.0` to the `int` member and read it back as `1`. Once the rule applies, the member naming the carried class outranks every other member, an earlier member of another kind included, since that is what settles the conversion between the two numeric classes.
 
@@ -146,11 +202,11 @@ When every member fails, the field reports a summary naming the whole union and 
 
 ```text
 config has 2 issues:
-  - optimizer: expected AdamW | SGD; best match SGD failed with 1 issue
-  - optimizer.lr: expected float, got str
+  - stages: expected list[AdamW] | list[SGD]; best match list[SGD] failed with 1 issue
+  - stages.0.lr: expected float, got str
 ```
 
-"Closest" is the member whose attempt collected the fewest issues, and an equal count goes to the first declared member. That tie is what two structurally identical variants produce when only their discriminator `Literal` differs and the file carries a typo: each fails once, so the first declared member supplies the detail while the summary still names the whole union.
+"Closest" is the member whose attempt collected the fewest issues, and an equal count goes to the first declared member, which is what two members failing once each produce: the first supplies the detail while the summary still names the whole union.
 
 `T | None` is special-cased: `None` is accepted directly, and any other input coerces straight through `T`, preserving nested issue paths and running the section's construction hooks exactly once.
 
@@ -216,7 +272,7 @@ The accepted annotation set is explicit and closed:
 | Enums / literals | `Enum` subclasses with primitive member values; `Literal` with primitive or `None` options |
 | Open data | `ConfigValue` for plain data of any shape, `ConfigScalar` for one plain leaf; see [open data](#open-data) |
 | Containers | `list[T]`, `tuple[T, ...]`, `dict[str, T]`, `Sequence[T]`, `Mapping[str, T]`, each naming its element type; `set[T]` and `frozenset[T]` with an element that [rebuilds hashable](#sequences-and-tuples) |
-| Structure | dataclasses (each `init=True` field boundary-checked; an `init=False` field holds runtime state and is exempt), unions of accepted members, `Optional[T]` |
+| Structure | dataclasses (each `init=True` field boundary-checked; an `init=False` field holds runtime state and is exempt), [variant groups](#variant-groups) with every registered variant boundary-checked, unions naming at most one section, `Optional[T]` |
 | Arrays | `np.ndarray` forms and `torch.Tensor` forms from [arrays and tensors](#arrays-and-tensors), when the backend is loaded |
 | Wrappers | `Annotated[T, ...]`, treated as `T`; on tensors, a `torch.dtype` entry pins the dtype and a fixed-arity all-`int` shape tuple such as `tuple[int, int]` enforces dimensionality, each usable alone or together; every other metadata entry passes through as ordinary annotation metadata |
 

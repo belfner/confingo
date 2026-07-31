@@ -75,6 +75,43 @@ confingo.ConfigError: config file train.json has 3 issues:
 ```
 
 
+## Variant groups
+
+When a field should hold any of several sections, declare a variant group: a base naming the key its sections select under, and one class per member naming the string a config file writes there.
+
+```python
+from dataclasses import dataclass
+
+from confingo import ConfigChoice
+
+
+@dataclass
+class Optimizer(ConfigChoice, tag_key="algorithm"):
+    lr: float = 3e-4                      # shared by every variant
+
+
+@dataclass
+class AdamW(Optimizer, tag="adamw"):
+    betas: tuple[float, float] = (0.9, 0.999)
+
+
+@dataclass
+class SGD(Optimizer, tag="sgd"):
+    momentum: float = 0.9
+```
+
+A field annotated `optimizer: Optimizer` takes any variant, and the file names which one to build:
+
+```yaml
+optimizer:
+  algorithm: sgd
+  lr: 0.1
+  momentum: 0.8
+```
+
+One class is constructed, so its `__post_init__` and `__validate__` run once. The selection is required, and a file that leaves it out is told so at the key's own dotted path. It leads the exported section, so a saved snapshot loads back into the variant it came from. The rules live in [variant groups](https://github.com/belfner/confingo/blob/main/docs/types-and-coercion.md#variant-groups).
+
+
 ## Arrays and tensors
 
 NumPy arrays and PyTorch tensors work as field types whenever your application already imports the backend; the array/tensor integration activates from that already-imported backend and detects it at runtime. Values serialize as plain JSON data (a scalar for a 0-d value, nested lists otherwise) and rebuild against the annotated dtype, with bare `torch.Tensor` pinned to value-stable dtypes and `Annotated[torch.Tensor, torch.float32]` pinning a specific one. The rules live in [arrays and tensors](https://github.com/belfner/confingo/blob/main/docs/arrays-and-tensors.md).
@@ -86,14 +123,14 @@ Full documentation lives in [docs/](https://github.com/belfner/confingo/blob/mai
 
 **Essentials** covers everything needed to write, load, save, and debug a config:
 
-- [Getting started](https://github.com/belfner/confingo/blob/main/docs/getting-started.md): the linear introduction, from a runnable example to a realistic training config with defaults, sections, unions, and a run hash.
+- [Getting started](https://github.com/belfner/confingo/blob/main/docs/getting-started.md): the linear introduction, from a runnable example to a realistic training config with defaults, sections, variant groups, and a run hash.
 - [Arrays and tensors](https://github.com/belfner/confingo/blob/main/docs/arrays-and-tensors.md): NumPy and PyTorch fields, dtype and shape choices.
 - [Files, formats, and run identity](https://github.com/belfner/confingo/blob/main/docs/files-and-identity.md): JSON, YAML, extension dispatch, atomic saves.
 - [Recipes](https://github.com/belfner/confingo/blob/main/docs/recipes.md): copyable answers to common tasks.
 
 **Exact reference** holds the precise rules, for lookup:
 
-- [Schema design](https://github.com/belfner/confingo/blob/main/docs/schema-design.md): implicit sections, leaf-level requirements, defaults, `ConfigNode`.
+- [Schema design](https://github.com/belfner/confingo/blob/main/docs/schema-design.md): implicit sections, leaf-level requirements, defaults, `ConfigNode`, variant groups.
 - [Types and coercion](https://github.com/belfner/confingo/blob/main/docs/types-and-coercion.md): accepted annotations and exact conversion rules.
 - [Validation and errors](https://github.com/belfner/confingo/blob/main/docs/validation-and-errors.md): the collect-all error model and every issue source.
 - [Equality and hashing](https://github.com/belfner/confingo/blob/main/docs/equality-and-hashing.md): canonical equality, unhashable config objects, stable run identity.

@@ -21,6 +21,7 @@ import numpy as np
 from boundary import REJECTED
 from schema import (
     Precision,
+    ScheduleConfig,
     Stage,
     TrainingConfig,
 )
@@ -414,6 +415,7 @@ def show_error_collection() -> None:
         "telemetry": {"extra": None, "labels": [["unhashable"]]},
         "tensors": {},
         "runtime": {"device": "tpu"},
+        "schedule": {"kind": "cosinus"},
     }
     try:
         from_dict(TrainingConfig, broken, context="broken.yaml")
@@ -461,6 +463,37 @@ def show_implicit_sections() -> None:
 CHECKPOINT_BASELINE = "every_steps=500, keep_last=1"
 
 
+def show_variant_group(config: TrainingConfig) -> None:
+    """Report how a variant group turns one key in the file into one built class.
+
+    Args:
+      config (TrainingConfig): The loaded configuration.
+    """
+    banner("14. Variant groups, one annotation standing for a set of sections")
+    print("schedule annotation    ScheduleConfig, the group standing for every schedule")
+    print(f"selection in the file  kind: {to_dict(config.schedule)['kind']}")
+    print(f"class built            {type(config.schedule).__name__}")
+    print(f"shared field           total_steps={config.schedule.total_steps}, declared on the group")
+    print(f"variant field          min_lr_ratio={config.schedule.min_lr_ratio}, declared on this variant\n")
+
+    for tag in ("cosine", "linear", "constant"):
+        section = ScheduleConfig.cfg.from_dict({"kind": tag, "total_steps": 2_000})
+        print(f"  kind: {tag:<9} builds {type(section).__name__:<17} {section.cfg.to_dict()}")
+
+    print("\nThe selection leads the exported section, so a variant rendered on its")
+    print("own carries the string that reads it back:")
+    exported = to_dict(config.schedule)
+    print(f"  to_dict(schedule)    {exported}")
+    print(f"  reloads as           {type(ScheduleConfig.cfg.from_dict(exported)).__name__}")
+
+    for label, section in (("no selection", {"total_steps": 100}), ("unknown selection", {"kind": "cosinus"})):
+        try:
+            from_dict(TrainingConfig, {"schedule": section}, context="schedule.yaml")
+        except ConfigError as error:
+            reported = next(issue for issue in error.issues if issue.path.startswith("schedule"))
+            print(f"\n  {label:<18} {reported.path}: {reported.message}")
+
+
 def main() -> None:
     """Load the showcase config and drive every feature over it."""
     show_schema_check()
@@ -477,6 +510,7 @@ def main() -> None:
     show_error_collection()
     show_invariants(config)
     show_implicit_sections()
+    show_variant_group(config)
     banner("Done")
     print(f"Precision members: {[member.value for member in Precision]}")
     print(f"Stage members:     {[member.value for member in Stage]}")

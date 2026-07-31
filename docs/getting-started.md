@@ -282,37 +282,63 @@ class NormalizationConfig:
 The backends activate only when your application imports NumPy or PyTorch itself. [Arrays and tensors](arrays-and-tensors.md) covers dtype and shape choices.
 
 
-## Let the file choose between two shapes
+## Let the file choose between several shapes
 
-A union lets one field hold either of two sections. Give each a `Literal` discriminator so the file states which one it means:
+When one field should hold any of several sections, declare a **variant group**: a base class standing for the set, plus one class per member. The group names the key its sections select under, and each variant names the string a file writes there:
 
 ```python
+from dataclasses import dataclass
+
+from confingo import (
+    ConfigChoice,
+    ConfigNode,
+)
+
+
 @dataclass
-class AdamW:
-    kind: Literal["adamw"]
-    lr: float = 1e-3
+class Optimizer(ConfigChoice, tag_key="algorithm"):
+    lr: float = 1e-3                      # shared by every variant
+
+
+@dataclass
+class AdamW(Optimizer, tag="adamw"):
     betas: tuple[float, float] = (0.9, 0.999)
 
 
 @dataclass
-class SGD:
-    kind: Literal["sgd"]
-    lr: float = 1e-3
+class SGD(Optimizer, tag="sgd"):
     momentum: float = 0.9
 
 
 @dataclass
 class RunConfig(ConfigNode):
-    optimizer: AdamW | SGD
+    optimizer: Optimizer
 ```
 
-Members are tried in declaration order and the first that fits cleanly wins. When every member fails, the report names the branch that came closest and shows that branch's problems:
+The field names the group; the file names the variant:
+
+```yaml
+optimizer:
+  algorithm: sgd
+  lr: 0.1
+  momentum: 0.8
+```
+
+That builds `SGD(lr=0.1, momentum=0.8)`. Fields on the group are shared by every variant, so `lr` is written once. The key is required, and a section that leaves it out is reported where it belongs:
 
 ```text
-config has 2 issues:
-  - optimizer: expected AdamW | SGD; best match SGD failed with 1 issue
-  - optimizer.lr: expected float, got str
+config has 1 issue:
+  - optimizer.algorithm: missing required value (expected one of 'adamw' | 'sgd')
 ```
+
+A wrong string names every option the group carries:
+
+```text
+config has 1 issue:
+  - optimizer.algorithm: expected one of 'adamw' | 'sgd', got 'adam'
+```
+
+Saving puts the selection back at the front of the section, so a resolved snapshot loads into the same variant it came from. [Variant groups](types-and-coercion.md#variant-groups) covers the full rules.
 
 
 ## Derive values and check invariants
