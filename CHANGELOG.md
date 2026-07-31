@@ -142,6 +142,7 @@ All notable changes to confingo are documented here. The format follows [Keep a 
 - `ConfigRoot` mixin exposing the same operations as methods on a root config dataclass (`Config.load_json(path)`, `config.save_json(path)`).
 - `py.typed` marker; the package ships with inline type annotations and runs on the Python standard library alone, targeting Python 3.10 and newer.
 
+[3.0.0]: https://github.com/belfner/confingo/releases/tag/v3.0.0
 [2.1.0]: https://github.com/belfner/confingo/releases/tag/v2.1.0
 [2.0.0]: https://github.com/belfner/confingo/releases/tag/v2.0.0
 [0.2.0]: https://github.com/belfner/confingo/releases/tag/v0.2.0
