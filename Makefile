@@ -11,10 +11,12 @@ build:
 publish: clean build
 	@set -a && . ./.env && set +a && uv publish
 
+# The token reaches uv through UV_PUBLISH_TOKEN in the environment, which keeps it
+# out of the process argv that /proc/<pid>/cmdline exposes to every user on the host.
 publish-test: clean build
-	@set -a && . ./.env && set +a && uv publish \
-		--publish-url https://test.pypi.org/legacy/ \
-		--token "$$UV_PUBLISH_TOKEN_TESTPYPI"
+	@set -a && . ./.env && set +a && \
+		UV_PUBLISH_TOKEN="$$UV_PUBLISH_TOKEN_TESTPYPI" uv publish \
+		--publish-url https://test.pypi.org/legacy/
 
 install:
 	uv pip install -e .
